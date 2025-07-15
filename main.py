@@ -1,8 +1,8 @@
 import logging
 import os
 import sys
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler, MessageHandler, filters, ChatMemberHandler
 from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
@@ -42,7 +42,7 @@ logger.info(f"Бот запускается с ADMIN_CHAT_ID: {ADMIN_CHAT_ID}, C
 os.makedirs('/data', exist_ok=True)
 
 # Инициализация компонентов
-db = Database('/data/bot_database.db')  # Используем persistent storage
+db = Database('/data/bot_database.db')
 admin_panel = AdminPanel(db, ADMIN_CHAT_ID)
 scheduler = MessageScheduler(db)
 
@@ -74,15 +74,25 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         db.add_user(user.id, user.username, user.first_name)
         
         # Получаем приветственное сообщение
-        welcome_message = db.get_welcome_message()
+        welcome_data = db.get_welcome_message()
         
         # Отправляем приветственное сообщение в личку
         try:
-            await context.bot.send_message(
-                chat_id=user.id,
-                text=welcome_message,
-                parse_mode='HTML'
-            )
+            if welcome_data['photo']:
+                # Отправляем с фото
+                await context.bot.send_photo(
+                    chat_id=user.id,
+                    photo=welcome_data['photo'],
+                    caption=welcome_data['text'],
+                    parse_mode='HTML'
+                )
+            else:
+                # Отправляем только текст
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text=welcome_data['text'],
+                    parse_mode='HTML'
+                )
             
             # Планируем отправку 7 сообщений рассылки
             await scheduler.schedule_user_messages(context, user.id)
@@ -92,6 +102,55 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             
     except Exception as e:
         logger.error(f"Ошибка при обработке заявки от {user.id}: {e}")
+
+async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик изменений статуса участника канала"""
+    if update.my_chat_member:
+        return  # Игнорируем изменения статуса самого бота
+    
+    if not update.chat_member:
+        return
+    
+    # Проверяем, что это наш канал
+    if str(update.chat_member.chat.id) != str(CHANNEL_ID) and update.chat_member.chat.username != CHANNEL_ID.replace('@', ''):
+        return
+    
+    old_status = update.chat_member.old_chat_member.status
+    new_status = update.chat_member.new_chat_member.status
+    user = update.chat_member.new_chat_member.user
+    
+    logger.info(f"Изменение статуса пользователя {user.id}: {old_status} -> {new_status}")
+    
+    # Если пользователь покинул канал
+    if old_status in ["member", "administrator", "creator"] and new_status in ["left", "kicked"]:
+        logger.info(f"Пользователь {user.id} (@{user.username}) покинул канал")
+        
+        # Деактивируем пользователя
+        db.deactivate_user(user.id)
+        
+        # Отменяем запланированные сообщения
+        db.cancel_user_messages(user.id)
+        
+        # Получаем прощальное сообщение
+        goodbye_data = db.get_goodbye_message()
+        
+        # Отправляем прощальное сообщение
+        try:
+            if goodbye_data['photo']:
+                await context.bot.send_photo(
+                    chat_id=user.id,
+                    photo=goodbye_data['photo'],
+                    caption=goodbye_data['text'],
+                    parse_mode='HTML'
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text=goodbye_data['text'],
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.error(f"Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на инлайн-кнопки"""
@@ -135,8 +194,9 @@ def main():
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
+    application.add_handler(ChatMemberHandler(handle_member_update, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, message_handler))
     
     # Добавляем обработчик ошибок
     application.add_error_handler(error_handler)
