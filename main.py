@@ -1,0 +1,160 @@
+import logging
+import os
+import sys
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler, MessageHandler, filters
+from database import Database
+from admin import AdminPanel
+from scheduler import MessageScheduler
+import asyncio
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Конфигурация
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '0'))
+CHANNEL_ID = os.environ.get('CHANNEL_ID')
+
+# Проверка наличия обязательных переменных
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN не установлен!")
+    raise ValueError("BOT_TOKEN не установлен в переменных окружения")
+
+if ADMIN_CHAT_ID == 0:
+    logger.error("ADMIN_CHAT_ID не установлен!")
+    raise ValueError("ADMIN_CHAT_ID не установлен в переменных окружения")
+
+if not CHANNEL_ID:
+    logger.error("CHANNEL_ID не установлен!")
+    raise ValueError("CHANNEL_ID не установлен в переменных окружения")
+
+logger.info(f"Бот запускается с ADMIN_CHAT_ID: {ADMIN_CHAT_ID}, CHANNEL_ID: {CHANNEL_ID}")
+
+# Создаем директорию для данных если её нет
+os.makedirs('/data', exist_ok=True)
+
+# Инициализация компонентов
+db = Database('/data/bot_database.db')  # Используем persistent storage
+admin_panel = AdminPanel(db, ADMIN_CHAT_ID)
+scheduler = MessageScheduler(db)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start"""
+    user = update.effective_user
+    
+    # Проверяем, является ли пользователь админом
+    if user.id == ADMIN_CHAT_ID:
+        await admin_panel.show_main_menu(update, context)
+    else:
+        await update.message.reply_text(
+            f"Добро пожаловать, {user.first_name}! 👋\n\n"
+            "Я бот для управления подписками в закрытом канале.\n"
+            "Подайте заявку на вступление в канал, и я автоматически её одобрю!"
+        )
+
+async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик заявок на вступление в канал"""
+    chat_join_request = update.chat_join_request
+    user = chat_join_request.from_user
+    
+    try:
+        # Одобряем заявку
+        await chat_join_request.approve()
+        logger.info(f"Одобрена заявка от пользователя {user.id} (@{user.username})")
+        
+        # Добавляем пользователя в базу данных
+        db.add_user(user.id, user.username, user.first_name)
+        
+        # Получаем приветственное сообщение
+        welcome_message = db.get_welcome_message()
+        
+        # Отправляем приветственное сообщение в личку
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=welcome_message,
+                parse_mode='HTML'
+            )
+            
+            # Планируем отправку 7 сообщений рассылки
+            await scheduler.schedule_user_messages(context, user.id)
+            
+        except Exception as e:
+            logger.error(f"Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при обработке заявки от {user.id}: {e}")
+
+async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий на инлайн-кнопки"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    # Проверяем, является ли пользователь админом
+    if user_id != ADMIN_CHAT_ID:
+        await query.answer("У вас нет прав для выполнения этого действия!", show_alert=True)
+        return
+    
+    await query.answer()
+    
+    # Передаём обработку админ-панели
+    await admin_panel.handle_callback(update, context)
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений"""
+    user_id = update.effective_user.id
+    
+    # Проверяем, является ли пользователь админом и ожидается ли от него ввод
+    if user_id == ADMIN_CHAT_ID:
+        await admin_panel.handle_message(update, context)
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
+    logger.error(f"Exception while handling an update: {context.error}")
+
+async def post_init(application: Application) -> None:
+    """Инициализация после запуска"""
+    logger.info("Бот успешно запущен и готов к работе!")
+
+def main():
+    """Главная функция запуска бота"""
+    # Создаём приложение
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Добавляем обработчик инициализации
+    application.post_init = post_init
+    
+    # Регистрируем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(ChatJoinRequestHandler(handle_join_request))
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    
+    # Добавляем обработчик ошибок
+    application.add_error_handler(error_handler)
+    
+    # Запускаем фоновую задачу для рассылки
+    application.job_queue.run_repeating(
+        scheduler.send_scheduled_messages,
+        interval=60,  # каждые 60 секунд
+        first=10  # первый запуск через 10 секунд
+    )
+    
+    logger.info("Запуск бота...")
+    
+    # Запускаем бота
+    application.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
+
+if __name__ == '__main__':
+    main()
