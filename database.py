@@ -39,14 +39,22 @@ class Database:
             )
         ''')
         
-        # Таблица сообщений рассылки
+        # Обновляем таблицу сообщений рассылки - добавляем поле для фото
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS broadcast_messages (
                 message_number INTEGER PRIMARY KEY,
                 text TEXT NOT NULL,
-                delay_hours INTEGER DEFAULT 24
+                delay_hours INTEGER DEFAULT 24,
+                photo_url TEXT DEFAULT NULL
             )
         ''')
+        
+        # Добавляем колонку photo_url если её нет (для существующих БД)
+        cursor.execute("PRAGMA table_info(broadcast_messages)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'photo_url' not in columns:
+            cursor.execute('ALTER TABLE broadcast_messages ADD COLUMN photo_url TEXT DEFAULT NULL')
+            logger.info("Добавлена колонка photo_url в broadcast_messages")
         
         # Таблица запланированных сообщений
         cursor.execute('''
@@ -61,7 +69,7 @@ class Database:
             )
         ''')
         
-        # Таблица настроек
+        # Таблица настроек - добавляем поле для фото приветствия и сообщения при отписке
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -78,22 +86,42 @@ class Database:
              "В ближайшие дни вы будете получать полезные материалы от нашего бота.\n\n"
              "Если у вас есть вопросы - не стесняйтесь задавать!",))
         
+        # Добавляем сообщение при отписке
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value) 
+            VALUES ('goodbye_message', ?)
+        ''', ("😢 Жаль, что вы покидаете нас!\n\n"
+             "Если передумаете - всегда будем рады видеть вас снова в нашем канале.\n\n"
+             "Удачи! 👋",))
+        
+        # Добавляем URL фото для приветствия (опционально)
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value) 
+            VALUES ('welcome_photo_url', '')
+        ''')
+        
+        # Добавляем URL фото для прощания (опционально)
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value) 
+            VALUES ('goodbye_photo_url', '')
+        ''')
+        
         # Инициализация сообщений рассылки по умолчанию
         default_messages = [
-            ("Сообщение 1: Основы работы с нашим сервисом 📚", 24),
-            ("Сообщение 2: Продвинутые функции и возможности 🔧", 48),
-            ("Сообщение 3: Лучшие практики и советы 💡", 72),
-            ("Сообщение 4: Частые вопросы и ответы ❓", 96),
-            ("Сообщение 5: Примеры успешных кейсов 📈", 120),
-            ("Сообщение 6: Дополнительные ресурсы 📖", 144),
-            ("Сообщение 7: Благодарность и обратная связь 🙏", 168)
+            ("Сообщение 1: Основы работы с нашим сервисом 📚", 24, None),
+            ("Сообщение 2: Продвинутые функции и возможности 🔧", 48, None),
+            ("Сообщение 3: Лучшие практики и советы 💡", 72, None),
+            ("Сообщение 4: Частые вопросы и ответы ❓", 96, None),
+            ("Сообщение 5: Примеры успешных кейсов 📈", 120, None),
+            ("Сообщение 6: Дополнительные ресурсы 📖", 144, None),
+            ("Сообщение 7: Благодарность и обратная связь 🙏", 168, None)
         ]
         
-        for i, (text, delay) in enumerate(default_messages, 1):
+        for i, (text, delay, photo) in enumerate(default_messages, 1):
             cursor.execute('''
-                INSERT OR IGNORE INTO broadcast_messages (message_number, text, delay_hours)
-                VALUES (?, ?, ?)
-            ''', (i, text, delay))
+                INSERT OR IGNORE INTO broadcast_messages (message_number, text, delay_hours, photo_url)
+                VALUES (?, ?, ?, ?)
+            ''', (i, text, delay, photo))
         
         conn.commit()
         conn.close()
@@ -118,13 +146,26 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            INSERT OR REPLACE INTO users (user_id, username, first_name)
-            VALUES (?, ?, ?)
+            INSERT OR REPLACE INTO users (user_id, username, first_name, is_active)
+            VALUES (?, ?, ?, 1)
         ''', (user_id, username, first_name))
         
         conn.commit()
         conn.close()
         logger.info(f"Добавлен пользователь {user_id} (@{username})")
+    
+    def deactivate_user(self, user_id):
+        """Деактивация пользователя при отписке"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE users SET is_active = 0 WHERE user_id = ?
+        ''', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Деактивирован пользователь {user_id}")
     
     def get_user(self, user_id):
         """Получение информации о пользователе"""
@@ -149,17 +190,40 @@ class Database:
         return users
     
     def get_welcome_message(self):
-        """Получение приветственного сообщения"""
+        """Получение приветственного сообщения и фото"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute('SELECT value FROM settings WHERE key = "welcome_message"')
-        result = cursor.fetchone()
+        message = cursor.fetchone()
+        
+        cursor.execute('SELECT value FROM settings WHERE key = "welcome_photo_url"')
+        photo = cursor.fetchone()
         
         conn.close()
-        return result[0] if result else "Добро пожаловать!"
+        return {
+            'text': message[0] if message else "Добро пожаловать!",
+            'photo': photo[0] if photo and photo[0] else None
+        }
     
-    def set_welcome_message(self, message):
+    def get_goodbye_message(self):
+        """Получение прощального сообщения и фото"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT value FROM settings WHERE key = "goodbye_message"')
+        message = cursor.fetchone()
+        
+        cursor.execute('SELECT value FROM settings WHERE key = "goodbye_photo_url"')
+        photo = cursor.fetchone()
+        
+        conn.close()
+        return {
+            'text': message[0] if message else "До свидания!",
+            'photo': photo[0] if photo and photo[0] else None
+        }
+    
+    def set_welcome_message(self, message, photo_url=None):
         """Установка приветственного сообщения"""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -167,6 +231,28 @@ class Database:
         cursor.execute('''
             UPDATE settings SET value = ? WHERE key = "welcome_message"
         ''', (message,))
+        
+        if photo_url is not None:
+            cursor.execute('''
+                UPDATE settings SET value = ? WHERE key = "welcome_photo_url"
+            ''', (photo_url,))
+        
+        conn.commit()
+        conn.close()
+    
+    def set_goodbye_message(self, message, photo_url=None):
+        """Установка прощального сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE settings SET value = ? WHERE key = "goodbye_message"
+        ''', (message,))
+        
+        if photo_url is not None:
+            cursor.execute('''
+                UPDATE settings SET value = ? WHERE key = "goodbye_photo_url"
+            ''', (photo_url,))
         
         conn.commit()
         conn.close()
@@ -177,7 +263,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT text, delay_hours FROM broadcast_messages 
+            SELECT text, delay_hours, photo_url FROM broadcast_messages 
             WHERE message_number = ?
         ''', (message_number,))
         result = cursor.fetchone()
@@ -196,7 +282,7 @@ class Database:
         conn.close()
         return messages
     
-    def update_broadcast_message(self, message_number, text=None, delay_hours=None):
+    def update_broadcast_message(self, message_number, text=None, delay_hours=None, photo_url=None):
         """Обновление сообщения рассылки"""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -212,6 +298,12 @@ class Database:
                 UPDATE broadcast_messages SET delay_hours = ? 
                 WHERE message_number = ?
             ''', (delay_hours, message_number))
+        
+        if photo_url is not None:
+            cursor.execute('''
+                UPDATE broadcast_messages SET photo_url = ? 
+                WHERE message_number = ?
+            ''', (photo_url if photo_url else None, message_number))
         
         conn.commit()
         conn.close()
@@ -236,7 +328,7 @@ class Database:
         
         current_time = datetime.now()
         cursor.execute('''
-            SELECT sm.id, sm.user_id, sm.message_number, bm.text
+            SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url
             FROM scheduled_messages sm
             JOIN broadcast_messages bm ON sm.message_number = bm.message_number
             WHERE sm.is_sent = 0 AND sm.scheduled_time <= ?
@@ -259,6 +351,20 @@ class Database:
         conn.commit()
         conn.close()
     
+    def cancel_user_messages(self, user_id):
+        """Отмена всех запланированных сообщений для пользователя"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM scheduled_messages 
+            WHERE user_id = ? AND is_sent = 0
+        ''', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Отменены запланированные сообщения для пользователя {user_id}")
+    
     def get_user_statistics(self):
         """Получение статистики пользователей"""
         conn = self._get_connection()
@@ -280,9 +386,14 @@ class Database:
         cursor.execute('SELECT COUNT(*) FROM scheduled_messages WHERE is_sent = 1')
         sent_messages = cursor.fetchone()[0]
         
+        # Количество отписавшихся
+        cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 0')
+        unsubscribed = cursor.fetchone()[0]
+        
         conn.close()
         return {
             'total_users': total_users,
             'new_users_24h': new_users_24h,
-            'sent_messages': sent_messages
+            'sent_messages': sent_messages,
+            'unsubscribed': unsubscribed
         }
