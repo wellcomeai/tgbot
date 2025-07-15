@@ -1,0 +1,14 @@
+# Telegram Bot API
+python-telegram-bot==21.6
+# Асинхронные утилиты (требуется для job queue)
+python-telegram-bot[job-queue]==21.6
+
+# Дополнительные зависимости для стабильности
+# Эти версии проверены и работают корректно
+httpx==0.27.0
+anyio==4.3.0
+sniffio==1.3.1
+certifi>=2023.7.22
+h11==0.14.0
+httpcore==1.0.5
+idna==3.7
