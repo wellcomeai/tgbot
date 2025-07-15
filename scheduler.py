@@ -17,7 +17,7 @@ class MessageScheduler:
             messages = self.db.get_all_broadcast_messages()
             current_time = datetime.now()
             
-            for message_number, text, delay_hours in messages:
+            for message_number, text, delay_hours, photo_url in messages:
                 # Вычисляем время отправки
                 scheduled_time = current_time + timedelta(hours=delay_hours)
                 
@@ -40,18 +40,28 @@ class MessageScheduler:
             if pending_messages:
                 logger.info(f"Найдено {len(pending_messages)} сообщений для отправки")
             
-            for message_id, user_id, message_number, text in pending_messages:
+            for message_id, user_id, message_number, text, photo_url in pending_messages:
                 try:
                     # Небольшая задержка между отправками для избежания лимитов
                     await asyncio.sleep(0.1)
                     
                     # Отправляем сообщение
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=text,
-                        parse_mode='HTML',
-                        disable_web_page_preview=True
-                    )
+                    if photo_url:
+                        # Отправляем с фото
+                        await context.bot.send_photo(
+                            chat_id=user_id,
+                            photo=photo_url,
+                            caption=text,
+                            parse_mode='HTML'
+                        )
+                    else:
+                        # Отправляем только текст
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=text,
+                            parse_mode='HTML',
+                            disable_web_page_preview=True
+                        )
                     
                     # Отмечаем как отправленное
                     self.db.mark_message_sent(message_id)
@@ -63,7 +73,8 @@ class MessageScheduler:
                     logger.warning(f"Пользователь {user_id} заблокировал бота: {e}")
                     # Отмечаем сообщение как отправленное, чтобы не пытаться снова
                     self.db.mark_message_sent(message_id)
-                    # TODO: Можно добавить деактивацию пользователя
+                    # Деактивируем пользователя
+                    self.db.deactivate_user(user_id)
                     
                 except BadRequest as e:
                     # Неверный chat_id или другая ошибка
