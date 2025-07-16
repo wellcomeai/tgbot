@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler, MessageHandler, filters, ChatMemberHandler
 from database import Database
@@ -179,13 +180,26 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             db.mark_user_started_bot(user_id)
             
             # Отправляем заготовленное сообщение согласия
-            await query.answer()
-            await query.edit_message_text(
-                text="🎉 <b>Отлично! Согласие получено!</b>\n\n"
-                     "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
-                     "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
-                     "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
-                     "Добро пожаловать в нашу команду! 🚀",
+            await query.answer("Согласие получено! ✅")
+            
+            # Отправляем новое сообщение вместо редактирования
+            await query.message.reply_text(
+                "🎉 <b>Отлично! Согласие получено!</b>\n\n"
+                "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
+                "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+                "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
+                "Добро пожаловать в нашу команду! 🚀",
+                parse_mode='HTML'
+            )
+            
+            # Отправляем дополнительное сообщение благодарности
+            await asyncio.sleep(1)  # Небольшая задержка для плавности
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="🙏 <b>Спасибо, что подписались!</b>\n\n"
+                     "Мы очень рады видеть вас среди наших подписчиков.\n\n"
+                     "📋 Первое полезное сообщение придет уже через <b>3 минуты</b>!\n\n"
+                     "🎯 Следите за обновлениями - впереди много интересного!",
                 parse_mode='HTML'
             )
         else:
