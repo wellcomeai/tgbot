@@ -133,6 +133,9 @@ class CallbackHandler:
                 text="/start"
             )
             
+            # ВАЖНО: Устанавливаем связь с ботом
+            message.set_bot(context.bot)
+            
             # Создаем полноценный Update объект
             update = Update(
                 update_id=int(datetime.now().timestamp()),
@@ -447,12 +450,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем, является ли пользователь админом
     if user.id == ADMIN_CHAT_ID:
         await admin_panel.show_main_menu(update, context)
+        return
+    
+    # Проверяем, является ли это симулированным вызовом
+    is_simulated = (
+        update.message and 
+        abs(update.message.message_id - int(datetime.now().timestamp())) < 2 and
+        update.message.text == "/start"
+    )
+    
+    if is_simulated:
+        # Для симулированных вызовов логика уже выполнена, просто отправляем ответ
+        logger.info(f"📋 Обработка симулированной команды /start для пользователя {user.id}")
+        await context.bot.send_message(
+            chat_id=user.id,
+            text="👋 <b>Команда /start выполнена автоматически!</b>\n\n"
+            "🚀 <b>Добро пожаловать!</b>\n\n"
+            "Теперь вы полноценный участник нашего сообщества!\n\n"
+            "📚 <b>Вы получите доступ к:</b>\n"
+            "• Эксклюзивным материалам\n"
+            "• Полезным советам и инструкциям\n"
+            "• Актуальным новостям\n"
+            "• Поддержке сообщества\n\n"
+            "🙏 <b>Спасибо, что подписались!</b>\n\n"
+            "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+            parse_mode='HTML'
+        )
+        logger.info(f"✅ Отправлен ответ на симулированную команду /start для пользователя {user.id}")
     else:
-        # Для обычных пользователей выполняем логику подписки
+        # Для реальных команд /start выполняем полную логику
+        logger.info(f"📋 Обработка реальной команды /start для пользователя {user.id}")
         success = await callback_handler.execute_start_logic(user.id, context, user)
         
         if success:
-            # Отправляем приветственное сообщение /start
             await update.message.reply_text(
                 "👋 <b>Привет!</b> Теперь вы будете получать уведомления от бота.\n\n"
                 "🚀 <b>Добро пожаловать!</b>\n\n"
