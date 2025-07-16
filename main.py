@@ -54,11 +54,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == ADMIN_CHAT_ID:
         await admin_panel.show_main_menu(update, context)
     else:
-        await update.message.reply_text(
-            f"Добро пожаловать, {user.first_name}! 👋\n\n"
-            "Я бот для управления подписками в закрытом канале.\n"
-            "Подайте заявку на вступление в канал, и я автоматически её одобрю!"
-        )
+        # Помечаем пользователя как начавшего разговор с ботом
+        db.mark_user_started_bot(user.id)
+        
+        # Проверяем параметр start
+        if context.args and context.args[0] == "welcome":
+            # Пользователь пришел из приветственного сообщения
+            await update.message.reply_text(
+                "🎉 <b>Отлично!</b> Теперь вы будете получать все уведомления от бота.\n\n"
+                "📬 Вы получите серию полезных сообщений в ближайшие дни.\n"
+                "🔔 Также админ сможет отправлять вам важные уведомления.\n\n"
+                "Если у вас есть вопросы - пишите в любое время!",
+                parse_mode='HTML'
+            )
+        else:
+            # Обычный старт
+            await update.message.reply_text(
+                f"Добро пожаловать, {user.first_name}! 👋\n\n"
+                "Я бот для управления подписками в закрытом канале.\n"
+                "Подайте заявку на вступление в канал, и я автоматически её одобрю!"
+            )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик заявок на вступление в канал"""
@@ -76,22 +91,35 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Получаем приветственное сообщение
         welcome_data = db.get_welcome_message()
         
+        # Создаем кнопку для начала разговора с ботом
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+        
+        keyboard = [
+            [InlineKeyboardButton("💬 Начать общение с ботом", url=f"https://t.me/{bot_username}?start=welcome")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         # Отправляем приветственное сообщение в личку
         try:
+            welcome_text = welcome_data['text'] + "\n\n💡 <b>Важно:</b> Нажмите кнопку ниже, чтобы получать уведомления от бота!"
+            
             if welcome_data['photo']:
                 # Отправляем с фото
                 await context.bot.send_photo(
                     chat_id=user.id,
                     photo=welcome_data['photo'],
-                    caption=welcome_data['text'],
-                    parse_mode='HTML'
+                    caption=welcome_text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
                 )
             else:
                 # Отправляем только текст
                 await context.bot.send_message(
                     chat_id=user.id,
-                    text=welcome_data['text'],
-                    parse_mode='HTML'
+                    text=welcome_text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
                 )
             
             # Планируем отправку сообщений рассылки (теперь динамическое количество)
@@ -158,14 +186,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     user_id = query.from_user.id
     
     # Проверяем, является ли пользователь админом
-    if user_id != ADMIN_CHAT_ID:
-        await query.answer("У вас нет прав для выполнения этого действия!", show_alert=True)
-        return
-    
-    await query.answer()
-    
-    # Передаём обработку админ-панели
-    await admin_panel.handle_callback(update, context)
+    if user_id == ADMIN_CHAT_ID:
+        await query.answer()
+        # Передаём обработку админ-панели
+        await admin_panel.handle_callback(update, context)
+    else:
+        # Если обычный пользователь нажал кнопку, помечаем его как начавшего разговор
+        db.mark_user_started_bot(user_id)
+        await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
@@ -174,6 +202,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем, является ли пользователь админом и ожидается ли от него ввод
     if user_id == ADMIN_CHAT_ID:
         await admin_panel.handle_message(update, context)
+    else:
+        # Если обычный пользователь написал боту, помечаем его как начавшего разговор
+        db.mark_user_started_bot(user_id)
+        
+        # Отправляем дружелюбный ответ
+        await update.message.reply_text(
+            "👋 Спасибо за сообщение!\n\n"
+            "Теперь вы будете получать все важные уведомления от нашего бота.\n\n"
+            "Если у вас есть вопросы - обращайтесь к администратору канала."
+        )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
