@@ -1,5 +1,6 @@
 # Telegram Bot API
 python-telegram-bot==21.6
+
 # Асинхронные утилиты (требуется для job queue)
 python-telegram-bot[job-queue]==21.6
 
