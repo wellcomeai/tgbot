@@ -105,8 +105,8 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                     reply_markup=reply_markup
                 )
             
-            # Планируем отправку сообщений рассылки (теперь динамическое количество)
-            await scheduler.schedule_user_messages(context, user.id)
+            # ❌ УБИРАЕМ ОТСЮДА планирование сообщений!
+            # Теперь сообщения будут планироваться только после нажатия кнопки согласия
             
         except Exception as e:
             logger.error(f"Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
@@ -179,6 +179,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             # Помечаем пользователя как начавшего разговор с ботом
             db.mark_user_started_bot(user_id)
             
+            # ✅ ТЕПЕРЬ ПЛАНИРУЕМ СООБЩЕНИЯ ПОСЛЕ ПОЛУЧЕНИЯ СОГЛАСИЯ
+            await scheduler.schedule_user_messages(context, user_id)
+            
             # Отправляем заготовленное сообщение согласия
             await query.answer("Согласие получено! ✅")
             
@@ -205,6 +208,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         else:
             # Если обычный пользователь нажал другую кнопку
             db.mark_user_started_bot(user_id)
+            # Планируем сообщения и для этого случая
+            await scheduler.schedule_user_messages(context, user_id)
             await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -217,6 +222,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # Если обычный пользователь написал боту, помечаем его как начавшего разговор
         db.mark_user_started_bot(user_id)
+        
+        # Если у пользователя еще нет запланированных сообщений, планируем их
+        # (на случай, если он написал боту напрямую, минуя кнопку согласия)
+        existing_messages = db.get_user_scheduled_messages(user_id)
+        if not existing_messages:
+            await scheduler.schedule_user_messages(context, user_id)
         
         # Отправляем дружелюбный ответ
         await update.message.reply_text(
