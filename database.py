@@ -612,8 +612,31 @@ class Database:
         cursor = conn.cursor()
         
         current_time = datetime.now()
+        
+        # Сначала получаем общую статистику для логирования
+        cursor.execute('SELECT COUNT(*) FROM scheduled_messages WHERE is_sent = 0')
+        total_scheduled = cursor.fetchone()[0]
+        
         cursor.execute('''
-            SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url
+            SELECT COUNT(*) FROM scheduled_messages sm
+            JOIN users u ON sm.user_id = u.user_id
+            WHERE sm.is_sent = 0 AND u.is_active = 1 AND u.bot_started = 1
+        ''')
+        active_scheduled = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            SELECT COUNT(*) FROM scheduled_messages sm
+            JOIN users u ON sm.user_id = u.user_id
+            WHERE sm.is_sent = 0 AND sm.scheduled_time <= ? AND u.is_active = 1 AND u.bot_started = 1
+        ''', (current_time,))
+        ready_to_send = cursor.fetchone()[0]
+        
+        if total_scheduled > 0:
+            logger.debug(f"📊 Статистика сообщений: всего запланировано {total_scheduled}, для активных пользователей {active_scheduled}, готово к отправке {ready_to_send}")
+        
+        # Получаем сообщения готовые к отправке
+        cursor.execute('''
+            SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url, sm.scheduled_time
             FROM scheduled_messages sm
             JOIN broadcast_messages bm ON sm.message_number = bm.message_number
             JOIN users u ON sm.user_id = u.user_id
@@ -621,11 +644,20 @@ class Database:
             AND sm.scheduled_time <= ?
             AND u.is_active = 1
             AND u.bot_started = 1
+            ORDER BY sm.scheduled_time ASC
         ''', (current_time,))
         
         messages = cursor.fetchall()
+        
+        # Логируем детали каждого сообщения
+        for msg in messages:
+            message_id, user_id, message_number, text, photo_url, scheduled_time = msg
+            scheduled_dt = datetime.fromisoformat(scheduled_time) if isinstance(scheduled_time, str) else scheduled_time
+            delay_minutes = int((current_time - scheduled_dt).total_seconds() / 60)
+            logger.debug(f"📬 Сообщение {message_number} для пользователя {user_id} (опоздание: {delay_minutes} мин)")
+        
         conn.close()
-        return messages
+        return [(m[0], m[1], m[2], m[3], m[4]) for m in messages]  # Возвращаем без scheduled_time
     
     def get_user_scheduled_messages(self, user_id):
         """Получение запланированных сообщений для пользователя"""
