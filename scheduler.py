@@ -14,6 +14,12 @@ class MessageScheduler:
     async def schedule_user_messages(self, context: ContextTypes.DEFAULT_TYPE, user_id):
         """Запланировать отправку всех сообщений для пользователя"""
         try:
+            # Проверяем, что пользователь дал согласие на получение сообщений
+            user_info = self.db.get_user(user_id)
+            if not user_info or not user_info[5]:  # bot_started = False
+                logger.warning(f"Попытка запланировать сообщения для пользователя {user_id}, который не дал согласие")
+                return False
+            
             # Получаем все сообщения рассылки
             messages = self.db.get_all_broadcast_messages()
             current_time = datetime.now()
@@ -53,8 +59,8 @@ class MessageScheduler:
                     # Рассылка отключена без таймера
                     return
             
-            # Получаем сообщения, готовые к отправке
-            pending_messages = self.db.get_pending_messages()
+            # Получаем сообщения, готовые к отправке (только для пользователей с bot_started = 1)
+            pending_messages = self.db.get_pending_messages_for_active_users()
             
             if pending_messages:
                 logger.info(f"Найдено {len(pending_messages)} сообщений для отправки")
