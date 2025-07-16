@@ -47,33 +47,26 @@ admin_panel = AdminPanel(db, ADMIN_CHAT_ID)
 scheduler = MessageScheduler(db)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
+    """Обработчик команды /start - только для админа"""
     user = update.effective_user
     
     # Проверяем, является ли пользователь админом
     if user.id == ADMIN_CHAT_ID:
         await admin_panel.show_main_menu(update, context)
     else:
+        # Для обычных пользователей не показываем ничего
         # Помечаем пользователя как начавшего разговор с ботом
         db.mark_user_started_bot(user.id)
         
-        # Проверяем параметр start
-        if context.args and context.args[0] == "welcome":
-            # Пользователь пришел из приветственного сообщения
-            await update.message.reply_text(
-                "🎉 <b>Отлично!</b> Теперь вы будете получать все уведомления от бота.\n\n"
-                "📬 Вы получите серию полезных сообщений в ближайшие дни.\n"
-                "🔔 Также админ сможет отправлять вам важные уведомления.\n\n"
-                "Если у вас есть вопросы - пишите в любое время!",
-                parse_mode='HTML'
-            )
-        else:
-            # Обычный старт
-            await update.message.reply_text(
-                f"Добро пожаловать, {user.first_name}! 👋\n\n"
-                "Я бот для управления подписками в закрытом канале.\n"
-                "Подайте заявку на вступление в канал, и я автоматически её одобрю!"
-            )
+        # Отправляем заготовленное сообщение согласия
+        await update.message.reply_text(
+            "🎉 <b>Отлично! Согласие получено!</b>\n\n"
+            "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
+            "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+            "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
+            "Добро пожаловать в нашу команду! 🚀",
+            parse_mode='HTML'
+        )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик заявок на вступление в канал"""
@@ -91,18 +84,18 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Получаем приветственное сообщение
         welcome_data = db.get_welcome_message()
         
-        # Создаем кнопку для начала разговора с ботом
+        # Создаем кнопку для согласия на получение уведомлений
         bot_info = await context.bot.get_me()
         bot_username = bot_info.username
         
         keyboard = [
-            [InlineKeyboardButton("💬 Начать общение с ботом", url=f"https://t.me/{bot_username}?start=welcome")]
+            [InlineKeyboardButton("✅ Согласиться на получение уведомлений", url=f"https://t.me/{bot_username}?start=welcome")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         # Отправляем приветственное сообщение в личку
         try:
-            welcome_text = welcome_data['text'] + "\n\n💡 <b>Важно:</b> Нажмите кнопку ниже, чтобы получать уведомления от бота!"
+            welcome_text = welcome_data['text'] + "\n\n💡 <b>Важно:</b> Для получения уведомлений и полезных материалов от бота, пожалуйста, нажмите кнопку ниже и дайте согласие:"
             
             if welcome_data['photo']:
                 # Отправляем с фото
@@ -193,7 +186,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     else:
         # Если обычный пользователь нажал кнопку, помечаем его как начавшего разговор
         db.mark_user_started_bot(user_id)
-        await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
+        
+        # Отправляем заготовленное сообщение согласия
+        await query.answer()
+        await query.message.reply_text(
+            "🎉 <b>Отлично! Согласие получено!</b>\n\n"
+            "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
+            "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+            "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
+            "Добро пожаловать в нашу команду! 🚀",
+            parse_mode='HTML'
+        )
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
