@@ -50,9 +50,11 @@ class AdminPanel:
         text = (
             "📊 <b>Статистика бота</b>\n\n"
             f"👥 Всего активных пользователей: {stats['total_users']}\n"
+            f"💬 Начали разговор с ботом: {stats['bot_started_users']}\n"
             f"🆕 Новых за 24 часа: {stats['new_users_24h']}\n"
             f"✉️ Отправлено сообщений: {stats['sent_messages']}\n"
-            f"🚪 Отписалось пользователей: {stats['unsubscribed']}"
+            f"🚪 Отписалось пользователей: {stats['unsubscribed']}\n\n"
+            f"💡 <b>Массовая рассылка:</b> доступна для {stats['bot_started_users']} пользователей"
         )
         
         keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_back")]]
@@ -321,7 +323,7 @@ class AdminPanel:
             self.waiting_for[user_id] = {"type": "goodbye_photo"}
             text = "🖼 Отправьте фото для прощального сообщения или ссылку на фото:"
         elif input_type == "send_all":
-            self.waiting_for[user_id] = {"type": "send_all"}
+            self.waiting_for[user_id] = {"type": "send_all", "step": "text"}
             text = "📢 Отправьте сообщение, которое будет разослано всем пользователям (можно с фото):"
         elif input_type == "add_message":
             self.waiting_for[user_id] = {"type": "add_message", "step": "text"}
@@ -348,6 +350,186 @@ class AdminPanel:
             parse_mode='HTML'
         )
     
+    # Вспомогательные методы для возврата к нужным экранам
+    async def show_main_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать главное меню из контекста сообщения"""
+        # Создаем фиктивный callback_query для совместимости
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        
+        await self.show_main_menu(fake_update, context)
+    
+    async def show_welcome_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования приветственного сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        
+        await self.show_welcome_edit(fake_update, context)
+    
+    async def show_goodbye_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования прощального сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        
+        await self.show_goodbye_edit(fake_update, context)
+    
+    async def show_broadcast_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню рассылки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        
+        await self.show_broadcast_menu(fake_update, context)
+    
+    async def show_broadcast_status_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать статус рассылки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        
+        await self.show_broadcast_status(fake_update, context)
+    
+    async def show_message_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
+        """Показать редактирование сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        
+        await self.show_message_edit(fake_update, context, message_number)
+    
+    async def show_message_buttons_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
+        """Показать кнопки сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        
+        await self.show_message_buttons(fake_update, context, message_number)
+    
+    async def show_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
+        """Показать редактирование кнопки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        
+        await self.show_button_edit(fake_update, context, button_id)
+    
+    async def send_bulk_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_text, photo_msg=None, buttons=None):
+        """Отправка сообщения всем пользователям"""
+        # Получаем только пользователей, которые начали разговор с ботом
+        users_with_bot = self.db.get_users_with_bot_started()
+        all_users = self.db.get_all_users()
+        
+        sent_count = 0
+        failed_count = 0
+        conversation_required = len(all_users) - len(users_with_bot)
+        
+        photo_file_id = None
+        if photo_msg:
+            photo_file_id = photo_msg[-1].file_id
+        
+        # Создаем клавиатуру если есть кнопки
+        reply_markup = None
+        if buttons:
+            keyboard = []
+            for button in buttons:
+                keyboard.append([InlineKeyboardButton(button["text"], url=button["url"])])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Отправляем только тем пользователям, которые начали разговор с ботом
+        for user in users_with_bot:
+            user_id_to_send = user[0]
+            try:
+                if photo_file_id:
+                    await context.bot.send_photo(
+                        chat_id=user_id_to_send,
+                        photo=photo_file_id,
+                        caption=message_text,
+                        parse_mode='HTML',
+                        reply_markup=reply_markup
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=user_id_to_send,
+                        text=message_text,
+                        parse_mode='HTML',
+                        reply_markup=reply_markup
+                    )
+                sent_count += 1
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"Не удалось отправить сообщение пользователю {user_id_to_send}: {e}")
+        
+        result_text = f"✅ Рассылка завершена!\n\n"
+        result_text += f"📤 Успешно отправлено: {sent_count}\n"
+        result_text += f"❌ Не удалось отправить: {failed_count}\n"
+        
+        if conversation_required > 0:
+            result_text += f"\n💡 <b>Информация:</b> {conversation_required} пользователей еще не начали разговор с ботом\n"
+            result_text += f"Им нужно нажать кнопку в приветственном сообщении или написать /start"
+        
+        await update.message.reply_text(result_text, parse_mode='HTML')
+        del self.waiting_for[update.effective_user.id]
+        await self.show_main_menu_from_context(update, context)
+    
     async def show_users_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать список пользователей"""
         users = self.db.get_latest_users(10)  # Показываем последних 10
@@ -357,11 +539,14 @@ class AdminPanel:
         else:
             text = "👥 <b>Список пользователей</b>\n\n<b>Последние 10 регистраций:</b>\n\n"
             for user in users:
-                user_id, username, first_name, joined_at, is_active = user
+                user_id, username, first_name, joined_at, is_active, bot_started = user
                 username_str = f"@{username}" if username else "без username"
                 # Форматируем дату
                 join_date = datetime.fromisoformat(joined_at).strftime("%d.%m.%Y %H:%M")
-                text += f"• {first_name} ({username_str})\n  ID: {user_id}, {join_date}\n\n"
+                bot_status = "💬" if bot_started else "❌"
+                text += f"• {first_name} ({username_str}) {bot_status}\n  ID: {user_id}, {join_date}\n\n"
+            
+            text += "\n💬 - может получать рассылки\n❌ - нужно написать боту /start"
         
         keyboard = [
             [InlineKeyboardButton("📊 Скачать CSV", callback_data="download_csv")],
@@ -450,6 +635,47 @@ class AdminPanel:
             await self.show_goodbye_edit(update, context)
         elif data == "admin_send_all":
             await self.request_text_input(update, context, "send_all")
+        
+        # Обработка массовой рассылки с кнопками
+        elif data == "send_all_add_button":
+            user_id = query.from_user.id
+            if user_id in self.waiting_for:
+                # Сохраняем текущее состояние и начинаем процесс добавления кнопки
+                self.waiting_for[user_id]["step"] = "button_text"
+                await query.edit_message_text(
+                    text="✏️ Отправьте текст для кнопки:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_cancel")]])
+                )
+        
+        elif data == "send_all_no_buttons":
+            user_id = query.from_user.id
+            if user_id in self.waiting_for:
+                waiting_data = self.waiting_for[user_id]
+                message_text = waiting_data.get("message_text", "")
+                photo_id = waiting_data.get("photo_id")
+                
+                # Создаем фиктивный объект photo
+                photo_msg = None
+                if photo_id:
+                    photo_msg = [type('Photo', (), {'file_id': photo_id})]
+                
+                await self.send_bulk_message(update, context, message_text, photo_msg)
+        
+        elif data == "send_all_with_buttons":
+            user_id = query.from_user.id
+            if user_id in self.waiting_for:
+                waiting_data = self.waiting_for[user_id]
+                message_text = waiting_data.get("message_text", "")
+                photo_id = waiting_data.get("photo_id")
+                buttons = waiting_data.get("buttons", [])
+                
+                # Создаем фиктивный объект photo
+                photo_msg = None
+                if photo_id:
+                    photo_msg = [type('Photo', (), {'file_id': photo_id})]
+                
+                await self.send_bulk_message(update, context, message_text, photo_msg, buttons)
+        
         elif data.startswith("edit_msg_"):
             message_number = int(data.split("_")[2])
             await self.show_message_edit(update, context, message_number)
@@ -538,21 +764,21 @@ class AdminPanel:
                 self.db.update_broadcast_message(message_number, photo_url=photo_file_id)
                 await update.message.reply_text(f"✅ Фото для сообщения {message_number} обновлено!")
                 del self.waiting_for[user_id]
-                await self.show_main_menu(update, context)
+                await self.show_message_edit_from_context(update, context, message_number)
                 
             elif waiting_data["type"] == "welcome_photo":
                 welcome_text = self.db.get_welcome_message()['text']
                 self.db.set_welcome_message(welcome_text, photo_url=photo_file_id)
                 await update.message.reply_text("✅ Фото для приветственного сообщения обновлено!")
                 del self.waiting_for[user_id]
-                await self.show_main_menu(update, context)
+                await self.show_welcome_edit_from_context(update, context)
                 
             elif waiting_data["type"] == "goodbye_photo":
                 goodbye_text = self.db.get_goodbye_message()['text']
                 self.db.set_goodbye_message(goodbye_text, photo_url=photo_file_id)
                 await update.message.reply_text("✅ Фото для прощального сообщения обновлено!")
                 del self.waiting_for[user_id]
-                await self.show_main_menu(update, context)
+                await self.show_goodbye_edit_from_context(update, context)
             
             return
         
@@ -563,20 +789,20 @@ class AdminPanel:
             self.db.set_welcome_message(text)
             await update.message.reply_text("✅ Приветственное сообщение обновлено!")
             del self.waiting_for[user_id]
-            await self.show_main_menu(update, context)
+            await self.show_welcome_edit_from_context(update, context)
             
         elif waiting_data["type"] == "goodbye":
             self.db.set_goodbye_message(text)
             await update.message.reply_text("✅ Прощальное сообщение обновлено!")
             del self.waiting_for[user_id]
-            await self.show_main_menu(update, context)
+            await self.show_goodbye_edit_from_context(update, context)
             
         elif waiting_data["type"] == "broadcast_text":
             message_number = waiting_data["message_number"]
             self.db.update_broadcast_message(message_number, text=text)
             await update.message.reply_text(f"✅ Текст сообщения {message_number} обновлён!")
             del self.waiting_for[user_id]
-            await self.show_main_menu(update, context)
+            await self.show_message_edit_from_context(update, context, message_number)
             
         elif waiting_data["type"] == "broadcast_delay":
             try:
@@ -588,7 +814,7 @@ class AdminPanel:
                 self.db.update_broadcast_message(message_number, delay_hours=delay_hours)
                 await update.message.reply_text(f"✅ Задержка для сообщения {message_number} установлена на {delay_hours} часов!")
                 del self.waiting_for[user_id]
-                await self.show_main_menu(update, context)
+                await self.show_message_edit_from_context(update, context, message_number)
             except ValueError:
                 await update.message.reply_text("❌ Пожалуйста, введите корректное число часов (больше 0)")
         
@@ -602,7 +828,7 @@ class AdminPanel:
                 self.db.set_broadcast_status(False, resume_time.isoformat())
                 await update.message.reply_text(f"✅ Рассылка отключена на {hours} часов. Автовозобновление: {resume_time.strftime('%d.%m.%Y %H:%M')}")
                 del self.waiting_for[user_id]
-                await self.show_main_menu(update, context)
+                await self.show_broadcast_status_from_context(update, context)
             except ValueError:
                 await update.message.reply_text("❌ Пожалуйста, введите корректное число часов (больше 0)")
         
@@ -624,7 +850,7 @@ class AdminPanel:
                     
                     await update.message.reply_text(f"✅ Сообщение {new_number} добавлено!")
                     del self.waiting_for[user_id]
-                    await self.show_main_menu(update, context)
+                    await self.show_broadcast_menu_from_context(update, context)
                 except ValueError:
                     await update.message.reply_text("❌ Пожалуйста, введите корректное число часов (больше 0)")
         
@@ -651,14 +877,23 @@ class AdminPanel:
                 self.db.add_message_button(message_number, button_text, text, position)
                 await update.message.reply_text("✅ Кнопка добавлена!")
                 del self.waiting_for[user_id]
-                await self.show_main_menu(update, context)
+                await self.show_message_buttons_from_context(update, context, message_number)
         
         elif waiting_data["type"] == "edit_button_text":
             button_id = waiting_data["button_id"]
+            # Получаем message_number для возврата
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT message_number FROM message_buttons WHERE id = ?', (button_id,))
+            result = cursor.fetchone()
+            conn.close()
+            
             self.db.update_message_button(button_id, button_text=text)
             await update.message.reply_text("✅ Текст кнопки обновлен!")
             del self.waiting_for[user_id]
-            await self.show_main_menu(update, context)
+            
+            if result:
+                await self.show_button_edit_from_context(update, context, button_id)
         
         elif waiting_data["type"] == "edit_button_url":
             if not (text.startswith("http://") or text.startswith("https://")):
@@ -669,7 +904,7 @@ class AdminPanel:
             self.db.update_message_button(button_id, button_url=text)
             await update.message.reply_text("✅ URL кнопки обновлен!")
             del self.waiting_for[user_id]
-            await self.show_main_menu(update, context)
+            await self.show_button_edit_from_context(update, context, button_id)
         
         elif waiting_data["type"] in ["broadcast_photo", "welcome_photo", "goodbye_photo"]:
             # Если отправили текст вместо фото - проверяем, может это ссылка
@@ -678,55 +913,83 @@ class AdminPanel:
                     message_number = waiting_data["message_number"]
                     self.db.update_broadcast_message(message_number, photo_url=text)
                     await update.message.reply_text(f"✅ Ссылка на фото для сообщения {message_number} сохранена!")
+                    del self.waiting_for[user_id]
+                    await self.show_message_edit_from_context(update, context, message_number)
                 elif waiting_data["type"] == "welcome_photo":
                     welcome_text = self.db.get_welcome_message()['text']
                     self.db.set_welcome_message(welcome_text, photo_url=text)
                     await update.message.reply_text("✅ Ссылка на фото для приветственного сообщения сохранена!")
+                    del self.waiting_for[user_id]
+                    await self.show_welcome_edit_from_context(update, context)
                 elif waiting_data["type"] == "goodbye_photo":
                     goodbye_text = self.db.get_goodbye_message()['text']
                     self.db.set_goodbye_message(goodbye_text, photo_url=text)
                     await update.message.reply_text("✅ Ссылка на фото для прощального сообщения сохранена!")
-                
-                del self.waiting_for[user_id]
-                await self.show_main_menu(update, context)
+                    del self.waiting_for[user_id]
+                    await self.show_goodbye_edit_from_context(update, context)
             else:
                 await update.message.reply_text("❌ Пожалуйста, отправьте фото или ссылку на фото")
                 
         elif waiting_data["type"] == "send_all":
-            # Отправка сообщения всем пользователям
-            users = self.db.get_all_users()
-            sent_count = 0
-            failed_count = 0
+            # Обработка массовой рассылки с возможностью добавления кнопок
+            if waiting_data.get("step") == "text":
+                # Сохраняем текст и предлагаем добавить кнопки
+                self.waiting_for[user_id]["message_text"] = text
+                if update.message.photo:
+                    self.waiting_for[user_id]["photo_id"] = update.message.photo[-1].file_id
+                
+                keyboard = [
+                    [InlineKeyboardButton("➕ Добавить кнопку", callback_data="send_all_add_button")],
+                    [InlineKeyboardButton("📤 Отправить без кнопок", callback_data="send_all_no_buttons")],
+                    [InlineKeyboardButton("❌ Отмена", callback_data="admin_cancel")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    "✅ Сообщение получено!\n\n"
+                    "Хотите добавить кнопки к этому сообщению?",
+                    reply_markup=reply_markup
+                )
             
-            photo_file_id = None
-            if update.message.photo:
-                photo_file_id = update.message.photo[-1].file_id
+            elif waiting_data.get("step") == "button_text":
+                # Сохраняем текст кнопки и запрашиваем URL
+                self.waiting_for[user_id]["button_text"] = text
+                self.waiting_for[user_id]["step"] = "button_url"
+                await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
             
-            for user in users:
-                user_id_to_send = user[0]
-                try:
-                    if photo_file_id:
-                        await context.bot.send_photo(
-                            chat_id=user_id_to_send,
-                            photo=photo_file_id,
-                            caption=text,
-                            parse_mode='HTML'
-                        )
-                    else:
-                        await context.bot.send_message(
-                            chat_id=user_id_to_send,
-                            text=text,
-                            parse_mode='HTML'
-                        )
-                    sent_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    logger.error(f"Не удалось отправить сообщение пользователю {user_id_to_send}: {e}")
+            elif waiting_data.get("step") == "button_url":
+                # Проверяем URL и добавляем кнопку
+                if not (text.startswith("http://") or text.startswith("https://")):
+                    await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
+                    return
+                
+                # Добавляем кнопку во временное хранилище
+                if "buttons" not in self.waiting_for[user_id]:
+                    self.waiting_for[user_id]["buttons"] = []
+                
+                self.waiting_for[user_id]["buttons"].append({
+                    "text": self.waiting_for[user_id]["button_text"],
+                    "url": text
+                })
+                
+                buttons_count = len(self.waiting_for[user_id]["buttons"])
+                
+                keyboard = []
+                if buttons_count < 3:  # Максимум 3 кнопки
+                    keyboard.append([InlineKeyboardButton("➕ Добавить еще кнопку", callback_data="send_all_add_button")])
+                keyboard.append([InlineKeyboardButton("📤 Отправить сообщение", callback_data="send_all_with_buttons")])
+                keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="admin_cancel")])
+                
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    f"✅ Кнопка добавлена! Всего кнопок: {buttons_count}/3",
+                    reply_markup=reply_markup
+                )
             
-            await update.message.reply_text(
-                f"✅ Рассылка завершена!\n"
-                f"Успешно отправлено: {sent_count}\n"
-                f"Не удалось отправить: {failed_count}"
-            )
-            del self.waiting_for[user_id]
-            await self.show_main_menu(update, context)
+            # Если не многоступенчатый процесс, то старая логика
+            elif "step" not in waiting_data:
+                # Старая логика для обратной совместимости
+                await self.send_bulk_message(update, context, text, update.message.photo)
+                
+        # Остальная обработка остается без изменений
