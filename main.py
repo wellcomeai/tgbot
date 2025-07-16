@@ -184,41 +184,65 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     else:
         # Обработка согласия пользователя
         if query.data == "user_consent":
-            # Помечаем пользователя как начавшего разговор с ботом
-            db.mark_user_started_bot(user_id)
-            
-            # ✅ ТЕПЕРЬ ПЛАНИРУЕМ СООБЩЕНИЯ ПОСЛЕ ПОЛУЧЕНИЯ СОГЛАСИЯ
-            await scheduler.schedule_user_messages(context, user_id)
-            
-            # Отправляем заготовленное сообщение согласия
-            await query.answer("Согласие получено! ✅")
-            
-            # Отправляем новое сообщение вместо редактирования
-            await query.message.reply_text(
-                "🎉 <b>Отлично! Согласие получено!</b>\n\n"
-                "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
-                "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
-                "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
-                "Добро пожаловать в нашу команду! 🚀",
-                parse_mode='HTML'
-            )
-            
-            # Отправляем дополнительное сообщение благодарности
-            await asyncio.sleep(1)  # Небольшая задержка для плавности
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="🙏 <b>Спасибо, что подписались!</b>\n\n"
-                     "Мы очень рады видеть вас среди наших подписчиков.\n\n"
-                     "📋 Первое полезное сообщение придет уже через <b>3 минуты</b>!\n\n"
-                     "🎯 Следите за обновлениями - впереди много интересного!",
-                parse_mode='HTML'
-            )
+            try:
+                # Помечаем пользователя как начавшего разговор с ботом
+                db.mark_user_started_bot(user_id)
+                
+                # ✅ ТЕПЕРЬ ПЛАНИРУЕМ СООБЩЕНИЯ ПОСЛЕ ПОЛУЧЕНИЯ СОГЛАСИЯ
+                success = await scheduler.schedule_user_messages(context, user_id)
+                
+                if success:
+                    # Отправляем заготовленное сообщение согласия
+                    await query.answer("Согласие получено! ✅")
+                    
+                    # Редактируем исходное сообщение
+                    await query.edit_message_text(
+                        "🎉 <b>Отлично! Согласие получено!</b>\n\n"
+                        "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
+                        "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+                        "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
+                        "Добро пожаловать в нашу команду! 🚀",
+                        parse_mode='HTML'
+                    )
+                    
+                    # Отправляем дополнительное сообщение благодарности
+                    await asyncio.sleep(1)  # Небольшая задержка для плавности
+                    
+                    # Получаем информацию о первом сообщении
+                    first_message = db.get_broadcast_message(1)
+                    if first_message:
+                        delay_hours = first_message[1]  # delay_hours
+                        if delay_hours < 1:
+                            delay_text = f"<b>{int(delay_hours * 60)} минут</b>"
+                        else:
+                            delay_text = f"<b>{int(delay_hours)} час(ов)</b>"
+                    else:
+                        delay_text = "<b>скоро</b>"
+                    
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"🙏 <b>Спасибо, что подписались!</b>\n\n"
+                             f"Мы очень рады видеть вас среди наших подписчиков.\n\n"
+                             f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
+                             f"🎯 Следите за обновлениями - впереди много интересного!",
+                        parse_mode='HTML'
+                    )
+                else:
+                    await query.answer("Ошибка при планировании сообщений. Попробуйте позже.", show_alert=True)
+                    
+            except Exception as e:
+                logger.error(f"Ошибка при обработке согласия от пользователя {user_id}: {e}")
+                await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
         else:
             # Если обычный пользователь нажал другую кнопку
-            db.mark_user_started_bot(user_id)
-            # Планируем сообщения и для этого случая
-            await scheduler.schedule_user_messages(context, user_id)
-            await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
+            try:
+                db.mark_user_started_bot(user_id)
+                # Планируем сообщения и для этого случая
+                await scheduler.schedule_user_messages(context, user_id)
+                await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
+            except Exception as e:
+                logger.error(f"Ошибка при обработке callback от пользователя {user_id}: {e}")
+                await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
