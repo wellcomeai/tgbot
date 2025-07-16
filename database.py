@@ -1,6 +1,8 @@
 import sqlite3
 import json
 import os
+import csv
+import io
 from datetime import datetime, timedelta
 import logging
 
@@ -55,6 +57,37 @@ class Database:
         if 'photo_url' not in columns:
             cursor.execute('ALTER TABLE broadcast_messages ADD COLUMN photo_url TEXT DEFAULT NULL')
             logger.info("Добавлена колонка photo_url в broadcast_messages")
+        
+        # Таблица кнопок для сообщений
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS message_buttons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_number INTEGER,
+                button_text TEXT NOT NULL,
+                button_url TEXT NOT NULL,
+                position INTEGER DEFAULT 1,
+                FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
+            )
+        ''')
+        
+        # Таблица для управления статусом рассылки
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS broadcast_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        
+        # Инициализация настроек рассылки
+        cursor.execute('''
+            INSERT OR IGNORE INTO broadcast_settings (key, value) 
+            VALUES ('broadcast_enabled', '1')
+        ''')
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO broadcast_settings (key, value) 
+            VALUES ('auto_resume_time', '')
+        ''')
         
         # Таблица запланированных сообщений
         cursor.execute('''
@@ -189,6 +222,56 @@ class Database:
         conn.close()
         return users
     
+    def get_latest_users(self, limit=10):
+        """Получение последних зарегистрированных пользователей"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, username, first_name, joined_at, is_active 
+            FROM users 
+            WHERE is_active = 1 
+            ORDER BY joined_at DESC 
+            LIMIT ?
+        ''', (limit,))
+        users = cursor.fetchall()
+        
+        conn.close()
+        return users
+    
+    def export_users_to_csv(self):
+        """Экспорт всех пользователей в CSV формат"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, username, first_name, joined_at, is_active 
+            FROM users 
+            ORDER BY joined_at DESC
+        ''')
+        users = cursor.fetchall()
+        
+        # Создаем CSV в памяти
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Заголовки
+        writer.writerow(['ID', 'Username', 'Имя', 'Дата регистрации', 'Статус'])
+        
+        # Данные
+        for user in users:
+            user_id, username, first_name, joined_at, is_active = user
+            status = 'Активен' if is_active else 'Отписался'
+            writer.writerow([user_id, username or '', first_name or '', joined_at, status])
+        
+        conn.close()
+        
+        # Возвращаем CSV как строку
+        csv_content = output.getvalue()
+        output.close()
+        
+        return csv_content
+    
     def get_welcome_message(self):
         """Получение приветственного сообщения и фото"""
         conn = self._get_connection()
@@ -282,6 +365,55 @@ class Database:
         conn.close()
         return messages
     
+    def add_broadcast_message(self, text, delay_hours, photo_url=None):
+        """Добавление нового сообщения рассылки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Находим следующий доступный номер сообщения
+        cursor.execute('SELECT MAX(message_number) FROM broadcast_messages')
+        max_number = cursor.fetchone()[0]
+        next_number = (max_number or 0) + 1
+        
+        cursor.execute('''
+            INSERT INTO broadcast_messages (message_number, text, delay_hours, photo_url)
+            VALUES (?, ?, ?, ?)
+        ''', (next_number, text, delay_hours, photo_url))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Добавлено сообщение рассылки #{next_number}")
+        return next_number
+    
+    def delete_broadcast_message(self, message_number):
+        """Удаление сообщения рассылки и всех его запланированных отправок"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Удаляем запланированные отправки
+        cursor.execute('''
+            DELETE FROM scheduled_messages 
+            WHERE message_number = ? AND is_sent = 0
+        ''', (message_number,))
+        
+        # Удаляем кнопки сообщения
+        cursor.execute('''
+            DELETE FROM message_buttons 
+            WHERE message_number = ?
+        ''', (message_number,))
+        
+        # Удаляем само сообщение
+        cursor.execute('''
+            DELETE FROM broadcast_messages 
+            WHERE message_number = ?
+        ''', (message_number,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Удалено сообщение рассылки #{message_number}")
+    
     def update_broadcast_message(self, message_number, text=None, delay_hours=None, photo_url=None):
         """Обновление сообщения рассылки"""
         conn = self._get_connection()
@@ -304,6 +436,102 @@ class Database:
                 UPDATE broadcast_messages SET photo_url = ? 
                 WHERE message_number = ?
             ''', (photo_url if photo_url else None, message_number))
+        
+        conn.commit()
+        conn.close()
+    
+    def add_message_button(self, message_number, button_text, button_url, position=1):
+        """Добавление кнопки к сообщению"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO message_buttons (message_number, button_text, button_url, position)
+            VALUES (?, ?, ?, ?)
+        ''', (message_number, button_text, button_url, position))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Добавлена кнопка к сообщению #{message_number}")
+    
+    def update_message_button(self, button_id, button_text=None, button_url=None):
+        """Обновление кнопки сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        if button_text is not None:
+            cursor.execute('''
+                UPDATE message_buttons SET button_text = ? 
+                WHERE id = ?
+            ''', (button_text, button_id))
+        
+        if button_url is not None:
+            cursor.execute('''
+                UPDATE message_buttons SET button_url = ? 
+                WHERE id = ?
+            ''', (button_url, button_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def delete_message_button(self, button_id):
+        """Удаление кнопки сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM message_buttons WHERE id = ?', (button_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_message_buttons(self, message_number):
+        """Получение всех кнопок для конкретного сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, button_text, button_url, position 
+            FROM message_buttons 
+            WHERE message_number = ? 
+            ORDER BY position
+        ''', (message_number,))
+        
+        buttons = cursor.fetchall()
+        conn.close()
+        return buttons
+    
+    def get_broadcast_status(self):
+        """Получение текущего статуса рассылки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT value FROM broadcast_settings WHERE key = "broadcast_enabled"')
+        enabled = cursor.fetchone()
+        
+        cursor.execute('SELECT value FROM broadcast_settings WHERE key = "auto_resume_time"')
+        resume_time = cursor.fetchone()
+        
+        conn.close()
+        
+        return {
+            'enabled': enabled[0] == '1' if enabled else True,
+            'auto_resume_time': resume_time[0] if resume_time and resume_time[0] else None
+        }
+    
+    def set_broadcast_status(self, enabled, auto_resume_time=None):
+        """Установка статуса рассылки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE broadcast_settings SET value = ? WHERE key = "broadcast_enabled"
+        ''', ('1' if enabled else '0',))
+        
+        if auto_resume_time is not None:
+            cursor.execute('''
+                UPDATE broadcast_settings SET value = ? WHERE key = "auto_resume_time"
+            ''', (auto_resume_time,))
         
         conn.commit()
         conn.close()
