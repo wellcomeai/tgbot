@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from telegram.ext import ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Forbidden, BadRequest
 import logging
 import asyncio
@@ -11,7 +12,7 @@ class MessageScheduler:
         self.db = db
     
     async def schedule_user_messages(self, context: ContextTypes.DEFAULT_TYPE, user_id):
-        """Запланировать отправку всех 7 сообщений для пользователя"""
+        """Запланировать отправку всех сообщений для пользователя"""
         try:
             # Получаем все сообщения рассылки
             messages = self.db.get_all_broadcast_messages()
@@ -34,6 +35,24 @@ class MessageScheduler:
     async def send_scheduled_messages(self, context: ContextTypes.DEFAULT_TYPE):
         """Отправить все запланированные сообщения, время которых настало"""
         try:
+            # Проверяем статус рассылки
+            broadcast_status = self.db.get_broadcast_status()
+            
+            # Если рассылка отключена, проверяем время автовозобновления
+            if not broadcast_status['enabled']:
+                if broadcast_status['auto_resume_time']:
+                    resume_time = datetime.fromisoformat(broadcast_status['auto_resume_time'])
+                    if datetime.now() >= resume_time:
+                        # Автоматически включаем рассылку
+                        self.db.set_broadcast_status(True, None)
+                        logger.info("Рассылка автоматически возобновлена")
+                    else:
+                        # Рассылка еще отключена
+                        return
+                else:
+                    # Рассылка отключена без таймера
+                    return
+            
             # Получаем сообщения, готовые к отправке
             pending_messages = self.db.get_pending_messages()
             
@@ -45,6 +64,18 @@ class MessageScheduler:
                     # Небольшая задержка между отправками для избежания лимитов
                     await asyncio.sleep(0.1)
                     
+                    # Получаем кнопки для этого сообщения
+                    buttons = self.db.get_message_buttons(message_number)
+                    reply_markup = None
+                    
+                    if buttons:
+                        # Создаем клавиатуру с кнопками
+                        keyboard = []
+                        for button_id, button_text, button_url, position in buttons:
+                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                        
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                    
                     # Отправляем сообщение
                     if photo_url:
                         # Отправляем с фото
@@ -52,7 +83,8 @@ class MessageScheduler:
                             chat_id=user_id,
                             photo=photo_url,
                             caption=text,
-                            parse_mode='HTML'
+                            parse_mode='HTML',
+                            reply_markup=reply_markup
                         )
                     else:
                         # Отправляем только текст
@@ -60,7 +92,8 @@ class MessageScheduler:
                             chat_id=user_id,
                             text=text,
                             parse_mode='HTML',
-                            disable_web_page_preview=True
+                            disable_web_page_preview=True,
+                            reply_markup=reply_markup
                         )
                     
                     # Отмечаем как отправленное
