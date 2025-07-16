@@ -20,20 +20,35 @@ class MessageScheduler:
                 logger.warning(f"Попытка запланировать сообщения для пользователя {user_id}, который не дал согласие")
                 return False
             
+            # Проверяем, есть ли уже запланированные сообщения
+            existing_messages = self.db.get_user_scheduled_messages(user_id)
+            if existing_messages:
+                logger.info(f"Пользователь {user_id} уже имеет {len(existing_messages)} запланированных сообщений")
+                return True
+            
             # Получаем все сообщения рассылки
             messages = self.db.get_all_broadcast_messages()
-            current_time = datetime.now()
+            if not messages:
+                logger.warning("Нет сообщений рассылки в базе данных")
+                return False
             
+            current_time = datetime.now()
+            logger.info(f"Планирование сообщений для пользователя {user_id}, текущее время: {current_time}")
+            
+            scheduled_count = 0
             for message_number, text, delay_hours, photo_url in messages:
                 # Вычисляем время отправки
                 scheduled_time = current_time + timedelta(hours=delay_hours)
                 
                 # Добавляем в расписание
                 self.db.schedule_message(user_id, message_number, scheduled_time)
+                scheduled_count += 1
                 
-                logger.info(f"Запланировано сообщение {message_number} для пользователя {user_id} на {scheduled_time}")
+                logger.info(f"Запланировано сообщение {message_number} для пользователя {user_id} на {scheduled_time} (через {delay_hours} часов)")
             
+            logger.info(f"Всего запланировано {scheduled_count} сообщений для пользователя {user_id}")
             return True
+            
         except Exception as e:
             logger.error(f"Ошибка при планировании сообщений для пользователя {user_id}: {e}")
             return False
@@ -53,17 +68,23 @@ class MessageScheduler:
                         self.db.set_broadcast_status(True, None)
                         logger.info("Рассылка автоматически возобновлена")
                     else:
-                        # Рассылка еще отключена
+                        logger.debug(f"Рассылка отключена до {resume_time}")
                         return
                 else:
-                    # Рассылка отключена без таймера
+                    logger.debug("Рассылка отключена без таймера")
                     return
             
             # Получаем сообщения, готовые к отправке (только для пользователей с bot_started = 1)
             pending_messages = self.db.get_pending_messages_for_active_users()
             
-            if pending_messages:
-                logger.info(f"Найдено {len(pending_messages)} сообщений для отправки")
+            if not pending_messages:
+                logger.debug("Нет сообщений для отправки")
+                return
+            
+            logger.info(f"Найдено {len(pending_messages)} сообщений для отправки")
+            
+            sent_count = 0
+            failed_count = 0
             
             for message_id, user_id, message_number, text, photo_url in pending_messages:
                 try:
@@ -104,29 +125,36 @@ class MessageScheduler:
                     
                     # Отмечаем как отправленное
                     self.db.mark_message_sent(message_id)
+                    sent_count += 1
                     
-                    logger.info(f"Отправлено сообщение {message_number} пользователю {user_id}")
+                    logger.info(f"✅ Отправлено сообщение {message_number} пользователю {user_id}")
                     
                 except Forbidden as e:
                     # Пользователь заблокировал бота
-                    logger.warning(f"Пользователь {user_id} заблокировал бота: {e}")
+                    logger.warning(f"❌ Пользователь {user_id} заблокировал бота: {e}")
                     # Отмечаем сообщение как отправленное, чтобы не пытаться снова
                     self.db.mark_message_sent(message_id)
                     # Деактивируем пользователя
                     self.db.deactivate_user(user_id)
+                    failed_count += 1
                     
                 except BadRequest as e:
                     # Неверный chat_id или другая ошибка
-                    logger.error(f"BadRequest для пользователя {user_id}: {e}")
+                    logger.error(f"❌ BadRequest для пользователя {user_id}: {e}")
                     # Отмечаем как отправленное, чтобы не зацикливаться
                     self.db.mark_message_sent(message_id)
+                    failed_count += 1
                     
                 except Exception as e:
-                    logger.error(f"Не удалось отправить сообщение {message_id} пользователю {user_id}: {e}")
+                    logger.error(f"❌ Не удалось отправить сообщение {message_id} пользователю {user_id}: {e}")
+                    failed_count += 1
                     # Не отмечаем как отправленное - попробуем еще раз позже
+            
+            if sent_count > 0 or failed_count > 0:
+                logger.info(f"📊 Результаты рассылки: отправлено {sent_count}, ошибок {failed_count}")
                         
         except Exception as e:
-            logger.error(f"Критическая ошибка в send_scheduled_messages: {e}", exc_info=True)
+            logger.error(f"❌ Критическая ошибка в send_scheduled_messages: {e}", exc_info=True)
     
     def reschedule_all_messages(self):
         """Перепланировать все сообщения для всех пользователей (при изменении задержек)"""
