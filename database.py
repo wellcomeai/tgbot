@@ -24,150 +24,155 @@ class Database:
     
     def init_db(self):
         """Создание таблиц в базе данных"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Включаем WAL режим для лучшей производительности
-        cursor.execute('PRAGMA journal_mode=WAL')
-        
-        # Таблица пользователей
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active INTEGER DEFAULT 1,
-                bot_started INTEGER DEFAULT 0
-            )
-        ''')
-        
-        # Добавляем колонку bot_started если её нет (для существующих БД)
-        cursor.execute("PRAGMA table_info(users)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if 'bot_started' not in columns:
-            cursor.execute('ALTER TABLE users ADD COLUMN bot_started INTEGER DEFAULT 0')
-            logger.info("Добавлена колонка bot_started в users")
-        
-        # Обновляем таблицу сообщений рассылки - добавляем поле для фото
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS broadcast_messages (
-                message_number INTEGER PRIMARY KEY,
-                text TEXT NOT NULL,
-                delay_hours INTEGER DEFAULT 24,
-                photo_url TEXT DEFAULT NULL
-            )
-        ''')
-        
-        # Добавляем колонку photo_url если её нет (для существующих БД)
-        cursor.execute("PRAGMA table_info(broadcast_messages)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if 'photo_url' not in columns:
-            cursor.execute('ALTER TABLE broadcast_messages ADD COLUMN photo_url TEXT DEFAULT NULL')
-            logger.info("Добавлена колонка photo_url в broadcast_messages")
-        
-        # Остальные таблицы без изменений...
-        
-        # Таблица кнопок для сообщений
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS message_buttons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_number INTEGER,
-                button_text TEXT NOT NULL,
-                button_url TEXT NOT NULL,
-                position INTEGER DEFAULT 1,
-                FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
-            )
-        ''')
-        
-        # Таблица для управления статусом рассылки
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS broadcast_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        ''')
-        
-        # Инициализация настроек рассылки
-        cursor.execute('''
-            INSERT OR IGNORE INTO broadcast_settings (key, value) 
-            VALUES ('broadcast_enabled', '1')
-        ''')
-        
-        cursor.execute('''
-            INSERT OR IGNORE INTO broadcast_settings (key, value) 
-            VALUES ('auto_resume_time', '')
-        ''')
-        
-        # Таблица запланированных сообщений
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS scheduled_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                message_number INTEGER,
-                scheduled_time TIMESTAMP,
-                is_sent INTEGER DEFAULT 0,
-                FOREIGN KEY (user_id) REFERENCES users(user_id),
-                FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
-            )
-        ''')
-        
-        # Таблица настроек - добавляем поле для фото приветствия и сообщения при отписке
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        ''')
-        
-        # Инициализация приветственного сообщения
-        cursor.execute('''
-            INSERT OR IGNORE INTO settings (key, value) 
-            VALUES ('welcome_message', ?)
-        ''', ("🎉 <b>Добро пожаловать в наш закрытый канал!</b>\n\n"
-             "Рад видеть вас среди наших подписчиков! 🚀\n\n"
-             "В ближайшие дни вы будете получать полезные материалы от нашего бота.\n\n"
-             "Если у вас есть вопросы - не стесняйтесь задавать!",))
-        
-        # Добавляем сообщение при отписке
-        cursor.execute('''
-            INSERT OR IGNORE INTO settings (key, value) 
-            VALUES ('goodbye_message', ?)
-        ''', ("😢 Жаль, что вы покидаете нас!\n\n"
-             "Если передумаете - всегда будем рады видеть вас снова в нашем канале.\n\n"
-             "Удачи! 👋",))
-        
-        # Добавляем URL фото для приветствия (опционально)
-        cursor.execute('''
-            INSERT OR IGNORE INTO settings (key, value) 
-            VALUES ('welcome_photo_url', '')
-        ''')
-        
-        # Добавляем URL фото для прощания (опционально)
-        cursor.execute('''
-            INSERT OR IGNORE INTO settings (key, value) 
-            VALUES ('goodbye_photo_url', '')
-        ''')
-        
-        # Инициализация сообщений рассылки по умолчанию
-        default_messages = [
-            ("Сообщение 1: Основы работы с нашим сервисом 📚", 24, None),
-            ("Сообщение 2: Продвинутые функции и возможности 🔧", 48, None),
-            ("Сообщение 3: Лучшие практики и советы 💡", 72, None),
-            ("Сообщение 4: Частые вопросы и ответы ❓", 96, None),
-            ("Сообщение 5: Примеры успешных кейсов 📈", 120, None),
-            ("Сообщение 6: Дополнительные ресурсы 📖", 144, None),
-            ("Сообщение 7: Благодарность и обратная связь 🙏", 168, None)
-        ]
-        
-        for i, (text, delay, photo) in enumerate(default_messages, 1):
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            cursor = conn.cursor()
+            
+            # Включаем WAL режим для лучшей производительности
+            cursor.execute('PRAGMA journal_mode=WAL')
+            
+            # Таблица пользователей
             cursor.execute('''
-                INSERT OR IGNORE INTO broadcast_messages (message_number, text, delay_hours, photo_url)
-                VALUES (?, ?, ?, ?)
-            ''', (i, text, delay, photo))
-        
-        conn.commit()
-        conn.close()
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active INTEGER DEFAULT 1,
+                    bot_started INTEGER DEFAULT 0
+                )
+            ''')
+            
+            # Добавляем колонку bot_started если её нет (для существующих БД)
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'bot_started' not in columns:
+                cursor.execute('ALTER TABLE users ADD COLUMN bot_started INTEGER DEFAULT 0')
+                logger.info("Добавлена колонка bot_started в users")
+            
+            # Обновляем таблицу сообщений рассылки - добавляем поле для фото
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS broadcast_messages (
+                    message_number INTEGER PRIMARY KEY,
+                    text TEXT NOT NULL,
+                    delay_hours INTEGER DEFAULT 24,
+                    photo_url TEXT DEFAULT NULL
+                )
+            ''')
+            
+            # Добавляем колонку photo_url если её нет (для существующих БД)
+            cursor.execute("PRAGMA table_info(broadcast_messages)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'photo_url' not in columns:
+                cursor.execute('ALTER TABLE broadcast_messages ADD COLUMN photo_url TEXT DEFAULT NULL')
+                logger.info("Добавлена колонка photo_url в broadcast_messages")
+            
+            # Таблица кнопок для сообщений
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS message_buttons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_number INTEGER,
+                    button_text TEXT NOT NULL,
+                    button_url TEXT NOT NULL,
+                    position INTEGER DEFAULT 1,
+                    FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
+                )
+            ''')
+            
+            # Таблица для управления статусом рассылки
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS broadcast_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            ''')
+            
+            # Инициализация настроек рассылки
+            cursor.execute('''
+                INSERT OR IGNORE INTO broadcast_settings (key, value) 
+                VALUES ('broadcast_enabled', '1')
+            ''')
+            
+            cursor.execute('''
+                INSERT OR IGNORE INTO broadcast_settings (key, value) 
+                VALUES ('auto_resume_time', '')
+            ''')
+            
+            # Таблица запланированных сообщений
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS scheduled_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    message_number INTEGER,
+                    scheduled_time TIMESTAMP,
+                    is_sent INTEGER DEFAULT 0,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id),
+                    FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
+                )
+            ''')
+            
+            # Таблица настроек - добавляем поле для фото приветствия и сообщения при отписке
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            ''')
+            
+            # Инициализация приветственного сообщения
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value) 
+                VALUES ('welcome_message', ?)
+            ''', ("🎉 <b>Добро пожаловать в наш закрытый канал!</b>\n\n"
+                 "Рад видеть вас среди наших подписчиков! 🚀\n\n"
+                 "В ближайшие дни вы будете получать полезные материалы от нашего бота.\n\n"
+                 "Если у вас есть вопросы - не стесняйтесь задавать!",))
+            
+            # Добавляем сообщение при отписке
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value) 
+                VALUES ('goodbye_message', ?)
+            ''', ("😢 Жаль, что вы покидаете нас!\n\n"
+                 "Если передумаете - всегда будем рады видеть вас снова в нашем канале.\n\n"
+                 "Удачи! 👋",))
+            
+            # Добавляем URL фото для приветствия (опционально)
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value) 
+                VALUES ('welcome_photo_url', '')
+            ''')
+            
+            # Добавляем URL фото для прощания (опционально)
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value) 
+                VALUES ('goodbye_photo_url', '')
+            ''')
+            
+            # Инициализация сообщений рассылки по умолчанию
+            default_messages = [
+                ("Сообщение 1: Основы работы с нашим сервисом 📚", 24, None),
+                ("Сообщение 2: Продвинутые функции и возможности 🔧", 48, None),
+                ("Сообщение 3: Лучшие практики и советы 💡", 72, None),
+                ("Сообщение 4: Частые вопросы и ответы ❓", 96, None),
+                ("Сообщение 5: Примеры успешных кейсов 📈", 120, None),
+                ("Сообщение 6: Дополнительные ресурсы 📖", 144, None),
+                ("Сообщение 7: Благодарность и обратная связь 🙏", 168, None)
+            ]
+            
+            for i, (text, delay, photo) in enumerate(default_messages, 1):
+                cursor.execute('''
+                    INSERT OR IGNORE INTO broadcast_messages (message_number, text, delay_hours, photo_url)
+                    VALUES (?, ?, ?, ?)
+                ''', (i, text, delay, photo))
+            
+            conn.commit()
+            
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка при инициализации базы данных: {e}")
+            raise
+        finally:
+            if 'conn' in locals():
+                conn.close()
         
         # Таблица кнопок для сообщений
         cursor.execute('''
