@@ -193,27 +193,140 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            INSERT OR REPLACE INTO users (user_id, username, first_name, is_active)
-            VALUES (?, ?, ?, 1)
-        ''', (user_id, username, first_name))
-        
-        conn.commit()
-        conn.close()
-        logger.info(f"Добавлен пользователь {user_id} (@{username})")
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO users (user_id, username, first_name, is_active, bot_started)
+                VALUES (?, ?, ?, 1, 0)
+            ''', (user_id, username, first_name))
+            
+            conn.commit()
+            logger.info(f"✅ Добавлен пользователь {user_id} (@{username})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при добавлении пользователя {user_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return False
+        finally:
+            if conn:
+                conn.close()
     
     def mark_user_started_bot(self, user_id):
         """Пометить пользователя как начавшего разговор с ботом"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            UPDATE users SET bot_started = 1 WHERE user_id = ?
-        ''', (user_id,))
+        try:
+            # Сначала проверяем, существует ли пользователь
+            cursor.execute('SELECT user_id, bot_started, is_active FROM users WHERE user_id = ?', (user_id,))
+            user_data = cursor.fetchone()
+            
+            if not user_data:
+                logger.error(f"❌ Попытка пометить несуществующего пользователя {user_id} как начавшего разговор с ботом")
+                return False
+            
+            user_id_db, current_bot_started, is_active = user_data
+            
+            # Если пользователь неактивен, активируем его
+            if not is_active:
+                cursor.execute('UPDATE users SET is_active = 1 WHERE user_id = ?', (user_id,))
+                logger.info(f"✅ Пользователь {user_id} реактивирован")
+            
+            # Если уже помечен как начавший разговор, все равно считаем успехом
+            if current_bot_started:
+                logger.debug(f"ℹ️ Пользователь {user_id} уже помечен как начавший разговор с ботом")
+                return True
+            
+            # Обновляем статус bot_started
+            cursor.execute('''
+                UPDATE users SET bot_started = 1 WHERE user_id = ?
+            ''', (user_id,))
+            
+            # Проверяем, что обновление произошло
+            if cursor.rowcount == 0:
+                logger.error(f"❌ Не удалось обновить статус bot_started для пользователя {user_id}")
+                return False
+            
+            conn.commit()
+            logger.info(f"✅ Пользователь {user_id} помечен как начавший разговор с ботом")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обновлении статуса bot_started для пользователя {user_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return False
+        finally:
+            if conn:
+                conn.close()
+    
+    def get_user_with_debug(self, user_id):
+        """Получение информации о пользователе с отладочной информацией"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
         
-        conn.commit()
-        conn.close()
-        logger.info(f"Пользователь {user_id} начал разговор с ботом")
+        try:
+            cursor.execute('''
+                SELECT user_id, username, first_name, joined_at, is_active, bot_started 
+                FROM users WHERE user_id = ?
+            ''', (user_id,))
+            user = cursor.fetchone()
+            
+            if user:
+                logger.debug(f"🔍 Пользователь {user_id}: active={user[4]}, bot_started={user[5]}")
+            else:
+                logger.debug(f"🔍 Пользователь {user_id} не найден в базе")
+            
+            return user
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении пользователя {user_id}: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+    
+    def ensure_user_exists_and_active(self, user_id, username=None, first_name=None):
+        """Убедиться, что пользователь существует и активен"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Проверяем, существует ли пользователь
+            cursor.execute('SELECT user_id, is_active FROM users WHERE user_id = ?', (user_id,))
+            user_data = cursor.fetchone()
+            
+            if not user_data:
+                # Если пользователя нет, создаем его
+                cursor.execute('''
+                    INSERT INTO users (user_id, username, first_name, is_active, bot_started)
+                    VALUES (?, ?, ?, 1, 0)
+                ''', (user_id, username or '', first_name or ''))
+                logger.info(f"✅ Создан новый пользователь {user_id}")
+            else:
+                # Если пользователь есть, но неактивен - активируем
+                if not user_data[1]:
+                    cursor.execute('UPDATE users SET is_active = 1 WHERE user_id = ?', (user_id,))
+                    logger.info(f"✅ Пользователь {user_id} реактивирован")
+            
+            conn.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обеспечении существования пользователя {user_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return False
+        finally:
+            if conn:
+                conn.close()
     
     def get_users_with_bot_started(self):
         """Получить только пользователей, которые начали разговор с ботом"""
@@ -577,17 +690,76 @@ class Database:
         conn.close()
     
     def schedule_message(self, user_id, message_number, scheduled_time):
-        """Планирование отправки сообщения"""
+        """Планирование отправки сообщения с проверками"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            INSERT INTO scheduled_messages (user_id, message_number, scheduled_time)
-            VALUES (?, ?, ?)
-        ''', (user_id, message_number, scheduled_time))
-        
-        conn.commit()
-        conn.close()
+        try:
+            # Проверяем, существует ли пользователь и активен ли он
+            cursor.execute('''
+                SELECT user_id, is_active, bot_started 
+                FROM users 
+                WHERE user_id = ?
+            ''', (user_id,))
+            user_data = cursor.fetchone()
+            
+            if not user_data:
+                logger.error(f"❌ Попытка запланировать сообщение для несуществующего пользователя {user_id}")
+                return False
+            
+            user_id_db, is_active, bot_started = user_data
+            
+            if not is_active:
+                logger.error(f"❌ Попытка запланировать сообщение для неактивного пользователя {user_id}")
+                return False
+            
+            if not bot_started:
+                logger.error(f"❌ Попытка запланировать сообщение для пользователя {user_id}, который не дал согласие")
+                return False
+            
+            # Проверяем, существует ли сообщение рассылки
+            cursor.execute('''
+                SELECT message_number 
+                FROM broadcast_messages 
+                WHERE message_number = ?
+            ''', (message_number,))
+            message_data = cursor.fetchone()
+            
+            if not message_data:
+                logger.error(f"❌ Попытка запланировать несуществующее сообщение {message_number}")
+                return False
+            
+            # Проверяем, нет ли уже запланированного сообщения
+            cursor.execute('''
+                SELECT id FROM scheduled_messages 
+                WHERE user_id = ? AND message_number = ? AND is_sent = 0
+            ''', (user_id, message_number))
+            existing_message = cursor.fetchone()
+            
+            if existing_message:
+                logger.debug(f"ℹ️ Сообщение {message_number} уже запланировано для пользователя {user_id}")
+                return True
+            
+            # Планируем сообщение
+            cursor.execute('''
+                INSERT INTO scheduled_messages (user_id, message_number, scheduled_time)
+                VALUES (?, ?, ?)
+            ''', (user_id, message_number, scheduled_time))
+            
+            conn.commit()
+            logger.debug(f"✅ Запланировано сообщение {message_number} для пользователя {user_id} на {scheduled_time}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при планировании сообщения для пользователя {user_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return False
+        finally:
+            if conn:
+                conn.close()
     
     def get_pending_messages(self):
         """Получение сообщений, готовых к отправке"""
@@ -674,6 +846,27 @@ class Database:
         conn.close()
         return messages
     
+    def get_user_scheduled_messages_count(self, user_id):
+        """Получение количества запланированных сообщений для пользователя"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT COUNT(*) FROM scheduled_messages
+                WHERE user_id = ? AND is_sent = 0
+            ''', (user_id,))
+            count = cursor.fetchone()[0]
+            
+            return count
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении количества запланированных сообщений для пользователя {user_id}: {e}")
+            return 0
+        finally:
+            if conn:
+                conn.close()
+    
     def mark_message_sent(self, message_id):
         """Отметка сообщения как отправленного"""
         conn = self._get_connection()
@@ -700,6 +893,154 @@ class Database:
         conn.commit()
         conn.close()
         logger.info(f"Отменены запланированные сообщения для пользователя {user_id}")
+    
+    def debug_user_state(self, user_id):
+        """Отладка состояния пользователя"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            debug_info = {}
+            
+            # Информация о пользователе
+            cursor.execute('''
+                SELECT user_id, username, first_name, joined_at, is_active, bot_started 
+                FROM users WHERE user_id = ?
+            ''', (user_id,))
+            user_data = cursor.fetchone()
+            
+            if not user_data:
+                debug_info['error'] = f"Пользователь {user_id} не найден"
+                return debug_info
+            
+            debug_info['user'] = {
+                'user_id': user_data[0],
+                'username': user_data[1],
+                'first_name': user_data[2],
+                'joined_at': user_data[3],
+                'is_active': bool(user_data[4]),
+                'bot_started': bool(user_data[5])
+            }
+            
+            # Запланированные сообщения
+            cursor.execute('''
+                SELECT id, message_number, scheduled_time, is_sent
+                FROM scheduled_messages
+                WHERE user_id = ?
+                ORDER BY message_number
+            ''', (user_id,))
+            
+            scheduled_messages = cursor.fetchall()
+            debug_info['scheduled_messages'] = []
+            
+            for msg in scheduled_messages:
+                debug_info['scheduled_messages'].append({
+                    'id': msg[0],
+                    'message_number': msg[1],
+                    'scheduled_time': msg[2],
+                    'is_sent': bool(msg[3])
+                })
+            
+            # Проверяем, какие сообщения должны быть
+            cursor.execute('SELECT message_number FROM broadcast_messages ORDER BY message_number')
+            all_messages = [row[0] for row in cursor.fetchall()]
+            
+            scheduled_numbers = [msg['message_number'] for msg in debug_info['scheduled_messages']]
+            missing_messages = [num for num in all_messages if num not in scheduled_numbers]
+            
+            debug_info['missing_messages'] = missing_messages
+            debug_info['total_messages_expected'] = len(all_messages)
+            debug_info['total_messages_scheduled'] = len(scheduled_messages)
+            
+            return debug_info
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отладке состояния пользователя {user_id}: {e}")
+            return {'error': str(e)}
+        finally:
+            if conn:
+                conn.close()
+    
+    def get_database_health_check(self):
+        """Проверка состояния базы данных"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            health_info = {}
+            
+            # Общая статистика
+            cursor.execute('SELECT COUNT(*) FROM users')
+            health_info['total_users'] = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 1')
+            health_info['active_users'] = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(*) FROM users WHERE bot_started = 1')
+            health_info['bot_started_users'] = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(*) FROM scheduled_messages WHERE is_sent = 0')
+            health_info['pending_messages'] = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(*) FROM scheduled_messages WHERE is_sent = 1')
+            health_info['sent_messages'] = cursor.fetchone()[0]
+            
+            # Проверка на потерянные сообщения (запланированные для неактивных пользователей)
+            cursor.execute('''
+                SELECT COUNT(*) FROM scheduled_messages sm
+                JOIN users u ON sm.user_id = u.user_id
+                WHERE sm.is_sent = 0 AND (u.is_active = 0 OR u.bot_started = 0)
+            ''')
+            health_info['orphaned_messages'] = cursor.fetchone()[0]
+            
+            # Проверка на дубликаты
+            cursor.execute('''
+                SELECT COUNT(*) FROM (
+                    SELECT user_id, message_number, COUNT(*) as cnt
+                    FROM scheduled_messages
+                    WHERE is_sent = 0
+                    GROUP BY user_id, message_number
+                    HAVING cnt > 1
+                )
+            ''')
+            health_info['duplicate_messages'] = cursor.fetchone()[0]
+            
+            return health_info
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке состояния базы данных: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+    
+    def cleanup_old_scheduled_messages(self, days_old=7):
+        """Очистка старых отправленных сообщений"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cutoff_date = datetime.now() - timedelta(days=days_old)
+            
+            cursor.execute('''
+                DELETE FROM scheduled_messages 
+                WHERE is_sent = 1 AND scheduled_time < ?
+            ''', (cutoff_date,))
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                logger.info(f"🧹 Очищено {deleted_count} старых отправленных сообщений")
+            
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при очистке старых сообщений: {e}")
+            return 0
+        finally:
+            if conn:
+                conn.close()
     
     def get_user_statistics(self):
         """Получение статистики пользователей"""
