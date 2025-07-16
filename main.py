@@ -54,18 +54,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == ADMIN_CHAT_ID:
         await admin_panel.show_main_menu(update, context)
     else:
-        # Для обычных пользователей не показываем ничего
-        # Помечаем пользователя как начавшего разговор с ботом
-        db.mark_user_started_bot(user.id)
-        
-        # Отправляем заготовленное сообщение согласия
+        # Для обычных пользователей не показываем ничего или показываем общее сообщение
         await update.message.reply_text(
-            "🎉 <b>Отлично! Согласие получено!</b>\n\n"
-            "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
-            "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
-            "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
-            "Добро пожаловать в нашу команду! 🚀",
-            parse_mode='HTML'
+            "👋 Привет! Если вы хотите получать уведомления от бота, "
+            "пожалуйста, нажмите на кнопку в приветственном сообщении в канале."
         )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -84,12 +76,9 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Получаем приветственное сообщение
         welcome_data = db.get_welcome_message()
         
-        # Создаем кнопку для согласия на получение уведомлений
-        bot_info = await context.bot.get_me()
-        bot_username = bot_info.username
-        
+        # Создаем inline кнопку для согласия на получение уведомлений
         keyboard = [
-            [InlineKeyboardButton("✅ Согласиться на получение уведомлений", url=f"https://t.me/{bot_username}?start=welcome")]
+            [InlineKeyboardButton("✅ Согласиться на получение уведомлений", callback_data="user_consent")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -184,19 +173,25 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Передаём обработку админ-панели
         await admin_panel.handle_callback(update, context)
     else:
-        # Если обычный пользователь нажал кнопку, помечаем его как начавшего разговор
-        db.mark_user_started_bot(user_id)
-        
-        # Отправляем заготовленное сообщение согласия
-        await query.answer()
-        await query.message.reply_text(
-            "🎉 <b>Отлично! Согласие получено!</b>\n\n"
-            "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
-            "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
-            "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
-            "Добро пожаловать в нашу команду! 🚀",
-            parse_mode='HTML'
-        )
+        # Обработка согласия пользователя
+        if query.data == "user_consent":
+            # Помечаем пользователя как начавшего разговор с ботом
+            db.mark_user_started_bot(user_id)
+            
+            # Отправляем заготовленное сообщение согласия
+            await query.answer()
+            await query.edit_message_text(
+                text="🎉 <b>Отлично! Согласие получено!</b>\n\n"
+                     "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
+                     "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+                     "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
+                     "Добро пожаловать в нашу команду! 🚀",
+                parse_mode='HTML'
+            )
+        else:
+            # Если обычный пользователь нажал другую кнопку
+            db.mark_user_started_bot(user_id)
+            await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
