@@ -3,6 +3,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 import logging
 import io
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,41 @@ class AdminPanel:
         self.db = db
         self.admin_chat_id = admin_chat_id
         self.waiting_for = {}  # Словарь для отслеживания ожидаемого ввода
+    
+    def parse_delay_input(self, text):
+        """Парсинг ввода задержки в различных форматах"""
+        text = text.strip().lower()
+        
+        try:
+            # Проверяем формат с минутами
+            if 'м' in text or 'минут' in text:
+                # Извлекаем число
+                match = re.search(r'(\d+(?:\.\d+)?)', text)
+                if match:
+                    minutes = float(match.group(1))
+                    hours = minutes / 60
+                    return hours, f"{int(minutes)} минут"
+            
+            # Проверяем формат с часами
+            elif 'ч' in text or 'час' in text:
+                match = re.search(r'(\d+(?:\.\d+)?)', text)
+                if match:
+                    hours = float(match.group(1))
+                    return hours, f"{hours} часов"
+            
+            # Проверяем просто число (считаем как часы)
+            else:
+                hours = float(text)
+                if hours < 1:
+                    minutes = int(hours * 60)
+                    return hours, f"{minutes} минут"
+                else:
+                    return hours, f"{hours} часов"
+                    
+        except ValueError:
+            return None, None
+        
+        return None, None
     
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать главное меню админа"""
@@ -106,7 +142,13 @@ class AdminPanel:
             button_icon = f"🔘{len(buttons)}" if buttons else ""
             photo_icon = "🖼" if photo_url else ""
             
-            button_text = f"{photo_icon}{button_icon} Сообщение {msg_num} ({delay_hours}ч)"
+            # Форматируем отображение времени
+            if delay_hours < 1:
+                delay_str = f"{int(delay_hours * 60)}м"
+            else:
+                delay_str = f"{delay_hours}ч"
+            
+            button_text = f"{photo_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_msg_{msg_num}")])
         
         keyboard.append([InlineKeyboardButton("➕ Добавить сообщение", callback_data="add_message")])
@@ -116,7 +158,7 @@ class AdminPanel:
         text = (
             "✉️ <b>Управление рассылкой</b>\n\n"
             "Выберите сообщение для редактирования.\n"
-            "В скобках указана задержка в часах после регистрации.\n"
+            "В скобках указана задержка после регистрации.\n"
             "🖼 - сообщение содержит фото\n"
             "🔘N - количество кнопок в сообщении"
         )
@@ -162,10 +204,16 @@ class AdminPanel:
             for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
                 buttons_info += f"{i}. {button_text} → {button_url}\n"
         
+        # Форматируем отображение задержки
+        if delay_hours < 1:
+            delay_str = f"{int(delay_hours * 60)} минут"
+        else:
+            delay_str = f"{delay_hours} часов"
+        
         message_text = (
             f"📝 <b>Сообщение {message_number}</b>\n\n"
             f"<b>Текущий текст:</b>\n{text}\n\n"
-            f"<b>Задержка:</b> {delay_hours} часов после регистрации\n"
+            f"<b>Задержка:</b> {delay_str} после регистрации\n"
             f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
             f"{buttons_info}"
         )
@@ -312,7 +360,13 @@ class AdminPanel:
             text = f"✏️ Отправьте новый текст для сообщения {message_number}:"
         elif input_type == "broadcast_delay":
             self.waiting_for[user_id] = {"type": "broadcast_delay", "message_number": message_number}
-            text = f"⏰ Отправьте новую задержку в часах для сообщения {message_number} (только число):"
+            text = f"⏰ Отправьте новую задержку для сообщения {message_number}:\n\n" \
+                   f"📝 <b>Форматы ввода:</b>\n" \
+                   f"• <code>30м</code> или <code>30 минут</code> - для минут\n" \
+                   f"• <code>2ч</code> или <code>2 часа</code> - для часов\n" \
+                   f"• <code>1.5</code> - для 1.5 часов\n" \
+                   f"• <code>0.05</code> - для 3 минут\n\n" \
+                   f"💡 Примеры: <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>1.5</code>"
         elif input_type == "broadcast_photo":
             self.waiting_for[user_id] = {"type": "broadcast_photo", "message_number": message_number}
             text = f"🖼 Отправьте фото для сообщения {message_number} или ссылку на фото:"
@@ -805,22 +859,29 @@ class AdminPanel:
             await self.show_message_edit_from_context(update, context, message_number)
             
         elif waiting_data["type"] == "broadcast_delay":
-            try:
-                delay_hours = int(text)
-                if delay_hours < 1:
-                    raise ValueError("Задержка должна быть больше 0")
-                
-                message_number = waiting_data["message_number"]
+            message_number = waiting_data["message_number"]
+            
+            # Парсим новый формат ввода
+            delay_hours, delay_display = self.parse_delay_input(text)
+            
+            if delay_hours is not None and delay_hours > 0:
                 self.db.update_broadcast_message(message_number, delay_hours=delay_hours)
-                await update.message.reply_text(f"✅ Задержка для сообщения {message_number} установлена на {delay_hours} часов!")
+                await update.message.reply_text(f"✅ Задержка для сообщения {message_number} установлена на {delay_display}!")
                 del self.waiting_for[user_id]
                 await self.show_message_edit_from_context(update, context, message_number)
-            except ValueError:
-                await update.message.reply_text("❌ Пожалуйста, введите корректное число часов (больше 0)")
+            else:
+                await update.message.reply_text(
+                    "❌ Неверный формат! Примеры правильного ввода:\n\n"
+                    "• <code>3м</code> или <code>3 минуты</code>\n"
+                    "• <code>2ч</code> или <code>2 часа</code>\n"
+                    "• <code>1.5</code> (для 1.5 часов)\n"
+                    "• <code>0.05</code> (для 3 минут)",
+                    parse_mode='HTML'
+                )
         
         elif waiting_data["type"] == "broadcast_timer":
             try:
-                hours = int(text)
+                hours = float(text)
                 if hours < 1:
                     raise ValueError("Время должно быть больше 0")
                 
@@ -837,22 +898,36 @@ class AdminPanel:
                 # Сохраняем текст и запрашиваем задержку
                 self.waiting_for[user_id]["text"] = text
                 self.waiting_for[user_id]["step"] = "delay"
-                await update.message.reply_text("⏰ Теперь отправьте задержку в часах (только число):")
+                await update.message.reply_text(
+                    "⏰ Теперь отправьте задержку:\n\n"
+                    "📝 <b>Форматы ввода:</b>\n"
+                    "• <code>30м</code> или <code>30 минут</code> - для минут\n"
+                    "• <code>2ч</code> или <code>2 часа</code> - для часов\n"
+                    "• <code>1.5</code> - для 1.5 часов\n"
+                    "• <code>0.05</code> - для 3 минут",
+                    parse_mode='HTML'
+                )
             elif waiting_data["step"] == "delay":
-                try:
-                    delay_hours = int(text)
-                    if delay_hours < 1:
-                        raise ValueError("Задержка должна быть больше 0")
-                    
+                # Парсим задержку
+                delay_hours, delay_display = self.parse_delay_input(text)
+                
+                if delay_hours is not None and delay_hours > 0:
                     # Добавляем сообщение
                     message_text = waiting_data["text"]
                     new_number = self.db.add_broadcast_message(message_text, delay_hours)
                     
-                    await update.message.reply_text(f"✅ Сообщение {new_number} добавлено!")
+                    await update.message.reply_text(f"✅ Сообщение {new_number} добавлено с задержкой {delay_display}!")
                     del self.waiting_for[user_id]
                     await self.show_broadcast_menu_from_context(update, context)
-                except ValueError:
-                    await update.message.reply_text("❌ Пожалуйста, введите корректное число часов (больше 0)")
+                else:
+                    await update.message.reply_text(
+                        "❌ Неверный формат! Примеры правильного ввода:\n\n"
+                        "• <code>3м</code> или <code>3 минуты</code>\n"
+                        "• <code>2ч</code> или <code>2 часа</code>\n"
+                        "• <code>1.5</code> (для 1.5 часов)\n"
+                        "• <code>0.05</code> (для 3 минут)",
+                        parse_mode='HTML'
+                    )
         
         elif waiting_data["type"] == "add_button":
             if waiting_data["step"] == "text":
@@ -991,5 +1066,3 @@ class AdminPanel:
             elif "step" not in waiting_data:
                 # Старая логика для обратной совместимости
                 await self.send_bulk_message(update, context, text, update.message.photo)
-                
-        # Остальная обработка остается без изменений
