@@ -8,7 +8,6 @@ from telegram.error import Forbidden, BadRequest
 from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
-import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -48,99 +47,365 @@ db = Database('/data/bot_database.db')
 admin_panel = AdminPanel(db, ADMIN_CHAT_ID)
 scheduler = MessageScheduler(db)
 
-async def emulate_start_command(user_id: int, context: ContextTypes.DEFAULT_TYPE, telegram_user) -> bool:
-    """
-    Эмуляция команды /start - только помечает пользователя как начавшего диалог и планирует сообщения
-    НЕ отправляет дополнительные сообщения (это делается в самом сообщении согласия)
-    """
-    try:
-        logger.info(f"🚀 Эмуляция команды /start для пользователя {user_id}")
-        
-        # Получаем отладочную информацию о пользователе
-        user_info = db.get_user_with_debug(user_id)
-        if not user_info:
-            logger.error(f"❌ Пользователь {user_id} не найден для эмуляции /start")
-            return False
-        
-        # Шаг 1: Помечаем пользователя как начавшего разговор с ботом
-        logger.debug(f"📝 Помечаем пользователя {user_id} как начавшего разговор с ботом")
-        mark_success = db.mark_user_started_bot(user_id)
-        
-        if not mark_success:
-            logger.error(f"❌ Не удалось пометить пользователя {user_id} как начавшего разговор")
-            return False
-        
-        # Небольшая задержка для обеспечения консистентности БД
-        await asyncio.sleep(0.1)
-        
-        # Шаг 2: Проверяем, что изменения применились
-        updated_user_info = db.get_user_with_debug(user_id)
-        if not updated_user_info or not updated_user_info[5]:  # bot_started = False
-            logger.error(f"❌ Пользователь {user_id} не помечен как начавший разговор после обновления")
-            return False
-        
-        # Шаг 3: Планируем сообщения
-        logger.debug(f"📅 Планируем сообщения для пользователя {user_id}")
-        schedule_success = await scheduler.schedule_user_messages(context, user_id)
-        
-        if not schedule_success:
-            logger.error(f"❌ Не удалось запланировать сообщения для пользователя {user_id}")
-            return False
-        
-        logger.info(f"✅ Успешная эмуляция команды /start для пользователя {user_id}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка при эмуляции команды /start для пользователя {user_id}: {e}")
-        return False
+# Константы для callback данных
+CALLBACK_USER_CONSENT = "user_consent"
+CALLBACK_START_NOTIFICATIONS = "start_notifications"
+CALLBACK_BOT_INFO = "bot_info"
+CALLBACK_WHAT_WILL_RECEIVE = "what_will_receive"
+CALLBACK_SETTINGS = "settings"
+CALLBACK_DECLINE = "decline"
 
-async def subscribe_user_to_notifications(user_id: int, context: ContextTypes.DEFAULT_TYPE, 
-                                        source: str = "unknown", telegram_user=None) -> bool:
-    """
-    Унифицированная функция для подписки пользователя на уведомления
+class CallbackHandler:
+    """Класс для обработки callback запросов от пользователей"""
     
-    Args:
-        user_id: ID пользователя
-        context: Контекст телеграм бота
-        source: Источник подписки ('start', 'message', 'callback', 'join_request')
-        telegram_user: Объект пользователя из Telegram (для получения username и first_name)
+    def __init__(self, db, scheduler):
+        self.db = db
+        self.scheduler = scheduler
     
-    Returns:
-        bool: True если подписка успешна, False иначе
-    """
-    try:
-        logger.info(f"🔄 Подписка пользователя {user_id} на уведомления (источник: {source})")
-        
-        # Убеждаемся, что пользователь существует и активен
-        username = telegram_user.username if telegram_user else None
-        first_name = telegram_user.first_name if telegram_user else None
-        
-        user_exists = db.ensure_user_exists_and_active(user_id, username, first_name)
-        if not user_exists:
-            logger.error(f"❌ Не удалось обеспечить существование пользователя {user_id}")
-            return False
-        
-        # Проверяем, есть ли уже запланированные сообщения ДО изменения статуса
-        existing_messages = db.get_user_scheduled_messages(user_id)
-        if existing_messages:
-            logger.info(f"ℹ️ Пользователь {user_id} уже имеет {len(existing_messages)} запланированных сообщений")
-            # Все равно помечаем как начавшего разговор (может быть полезно для статистики)
-            db.mark_user_started_bot(user_id)
-            return True
-        
-        # Используем эмуляцию команды /start для единообразия
-        success = await emulate_start_command(user_id, context, telegram_user)
-        
-        if success:
-            logger.info(f"✅ Пользователь {user_id} успешно подписан на уведомления (источник: {source})")
-            return True
+    def create_consent_keyboard(self, variant="simple"):
+        """Создание клавиатуры с кнопкой согласия"""
+        if variant == "simple":
+            keyboard = [
+                [InlineKeyboardButton(
+                    "✅ Согласиться на получение уведомлений", 
+                    callback_data=CALLBACK_USER_CONSENT
+                )]
+            ]
+        elif variant == "choice":
+            keyboard = [
+                [InlineKeyboardButton(
+                    "🚀 Начать получать материалы", 
+                    callback_data=CALLBACK_START_NOTIFICATIONS
+                )],
+                [InlineKeyboardButton(
+                    "ℹ️ Подробнее о боте", 
+                    callback_data=CALLBACK_BOT_INFO
+                )]
+            ]
+        elif variant == "extended":
+            keyboard = [
+                [InlineKeyboardButton(
+                    "✅ Согласиться на уведомления", 
+                    callback_data=CALLBACK_USER_CONSENT
+                )],
+                [InlineKeyboardButton(
+                    "📋 Что я буду получать?", 
+                    callback_data=CALLBACK_WHAT_WILL_RECEIVE
+                )],
+                [InlineKeyboardButton(
+                    "❌ Пока не нужно", 
+                    callback_data=CALLBACK_DECLINE
+                )]
+            ]
         else:
-            logger.error(f"❌ Не удалось подписать пользователя {user_id} на уведомления (источник: {source})")
-            return False
+            # По умолчанию простая кнопка
+            keyboard = [
+                [InlineKeyboardButton(
+                    "✅ Согласиться на получение уведомлений", 
+                    callback_data=CALLBACK_USER_CONSENT
+                )]
+            ]
+        
+        return InlineKeyboardMarkup(keyboard)
+    
+    async def handle_user_consent(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка согласия пользователя на получение уведомлений"""
+        query = update.callback_query
+        user_id = query.from_user.id
+        
+        try:
+            logger.info(f"🔘 Пользователь {user_id} дал согласие на получение уведомлений")
             
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка при подписке пользователя {user_id}: {e} (источник: {source})")
-        return False
+            # Убеждаемся, что пользователь существует и активен
+            user_exists = db.ensure_user_exists_and_active(
+                user_id, 
+                query.from_user.username, 
+                query.from_user.first_name
+            )
+            
+            if not user_exists:
+                logger.error(f"❌ Не удалось обеспечить существование пользователя {user_id}")
+                await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
+                return False
+            
+            # Проверяем, есть ли уже запланированные сообщения
+            existing_messages = db.get_user_scheduled_messages(user_id)
+            if existing_messages:
+                logger.info(f"ℹ️ Пользователь {user_id} уже имеет {len(existing_messages)} запланированных сообщений")
+                await query.answer("Вы уже подписаны на уведомления! ✅")
+                await self.update_message_already_subscribed(query)
+                return True
+            
+            # Выполняем логику подписки (эквивалент /start)
+            success = await self.execute_start_logic(user_id, context, query.from_user)
+            
+            if success:
+                await query.answer("Согласие получено! Добро пожаловать! ✅")
+                await self.update_message_success(query, user_id)
+                logger.info(f"✅ Пользователь {user_id} успешно подписан на уведомления")
+                return True
+            else:
+                await query.answer("Произошла ошибка при подписке. Попробуйте позже.", show_alert=True)
+                logger.error(f"❌ Не удалось подписать пользователя {user_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка при обработке согласия от пользователя {user_id}: {e}")
+            await query.answer("Произошла техническая ошибка. Попробуйте позже.", show_alert=True)
+            return False
+    
+    async def execute_start_logic(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, telegram_user) -> bool:
+        """
+        Выполнение логики команды /start при нажатии на инлайн кнопку
+        """
+        try:
+            logger.info(f"🚀 Выполняем логику /start для пользователя {user_id} через callback")
+            
+            # Шаг 1: Помечаем пользователя как начавшего разговор с ботом
+            mark_success = db.mark_user_started_bot(user_id)
+            if not mark_success:
+                logger.error(f"❌ Не удалось пометить пользователя {user_id} как начавшего разговор")
+                return False
+            
+            # Небольшая задержка для обеспечения консистентности БД
+            await asyncio.sleep(0.1)
+            
+            # Шаг 2: Планируем сообщения рассылки
+            schedule_success = await scheduler.schedule_user_messages(context, user_id)
+            if not schedule_success:
+                logger.error(f"❌ Не удалось запланировать сообщения для пользователя {user_id}")
+                return False
+            
+            logger.info(f"✅ Логика /start успешно выполнена для пользователя {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка при выполнении логики /start для пользователя {user_id}: {e}")
+            return False
+    
+    async def update_message_success(self, query, user_id):
+        """Обновление сообщения при успешной подписке"""
+        try:
+            # Получаем информацию о первом сообщении
+            first_message = db.get_broadcast_message(1)
+            if first_message:
+                delay_hours = first_message[1]
+                if delay_hours < 1:
+                    delay_text = f"<b>{int(delay_hours * 60)} минут</b>"
+                else:
+                    delay_text = f"<b>{int(delay_hours)} час(ов)</b>"
+            else:
+                delay_text = "<b>скоро</b>"
+            
+            success_message = (
+                "🎉 <b>Отлично! Согласие получено!</b>\n\n"
+                "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
+                "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+                f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "🚀 <b>Добро пожаловать!</b>\n\n"
+                "Теперь вы полноценный участник нашего сообщества!\n\n"
+                "📚 <b>Вы получите доступ к:</b>\n"
+                "• Эксклюзивным материалам\n"
+                "• Полезным советам и инструкциям\n"
+                "• Актуальным новостям\n"
+                "• Поддержке сообщества\n\n"
+                "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                "Мы очень рады видеть вас среди наших подписчиков.\n\n"
+                "💡 Если у вас есть вопросы - не стесняйтесь писать в любое время!\n\n"
+                "🎯 Следите за обновлениями - впереди много интересного!\n\n"
+                "✨ <i>Это действие эквивалентно команде /start</i>\n\n"
+                "Добро пожаловать в нашу команду! 🚀"
+            )
+            
+            # Обновляем сообщение
+            if query.message.photo:
+                await query.edit_message_caption(
+                    caption=success_message,
+                    parse_mode='HTML'
+                )
+            else:
+                await query.edit_message_text(
+                    text=success_message,
+                    parse_mode='HTML'
+                )
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обновлении сообщения для пользователя {user_id}: {e}")
+    
+    async def update_message_already_subscribed(self, query):
+        """Обновление сообщения если пользователь уже подписан"""
+        try:
+            already_subscribed_message = (
+                "✅ <b>Вы уже подписаны на уведомления!</b>\n\n"
+                "📬 Вы будете получать все важные сообщения от нашего бота.\n\n"
+                "🔔 Если вы не получаете сообщения, проверьте:\n"
+                "• Не заблокировали ли вы бота\n"
+                "• Настройки уведомлений в Telegram\n\n"
+                "💡 Если проблемы продолжаются, обратитесь к администратору канала.\n\n"
+                "🙏 Спасибо, что остаетесь с нами!"
+            )
+            
+            if query.message.photo:
+                await query.edit_message_caption(
+                    caption=already_subscribed_message,
+                    parse_mode='HTML'
+                )
+            else:
+                await query.edit_message_text(
+                    text=already_subscribed_message,
+                    parse_mode='HTML'
+                )
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обновлении сообщения для уже подписанного пользователя: {e}")
+    
+    async def handle_bot_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка запроса информации о боте"""
+        query = update.callback_query
+        
+        info_message = (
+            "🤖 <b>Информация о боте</b>\n\n"
+            "📋 <b>Что делает бот:</b>\n"
+            "• Отправляет полезные материалы\n"
+            "• Предоставляет эксклюзивный контент\n"
+            "• Уведомляет о новостях канала\n"
+            "• Помогает в обучении\n\n"
+            "⏰ <b>Как часто приходят сообщения:</b>\n"
+            "• Первое сообщение через 3 минуты\n"
+            "• Затем с интервалом 4-24 часа\n"
+            "• Всего 7 полезных сообщений\n\n"
+            "🛡️ <b>Конфиденциальность:</b>\n"
+            "• Мы не передаем ваши данные третьим лицам\n"
+            "• Вы можете отписаться в любое время\n\n"
+            "❓ Готовы начать получать полезные материалы?"
+        )
+        
+        # Создаем клавиатуру для продолжения
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, начать!", callback_data=CALLBACK_USER_CONSENT)],
+            [InlineKeyboardButton("❌ Пока не готов", callback_data=CALLBACK_DECLINE)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.answer()
+        
+        try:
+            if query.message.photo:
+                await query.edit_message_caption(
+                    caption=info_message,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+            else:
+                await query.edit_message_text(
+                    text=info_message,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе информации о боте: {e}")
+    
+    async def handle_what_will_receive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка запроса о том, что будет получать пользователь"""
+        query = update.callback_query
+        
+        # Получаем все сообщения рассылки для показа
+        messages = db.get_all_broadcast_messages()
+        
+        content_message = (
+            "📋 <b>Что вы будете получать:</b>\n\n"
+            "🎯 <b>Серия из 7 полезных сообщений:</b>\n\n"
+        )
+        
+        for i, (message_number, text, delay_hours, photo_url) in enumerate(messages, 1):
+            if delay_hours < 1:
+                delay_text = f"{int(delay_hours * 60)} минут"
+            else:
+                delay_text = f"{int(delay_hours)} час(ов)"
+            
+            # Показываем краткое описание каждого сообщения
+            short_text = text[:50] + "..." if len(text) > 50 else text
+            content_message += f"{i}. {short_text} (через {delay_text})\n"
+        
+        content_message += (
+            "\n💡 <b>Каждое сообщение содержит:</b>\n"
+            "• Практические советы\n"
+            "• Полезные инструкции\n"
+            "• Эксклюзивные материалы\n"
+            "• Ответы на частые вопросы\n\n"
+            "🔔 <b>Все сообщения бесплатны!</b>\n\n"
+            "Готовы начать обучение?"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, хочу получать!", callback_data=CALLBACK_USER_CONSENT)],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_BOT_INFO)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.answer()
+        
+        try:
+            if query.message.photo:
+                await query.edit_message_caption(
+                    caption=content_message,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+            else:
+                await query.edit_message_text(
+                    text=content_message,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе содержания: {e}")
+    
+    async def handle_decline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка отказа от подписки"""
+        query = update.callback_query
+        
+        decline_message = (
+            "😔 <b>Жаль, что вы пока не готовы!</b>\n\n"
+            "🔄 <b>Вы всегда можете:</b>\n"
+            "• Вернуться к этому сообщению позже\n"
+            "• Написать боту /start для подписки\n"
+            "• Обратиться к администратору канала\n\n"
+            "💡 <b>Возможно, вас заинтересует:</b>\n"
+            "• Наш канал с полезными материалами\n"
+            "• Сообщество единомышленников\n"
+            "• Бесплатные обучающие материалы\n\n"
+            "🤝 Мы будем рады видеть вас в нашем сообществе в любое время!\n\n"
+            "❓ Может, все-таки попробуете?"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🤔 Хорошо, попробую", callback_data=CALLBACK_USER_CONSENT)],
+            [InlineKeyboardButton("ℹ️ Подробнее о боте", callback_data=CALLBACK_BOT_INFO)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.answer("Понятно, возможно в другой раз!")
+        
+        try:
+            if query.message.photo:
+                await query.edit_message_caption(
+                    caption=decline_message,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+            else:
+                await query.edit_message_text(
+                    text=decline_message,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе сообщения об отказе: {e}")
+
+# Создаем глобальный экземпляр callback handler
+callback_handler = CallbackHandler(db, scheduler)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
@@ -150,8 +415,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == ADMIN_CHAT_ID:
         await admin_panel.show_main_menu(update, context)
     else:
-        # Для обычных пользователей подписываем на уведомления
-        success = await subscribe_user_to_notifications(user.id, context, "start", user)
+        # Для обычных пользователей выполняем логику подписки
+        success = await callback_handler.execute_start_logic(user.id, context, user)
         
         if success:
             # Отправляем приветственное сообщение /start
@@ -177,7 +442,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик заявок на вступление в канал"""
+    """Обработчик заявок на вступление в канал с улучшенной инлайн кнопкой"""
     chat_join_request = update.chat_join_request
     user = chat_join_request.from_user
     
@@ -192,18 +457,18 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Получаем приветственное сообщение
         welcome_data = db.get_welcome_message()
         
-        # Создаем inline кнопку для согласия на получение уведомлений
-        keyboard = [
-            [InlineKeyboardButton("✅ Согласиться на получение уведомлений", callback_data="user_consent")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        # Создаем клавиатуру (можно выбрать вариант: simple, choice, extended)
+        reply_markup = callback_handler.create_consent_keyboard("simple")
         
-        # Отправляем приветственное сообщение в личку
+        # Отправляем приветственное сообщение с инлайн кнопкой
         try:
-            welcome_text = welcome_data['text'] + "\n\n💡 <b>Важно:</b> Для получения уведомлений и полезных материалов от бота, пожалуйста, нажмите кнопку ниже и дайте согласие:"
+            welcome_text = (
+                f"{welcome_data['text']}\n\n"
+                "💡 <b>Важно:</b> Для получения уведомлений и полезных материалов от бота, "
+                "пожалуйста, нажмите кнопку ниже и дайте согласие:"
+            )
             
             if welcome_data['photo']:
-                # Отправляем с фото
                 await context.bot.send_photo(
                     chat_id=user.id,
                     photo=welcome_data['photo'],
@@ -212,7 +477,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                     reply_markup=reply_markup
                 )
             else:
-                # Отправляем только текст
                 await context.bot.send_message(
                     chat_id=user.id,
                     text=welcome_text,
@@ -220,11 +484,10 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                     reply_markup=reply_markup
                 )
             
-            logger.info(f"✅ Приветственное сообщение отправлено пользователю {user.id}")
+            logger.info(f"✅ Приветственное сообщение с инлайн кнопкой отправлено пользователю {user.id}")
             
         except Forbidden as e:
             logger.warning(f"⚠️ Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
-            logger.info(f"💡 Пользователь {user.id} должен будет написать боту /start для получения сообщений")
             
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке приветственного сообщения пользователю {user.id}: {e}")
@@ -235,7 +498,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик изменений статуса участника канала"""
     if update.my_chat_member:
-        return  # Игнорируем изменения статуса самого бота
+        return
     
     if not update.chat_member:
         return
@@ -282,157 +545,73 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info(f"✅ Прощальное сообщение отправлено пользователю {user.id}")
             
         except Forbidden as e:
-            logger.warning(f"⚠️ Не удалось отправить прощальное сообщение пользователю {user.id}: пользователь заблокировал бота")
+            logger.warning(f"⚠️ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
             
         except Exception as e:
             logger.error(f"❌ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на инлайн-кнопки"""
+    """Обработчик нажатий на инлайн-кнопки с улучшенной логикой"""
     query = update.callback_query
     user_id = query.from_user.id
     
     # Проверяем, является ли пользователь админом
     if user_id == ADMIN_CHAT_ID:
         await query.answer()
-        # Передаём обработку админ-панели
         await admin_panel.handle_callback(update, context)
+        return
+    
+    # Обрабатываем различные callback данные
+    if query.data == CALLBACK_USER_CONSENT:
+        await callback_handler.handle_user_consent(update, context)
+        
+    elif query.data == CALLBACK_START_NOTIFICATIONS:
+        await callback_handler.handle_user_consent(update, context)
+        
+    elif query.data == CALLBACK_BOT_INFO:
+        await callback_handler.handle_bot_info(update, context)
+        
+    elif query.data == CALLBACK_WHAT_WILL_RECEIVE:
+        await callback_handler.handle_what_will_receive(update, context)
+        
+    elif query.data == CALLBACK_DECLINE:
+        await callback_handler.handle_decline(update, context)
+        
     else:
-        # Обработка согласия пользователя
-        if query.data == "user_consent":
-            try:
-                logger.info(f"🔘 Пользователь {user_id} нажал кнопку согласия")
-                
-                # Убеждаемся, что пользователь существует и активен
-                user_exists = db.ensure_user_exists_and_active(
-                    user_id, 
-                    query.from_user.username, 
-                    query.from_user.first_name
-                )
-                
-                if not user_exists:
-                    logger.error(f"❌ Не удалось обеспечить существование пользователя {user_id}")
-                    await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
-                    return
-                
-                # Проверяем существующие сообщения ДО подписки
-                existing_messages = db.get_user_scheduled_messages(user_id)
-                if existing_messages:
-                    logger.info(f"ℹ️ Пользователь {user_id} уже имеет {len(existing_messages)} запланированных сообщений")
-                    await query.answer("Вы уже подписаны на уведомления! ✅")
-                    return
-                
-                # 🚀 ПОЛНАЯ ЭМУЛЯЦИЯ КОМАНДЫ /START
-                success = await emulate_start_command(user_id, context, query.from_user)
-                
-                if success:
-                    await query.answer("Согласие получено! ✅")
-                    
-                    # Получаем информацию о первом сообщении
-                    first_message = db.get_broadcast_message(1)
-                    if first_message:
-                        delay_hours = first_message[1]  # delay_hours
-                        if delay_hours < 1:
-                            delay_text = f"<b>{int(delay_hours * 60)} минут</b>"
-                        else:
-                            delay_text = f"<b>{int(delay_hours)} час(ов)</b>"
-                    else:
-                        delay_text = "<b>скоро</b>"
-                    
-                    # 🎉 ПОЛНОЕ СООБЩЕНИЕ С ЭМУЛЯЦИЕЙ /START
-                    full_start_message = (
-                        "🎉 <b>Отлично! Согласие получено!</b>\n\n"
-                        "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
-                        "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
-                        f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        "🚀 <b>Добро пожаловать!</b>\n\n"
-                        "Теперь вы полноценный участник нашего сообщества!\n\n"
-                        "📚 <b>Вы получите доступ к:</b>\n"
-                        "• Эксклюзивным материалам\n"
-                        "• Полезным советам и инструкциям\n"
-                        "• Актуальным новостям\n"
-                        "• Поддержке сообщества\n\n"
-                        "🙏 <b>Спасибо, что подписались!</b>\n\n"
-                        "Мы очень рады видеть вас среди наших подписчиков.\n\n"
-                        "💡 Если у вас есть вопросы - не стесняйтесь писать в любое время!\n\n"
-                        "🎯 Следите за обновлениями - впереди много интересного!\n\n"
-                        "✨ <i>Этот процесс эквивалентен команде /start</i>\n\n"
-                        "Добро пожаловать в нашу команду! 🚀"
-                    )
-                    
-                    # Обновляем сообщение
-                    try:
-                        if query.message.photo:
-                            await query.edit_message_caption(
-                                caption=full_start_message,
-                                parse_mode='HTML'
-                            )
-                        else:
-                            await query.edit_message_text(
-                                text=full_start_message,
-                                parse_mode='HTML'
-                            )
-                        
-                        logger.info(f"✅ Полная эмуляция /start завершена для пользователя {user_id}")
-                        
-                    except Exception as edit_error:
-                        logger.error(f"❌ Ошибка при обновлении сообщения для пользователя {user_id}: {edit_error}")
-                        
-                else:
-                    logger.error(f"❌ Не удалось выполнить эмуляцию команды /start для пользователя {user_id}")
-                    await query.answer("Ошибка при планировании сообщений. Попробуйте позже.", show_alert=True)
-                    
-            except Exception as e:
-                logger.error(f"❌ Критическая ошибка при обработке согласия от пользователя {user_id}: {e}")
+        # Обработка неизвестных callback данных
+        try:
+            logger.info(f"🔘 Пользователь {user_id} нажал неизвестную кнопку: {query.data}")
+            
+            # Убеждаемся, что пользователь существует
+            db.ensure_user_exists_and_active(
+                user_id, 
+                query.from_user.username, 
+                query.from_user.first_name
+            )
+            
+            # Попытка подписки на уведомления
+            success = await callback_handler.execute_start_logic(user_id, context, query.from_user)
+            
+            if success:
+                await query.answer("Спасибо! Теперь вы будете получать уведомления от бота. ✅")
+                await callback_handler.update_message_success(query, user_id)
+            else:
                 await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
-        else:
-            # Если обычный пользователь нажал другую кнопку
-            try:
-                logger.info(f"🔘 Пользователь {user_id} нажал кнопку: {query.data}")
                 
-                # Убеждаемся, что пользователь существует и активен
-                user_exists = db.ensure_user_exists_and_active(
-                    user_id, 
-                    query.from_user.username, 
-                    query.from_user.first_name
-                )
-                
-                if not user_exists:
-                    await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
-                    return
-                
-                # Проверяем существующие сообщения ДО подписки
-                existing_messages = db.get_user_scheduled_messages(user_id)
-                if existing_messages:
-                    logger.info(f"ℹ️ Пользователь {user_id} уже имеет {len(existing_messages)} запланированных сообщений")
-                    await query.answer("Вы уже подписаны на уведомления! ✅")
-                    return
-                
-                # Эмулируем команду /start
-                success = await emulate_start_command(user_id, context, query.from_user)
-                
-                if success:
-                    await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
-                    logger.info(f"✅ Пользователь {user_id} успешно подписался на уведомления")
-                else:
-                    await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
-                    logger.error(f"❌ Не удалось запланировать сообщения для пользователя {user_id}")
-                    
-            except Exception as e:
-                logger.error(f"❌ Ошибка при обработке callback от пользователя {user_id}: {e}")
-                await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке callback от пользователя {user_id}: {e}")
+            await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений"""
     user_id = update.effective_user.id
     
-    # Проверяем, является ли пользователь админом и ожидается ли от него ввод
+    # Проверяем, является ли пользователь админом
     if user_id == ADMIN_CHAT_ID:
         await admin_panel.handle_message(update, context)
     else:
-        # Если обычный пользователь написал боту, подписываем на уведомления
-        success = await subscribe_user_to_notifications(user_id, context, "message", update.effective_user)
+        # Если обычный пользователь написал боту
+        success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
             await update.message.reply_text(
@@ -461,7 +640,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application) -> None:
     """Инициализация после запуска"""
-    logger.info("Бот успешно запущен и готов к работе!")
+    logger.info("Бот с улучшенным callback подходом успешно запущен и готов к работе!")
 
 def main():
     """Главная функция запуска бота"""
@@ -488,7 +667,7 @@ def main():
         first=10  # первый запуск через 10 секунд
     )
     
-    logger.info("Запуск бота...")
+    logger.info("Запуск бота с улучшенным callback подходом...")
     
     # Запускаем бота
     application.run_polling(
