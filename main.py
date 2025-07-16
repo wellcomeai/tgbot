@@ -55,10 +55,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == ADMIN_CHAT_ID:
         await admin_panel.show_main_menu(update, context)
     else:
-        # Для обычных пользователей не показываем ничего или показываем общее сообщение
+        # Для обычных пользователей помечаем как начавших разговор с ботом
+        db.mark_user_started_bot(user.id)
+        
+        # Если у пользователя еще нет запланированных сообщений, планируем их
+        existing_messages = db.get_user_scheduled_messages(user.id)
+        if not existing_messages:
+            await scheduler.schedule_user_messages(context, user.id)
+        
         await update.message.reply_text(
-            "👋 Привет! Если вы хотите получать уведомления от бота, "
-            "пожалуйста, нажмите на кнопку в приветственном сообщении в канале."
+            "👋 Привет! Теперь вы будете получать уведомления от бота.\n\n"
+            "Если вы хотите получать материалы от нашего канала, "
+            "пожалуйста, подайте заявку на вступление в наш канал."
         )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -224,7 +232,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.mark_user_started_bot(user_id)
         
         # Если у пользователя еще нет запланированных сообщений, планируем их
-        # (на случай, если он написал боту напрямую, минуя кнопку согласия)
         existing_messages = db.get_user_scheduled_messages(user_id)
         if not existing_messages:
             await scheduler.schedule_user_messages(context, user_id)
