@@ -94,7 +94,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                     parse_mode='HTML'
                 )
             
-            # Планируем отправку 7 сообщений рассылки
+            # Планируем отправку сообщений рассылки (теперь динамическое количество)
             await scheduler.schedule_user_messages(context, user.id)
             
         except Exception as e:
