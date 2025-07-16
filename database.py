@@ -37,9 +37,17 @@ class Database:
                 username TEXT,
                 first_name TEXT,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                bot_started INTEGER DEFAULT 0
             )
         ''')
+        
+        # Добавляем колонку bot_started если её нет (для существующих БД)
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'bot_started' not in columns:
+            cursor.execute('ALTER TABLE users ADD COLUMN bot_started INTEGER DEFAULT 0')
+            logger.info("Добавлена колонка bot_started в users")
         
         # Обновляем таблицу сообщений рассылки - добавляем поле для фото
         cursor.execute('''
@@ -57,6 +65,109 @@ class Database:
         if 'photo_url' not in columns:
             cursor.execute('ALTER TABLE broadcast_messages ADD COLUMN photo_url TEXT DEFAULT NULL')
             logger.info("Добавлена колонка photo_url в broadcast_messages")
+        
+        # Остальные таблицы без изменений...
+        
+        # Таблица кнопок для сообщений
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS message_buttons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_number INTEGER,
+                button_text TEXT NOT NULL,
+                button_url TEXT NOT NULL,
+                position INTEGER DEFAULT 1,
+                FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
+            )
+        ''')
+        
+        # Таблица для управления статусом рассылки
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS broadcast_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        
+        # Инициализация настроек рассылки
+        cursor.execute('''
+            INSERT OR IGNORE INTO broadcast_settings (key, value) 
+            VALUES ('broadcast_enabled', '1')
+        ''')
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO broadcast_settings (key, value) 
+            VALUES ('auto_resume_time', '')
+        ''')
+        
+        # Таблица запланированных сообщений
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scheduled_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                message_number INTEGER,
+                scheduled_time TIMESTAMP,
+                is_sent INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
+            )
+        ''')
+        
+        # Таблица настроек - добавляем поле для фото приветствия и сообщения при отписке
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        
+        # Инициализация приветственного сообщения
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value) 
+            VALUES ('welcome_message', ?)
+        ''', ("🎉 <b>Добро пожаловать в наш закрытый канал!</b>\n\n"
+             "Рад видеть вас среди наших подписчиков! 🚀\n\n"
+             "В ближайшие дни вы будете получать полезные материалы от нашего бота.\n\n"
+             "Если у вас есть вопросы - не стесняйтесь задавать!",))
+        
+        # Добавляем сообщение при отписке
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value) 
+            VALUES ('goodbye_message', ?)
+        ''', ("😢 Жаль, что вы покидаете нас!\n\n"
+             "Если передумаете - всегда будем рады видеть вас снова в нашем канале.\n\n"
+             "Удачи! 👋",))
+        
+        # Добавляем URL фото для приветствия (опционально)
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value) 
+            VALUES ('welcome_photo_url', '')
+        ''')
+        
+        # Добавляем URL фото для прощания (опционально)
+        cursor.execute('''
+            INSERT OR IGNORE INTO settings (key, value) 
+            VALUES ('goodbye_photo_url', '')
+        ''')
+        
+        # Инициализация сообщений рассылки по умолчанию
+        default_messages = [
+            ("Сообщение 1: Основы работы с нашим сервисом 📚", 24, None),
+            ("Сообщение 2: Продвинутые функции и возможности 🔧", 48, None),
+            ("Сообщение 3: Лучшие практики и советы 💡", 72, None),
+            ("Сообщение 4: Частые вопросы и ответы ❓", 96, None),
+            ("Сообщение 5: Примеры успешных кейсов 📈", 120, None),
+            ("Сообщение 6: Дополнительные ресурсы 📖", 144, None),
+            ("Сообщение 7: Благодарность и обратная связь 🙏", 168, None)
+        ]
+        
+        for i, (text, delay, photo) in enumerate(default_messages, 1):
+            cursor.execute('''
+                INSERT OR IGNORE INTO broadcast_messages (message_number, text, delay_hours, photo_url)
+                VALUES (?, ?, ?, ?)
+            ''', (i, text, delay, photo))
+        
+        conn.commit()
+        conn.close()
         
         # Таблица кнопок для сообщений
         cursor.execute('''
@@ -187,6 +298,30 @@ class Database:
         conn.close()
         logger.info(f"Добавлен пользователь {user_id} (@{username})")
     
+    def mark_user_started_bot(self, user_id):
+        """Пометить пользователя как начавшего разговор с ботом"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE users SET bot_started = 1 WHERE user_id = ?
+        ''', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Пользователь {user_id} начал разговор с ботом")
+    
+    def get_users_with_bot_started(self):
+        """Получить только пользователей, которые начали разговор с ботом"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT user_id, username, first_name, joined_at, is_active, bot_started FROM users WHERE is_active = 1 AND bot_started = 1')
+        users = cursor.fetchall()
+        
+        conn.close()
+        return users
+    
     def deactivate_user(self, user_id):
         """Деактивация пользователя при отписке"""
         conn = self._get_connection()
@@ -205,7 +340,7 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT user_id, username, first_name, joined_at, is_active, bot_started FROM users WHERE user_id = ?', (user_id,))
         user = cursor.fetchone()
         
         conn.close()
@@ -216,7 +351,7 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('SELECT * FROM users WHERE is_active = 1')
+        cursor.execute('SELECT user_id, username, first_name, joined_at, is_active, bot_started FROM users WHERE is_active = 1')
         users = cursor.fetchall()
         
         conn.close()
@@ -228,7 +363,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT user_id, username, first_name, joined_at, is_active 
+            SELECT user_id, username, first_name, joined_at, is_active, bot_started 
             FROM users 
             WHERE is_active = 1 
             ORDER BY joined_at DESC 
@@ -245,7 +380,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT user_id, username, first_name, joined_at, is_active 
+            SELECT user_id, username, first_name, joined_at, is_active, bot_started 
             FROM users 
             ORDER BY joined_at DESC
         ''')
@@ -256,13 +391,14 @@ class Database:
         writer = csv.writer(output)
         
         # Заголовки
-        writer.writerow(['ID', 'Username', 'Имя', 'Дата регистрации', 'Статус'])
+        writer.writerow(['ID', 'Username', 'Имя', 'Дата регистрации', 'Статус', 'Разговор с ботом'])
         
         # Данные
         for user in users:
-            user_id, username, first_name, joined_at, is_active = user
+            user_id, username, first_name, joined_at, is_active, bot_started = user
             status = 'Активен' if is_active else 'Отписался'
-            writer.writerow([user_id, username or '', first_name or '', joined_at, status])
+            bot_status = 'Да' if bot_started else 'Нет'
+            writer.writerow([user_id, username or '', first_name or '', joined_at, status, bot_status])
         
         conn.close()
         
@@ -602,6 +738,10 @@ class Database:
         cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 1')
         total_users = cursor.fetchone()[0]
         
+        # Пользователи, которые начали разговор с ботом
+        cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 1 AND bot_started = 1')
+        bot_started_users = cursor.fetchone()[0]
+        
         # Пользователи за последние 24 часа
         yesterday = datetime.now() - timedelta(days=1)
         cursor.execute('''
@@ -621,6 +761,7 @@ class Database:
         conn.close()
         return {
             'total_users': total_users,
+            'bot_started_users': bot_started_users,
             'new_users_24h': new_users_24h,
             'sent_messages': sent_messages,
             'unsubscribed': unsubscribed
