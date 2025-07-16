@@ -148,7 +148,7 @@ class Database:
                 VALUES ('goodbye_photo_url', '')
             ''')
             
-            # Инициализация сообщений рассылки по умолчанию (ВСЕ В ПРЕДЕЛАХ 24 ЧАСОВ!)
+            # Инициализация сообщений рассылки по умолчанию
             default_messages = [
                 ("Сообщение 1: Основы работы с нашим сервисом 📚", 0.05, None),    # 3 минуты
                 ("Сообщение 2: Продвинутые функции и возможности 🔧", 4, None),   # 4 часа
@@ -601,6 +601,42 @@ class Database:
             JOIN broadcast_messages bm ON sm.message_number = bm.message_number
             WHERE sm.is_sent = 0 AND sm.scheduled_time <= ?
         ''', (current_time,))
+        
+        messages = cursor.fetchall()
+        conn.close()
+        return messages
+    
+    def get_pending_messages_for_active_users(self):
+        """Получение сообщений для активных пользователей, которые дали согласие"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        current_time = datetime.now()
+        cursor.execute('''
+            SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url
+            FROM scheduled_messages sm
+            JOIN broadcast_messages bm ON sm.message_number = bm.message_number
+            JOIN users u ON sm.user_id = u.user_id
+            WHERE sm.is_sent = 0 
+            AND sm.scheduled_time <= ?
+            AND u.is_active = 1
+            AND u.bot_started = 1
+        ''', (current_time,))
+        
+        messages = cursor.fetchall()
+        conn.close()
+        return messages
+    
+    def get_user_scheduled_messages(self, user_id):
+        """Получение запланированных сообщений для пользователя"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, message_number, scheduled_time, is_sent
+            FROM scheduled_messages
+            WHERE user_id = ? AND is_sent = 0
+        ''', (user_id,))
         
         messages = cursor.fetchall()
         conn.close()
