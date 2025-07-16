@@ -363,7 +363,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатия на кнопку согласия"""
+    """Обработка нажатия на кнопку согласия - ПРОСТОЕ РЕШЕНИЕ"""
     user_id = update.effective_user.id
     
     try:
@@ -401,20 +401,30 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
         
-        # Отправляем команду /start через обычное сообщение
-        await update.message.reply_text(
-            "⏳ <b>Выполняется команда /start...</b>\n\n"
-            "Пожалуйста, подождите...",
-            parse_mode='HTML'
-        )
+        # ПРОСТОЕ РЕШЕНИЕ: Просто выполняем логику start()
+        success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
-        # Просто отправляем команду /start как текст
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="/start"
-        )
-        
-        logger.info(f"✅ Команда /start отправлена пользователю {user_id}")
+        if success:
+            await update.message.reply_text(
+                "👋 <b>Добро пожаловать!</b>\n\n"
+                "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                "📚 <b>Вы получите доступ к:</b>\n"
+                "• Эксклюзивным материалам\n"
+                "• Полезным советам и инструкциям\n"
+                "• Актуальным новостям\n"
+                "• Поддержке сообщества\n\n"
+                "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+                parse_mode='HTML',
+                reply_markup=ReplyKeyboardRemove()
+            )
+            logger.info(f"✅ Пользователь {user_id} успешно подписан")
+        else:
+            await update.message.reply_text(
+                "❌ Произошла ошибка при подписке на уведомления. "
+                "Попробуйте еще раз или обратитесь к администратору.",
+                reply_markup=ReplyKeyboardRemove()
+            )
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке кнопки согласия от пользователя {user_id}: {e}")
