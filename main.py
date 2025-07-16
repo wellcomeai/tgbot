@@ -50,15 +50,8 @@ scheduler = MessageScheduler(db)
 
 async def emulate_start_command(user_id: int, context: ContextTypes.DEFAULT_TYPE, telegram_user) -> bool:
     """
-    Эмуляция команды /start - помечает пользователя как начавшего диалог и планирует сообщения
-    
-    Args:
-        user_id: ID пользователя
-        context: Контекст телеграм бота
-        telegram_user: Объект пользователя из Telegram
-    
-    Returns:
-        bool: True если эмуляция успешна, False иначе
+    Эмуляция команды /start - только помечает пользователя как начавшего диалог и планирует сообщения
+    НЕ отправляет дополнительные сообщения (это делается в самом сообщении согласия)
     """
     try:
         logger.info(f"🚀 Эмуляция команды /start для пользователя {user_id}")
@@ -149,47 +142,6 @@ async def subscribe_user_to_notifications(user_id: int, context: ContextTypes.DE
         logger.error(f"❌ Критическая ошибка при подписке пользователя {user_id}: {e} (источник: {source})")
         return False
 
-async def send_additional_messages(context: ContextTypes.DEFAULT_TYPE, user_id: int, delay_text: str):
-    """Отправка дополнительных сообщений после согласия (эмуляция /start)"""
-    try:
-        logger.info(f"📤 Отправка дополнительных сообщений пользователю {user_id} (эмуляция /start)")
-        
-        # Сообщение 1: Благодарность
-        await asyncio.sleep(1)
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=f"🙏 <b>Спасибо, что подписались!</b>\n\n"
-                 f"Мы очень рады видеть вас среди наших подписчиков.\n\n"
-                 f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
-                 f"🎯 Следите за обновлениями - впереди много интересного!",
-            parse_mode='HTML'
-        )
-        
-        # Сообщение 2: Приветствие (эмуляция /start)
-        await asyncio.sleep(2)
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="🚀 <b>Добро пожаловать!</b>\n\n"
-                 "Теперь вы полноценный участник нашего сообщества!\n\n"
-                 "📚 Вы получите доступ к:\n"
-                 "• Эксклюзивным материалам\n"
-                 "• Полезным советам и инструкциям\n"
-                 "• Актуальным новостям\n"
-                 "• Поддержке сообщества\n\n"
-                 "💬 Если у вас есть вопросы - не стесняйтесь писать!\n\n"
-                 "🎉 <i>Это сообщение имитирует команду /start</i>",
-            parse_mode='HTML'
-        )
-        
-        logger.info(f"✅ Дополнительные сообщения отправлены пользователю {user_id} (эмуляция /start завершена)")
-        
-    except Forbidden as send_error:
-        logger.warning(f"⚠️ Не удалось отправить дополнительные сообщения пользователю {user_id}: {send_error}")
-        logger.info(f"💡 Пользователь {user_id} получил основное сообщение. Для получения дополнительных материалов нужно написать боту /start")
-        
-    except Exception as send_error:
-        logger.error(f"❌ Неожиданная ошибка при отправке дополнительных сообщений пользователю {user_id}: {send_error}")
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     user = update.effective_user
@@ -202,10 +154,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = await subscribe_user_to_notifications(user.id, context, "start", user)
         
         if success:
+            # Отправляем приветственное сообщение /start
             await update.message.reply_text(
-                "👋 Привет! Теперь вы будете получать уведомления от бота.\n\n"
+                "👋 <b>Привет!</b> Теперь вы будете получать уведомления от бота.\n\n"
+                "🚀 <b>Добро пожаловать!</b>\n\n"
+                "Теперь вы полноценный участник нашего сообщества!\n\n"
+                "📚 <b>Вы получите доступ к:</b>\n"
+                "• Эксклюзивным материалам\n"
+                "• Полезным советам и инструкциям\n"
+                "• Актуальным новостям\n"
+                "• Поддержке сообщества\n\n"
+                "🙏 <b>Спасибо, что подписались!</b>\n\n"
                 "Если вы хотите получать материалы от нашего канала, "
-                "пожалуйста, подайте заявку на вступление в наш канал."
+                "пожалуйста, подайте заявку на вступление в наш канал.\n\n"
+                "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+                parse_mode='HTML'
             )
         else:
             await update.message.reply_text(
@@ -340,7 +303,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             try:
                 logger.info(f"🔘 Пользователь {user_id} нажал кнопку согласия")
                 
-                # 🔧 ИСПРАВЛЕНИЕ: Сначала убеждаемся, что пользователь существует и активен
+                # Убеждаемся, что пользователь существует и активен
                 user_exists = db.ensure_user_exists_and_active(
                     user_id, 
                     query.from_user.username, 
@@ -359,7 +322,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     await query.answer("Вы уже подписаны на уведомления! ✅")
                     return
                 
-                # 🚀 ЭМУЛЯЦИЯ КОМАНДЫ /START
+                # 🚀 ПОЛНАЯ ЭМУЛЯЦИЯ КОМАНДЫ /START
                 success = await emulate_start_command(user_id, context, query.from_user)
                 
                 if success:
@@ -376,31 +339,42 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     else:
                         delay_text = "<b>скоро</b>"
                     
-                    consent_text = ("🎉 <b>Отлично! Согласие получено!</b>\n\n"
-                                   "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
-                                   "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
-                                   f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
-                                   "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
-                                   "🎯 Следите за обновлениями - впереди много интересного!\n\n"
-                                   "Добро пожаловать в нашу команду! 🚀")
+                    # 🎉 ПОЛНОЕ СООБЩЕНИЕ С ЭМУЛЯЦИЕЙ /START
+                    full_start_message = (
+                        "🎉 <b>Отлично! Согласие получено!</b>\n\n"
+                        "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
+                        "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+                        f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        "🚀 <b>Добро пожаловать!</b>\n\n"
+                        "Теперь вы полноценный участник нашего сообщества!\n\n"
+                        "📚 <b>Вы получите доступ к:</b>\n"
+                        "• Эксклюзивным материалам\n"
+                        "• Полезным советам и инструкциям\n"
+                        "• Актуальным новостям\n"
+                        "• Поддержке сообщества\n\n"
+                        "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                        "Мы очень рады видеть вас среди наших подписчиков.\n\n"
+                        "💡 Если у вас есть вопросы - не стесняйтесь писать в любое время!\n\n"
+                        "🎯 Следите за обновлениями - впереди много интересного!\n\n"
+                        "✨ <i>Этот процесс эквивалентен команде /start</i>\n\n"
+                        "Добро пожаловать в нашу команду! 🚀"
+                    )
                     
                     # Обновляем сообщение
                     try:
                         if query.message.photo:
                             await query.edit_message_caption(
-                                caption=consent_text,
+                                caption=full_start_message,
                                 parse_mode='HTML'
                             )
                         else:
                             await query.edit_message_text(
-                                text=consent_text,
+                                text=full_start_message,
                                 parse_mode='HTML'
                             )
                         
-                        logger.info(f"✅ Основное сообщение согласия обновлено для пользователя {user_id}")
-                        
-                        # Отправляем дополнительные сообщения (эмуляция /start)
-                        await send_additional_messages(context, user_id, delay_text)
+                        logger.info(f"✅ Полная эмуляция /start завершена для пользователя {user_id}")
                         
                     except Exception as edit_error:
                         logger.error(f"❌ Ошибка при обновлении сообщения для пользователя {user_id}: {edit_error}")
@@ -462,9 +436,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if success:
             await update.message.reply_text(
-                "👋 Спасибо за сообщение!\n\n"
+                "👋 <b>Спасибо за сообщение!</b>\n\n"
                 "Теперь вы будете получать все важные уведомления от нашего бота.\n\n"
-                "Если у вас есть вопросы - обращайтесь к администратору канала."
+                "🚀 <b>Добро пожаловать!</b>\n\n"
+                "Теперь вы полноценный участник нашего сообщества!\n\n"
+                "📚 <b>Вы получите доступ к:</b>\n"
+                "• Эксклюзивным материалам\n"
+                "• Полезным советам и инструкциям\n"
+                "• Актуальным новостям\n"
+                "• Поддержке сообщества\n\n"
+                "Если у вас есть вопросы - обращайтесь к администратору канала.\n\n"
+                "💬 Не стесняйтесь писать!",
+                parse_mode='HTML'
             )
         else:
             await update.message.reply_text(
