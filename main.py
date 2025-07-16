@@ -4,6 +4,7 @@ import sys
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler, MessageHandler, filters, ChatMemberHandler
+from telegram.error import Forbidden, BadRequest
 from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
@@ -61,7 +62,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Если у пользователя еще нет запланированных сообщений, планируем их
         existing_messages = db.get_user_scheduled_messages(user.id)
         if not existing_messages:
-            await scheduler.schedule_user_messages(context, user.id)
+            success = await scheduler.schedule_user_messages(context, user.id)
+            if success:
+                logger.info(f"✅ Сообщения запланированы для пользователя {user.id} через /start")
+            else:
+                logger.warning(f"⚠️ Не удалось запланировать сообщения для пользователя {user.id}")
         
         await update.message.reply_text(
             "👋 Привет! Теперь вы будете получать уведомления от бота.\n\n"
@@ -113,14 +118,17 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                     reply_markup=reply_markup
                 )
             
-            # ❌ УБИРАЕМ ОТСЮДА планирование сообщений!
-            # Теперь сообщения будут планироваться только после нажатия кнопки согласия
+            logger.info(f"✅ Приветственное сообщение отправлено пользователю {user.id}")
+            
+        except Forbidden as e:
+            logger.warning(f"⚠️ Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
+            logger.info(f"💡 Пользователь {user.id} должен будет написать боту /start для получения сообщений")
             
         except Exception as e:
-            logger.error(f"Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
+            logger.error(f"❌ Ошибка при отправке приветственного сообщения пользователю {user.id}: {e}")
             
     except Exception as e:
-        logger.error(f"Ошибка при обработке заявки от {user.id}: {e}")
+        logger.error(f"❌ Ошибка при обработке заявки от {user.id}: {e}")
 
 async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик изменений статуса участника канала"""
@@ -168,8 +176,14 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
                     text=goodbye_data['text'],
                     parse_mode='HTML'
                 )
+            
+            logger.info(f"✅ Прощальное сообщение отправлено пользователю {user.id}")
+            
+        except Forbidden as e:
+            logger.warning(f"⚠️ Не удалось отправить прощальное сообщение пользователю {user.id}: пользователь заблокировал бота")
+            
         except Exception as e:
-            logger.error(f"Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
+            logger.error(f"❌ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на инлайн-кнопки"""
@@ -213,7 +227,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             caption="🎉 <b>Отлично! Согласие получено!</b>\n\n"
                                    "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
                                    "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+                                   f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
                                    "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
+                                   "🎯 Следите за обновлениями - впереди много интересного!\n\n"
                                    "Добро пожаловать в нашу команду! 🚀",
                             parse_mode='HTML'
                         )
@@ -223,50 +239,76 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             text="🎉 <b>Отлично! Согласие получено!</b>\n\n"
                                 "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
                                 "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
+                                f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
                                 "💡 Если у вас возникнут вопросы - не стесняйтесь писать в любое время!\n\n"
+                                "🎯 Следите за обновлениями - впереди много интересного!\n\n"
                                 "Добро пожаловать в нашу команду! 🚀",
                             parse_mode='HTML'
                         )
                     
-                    # Отправляем дополнительное сообщение благодарности
-                    await asyncio.sleep(1)
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=f"🙏 <b>Спасибо, что подписались!</b>\n\n"
-                             f"Мы очень рады видеть вас среди наших подписчиков.\n\n"
-                             f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
-                             f"🎯 Следите за обновлениями - впереди много интересного!",
-                        parse_mode='HTML'
-                    )
+                    logger.info(f"✅ Основное сообщение согласия обновлено для пользователя {user_id}")
                     
-                    # Эмулируем команду /start - отправляем второе сообщение
-                    await asyncio.sleep(2)
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text="🚀 <b>Добро пожаловать!</b>\n\n"
-                             "Теперь вы полноценный участник нашего сообщества!\n\n"
-                             "📚 Вы получите доступ к:\n"
-                             "• Эксклюзивным материалам\n"
-                             "• Полезным советам и инструкциям\n"
-                             "• Актуальным новостям\n"
-                             "• Поддержке сообщества\n\n"
-                             "💬 Если у вас есть вопросы - не стесняйтесь писать!",
-                        parse_mode='HTML'
-                    )
+                    # ИСПРАВЛЕНИЕ: Пытаемся отправить дополнительные сообщения с обработкой ошибок
+                    try:
+                        # Отправляем дополнительное сообщение благодарности
+                        await asyncio.sleep(1)
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=f"🙏 <b>Спасибо, что подписались!</b>\n\n"
+                                 f"Мы очень рады видеть вас среди наших подписчиков.\n\n"
+                                 f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
+                                 f"🎯 Следите за обновлениями - впереди много интересного!",
+                            parse_mode='HTML'
+                        )
+                        
+                        # Эмулируем команду /start - отправляем второе сообщение
+                        await asyncio.sleep(2)
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text="🚀 <b>Добро пожаловать!</b>\n\n"
+                                 "Теперь вы полноценный участник нашего сообщества!\n\n"
+                                 "📚 Вы получите доступ к:\n"
+                                 "• Эксклюзивным материалам\n"
+                                 "• Полезным советам и инструкциям\n"
+                                 "• Актуальным новостям\n"
+                                 "• Поддержке сообщества\n\n"
+                                 "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+                            parse_mode='HTML'
+                        )
+                        
+                        logger.info(f"✅ Дополнительные сообщения отправлены пользователю {user_id}")
+                        
+                    except Forbidden as send_error:
+                        # Если не удалось отправить дополнительные сообщения - это не критично
+                        logger.warning(f"⚠️ Не удалось отправить дополнительные сообщения пользователю {user_id}: {send_error}")
+                        logger.info(f"💡 Пользователь {user_id} получил основное сообщение. Для получения дополнительных материалов нужно написать боту /start")
+                        
+                    except BadRequest as send_error:
+                        logger.warning(f"⚠️ BadRequest при отправке дополнительных сообщений пользователю {user_id}: {send_error}")
+                        
+                    except Exception as send_error:
+                        logger.error(f"❌ Неожиданная ошибка при отправке дополнительных сообщений пользователю {user_id}: {send_error}")
+                        
                 else:
+                    logger.error(f"❌ Не удалось запланировать сообщения для пользователя {user_id}")
                     await query.answer("Ошибка при планировании сообщений. Попробуйте позже.", show_alert=True)
                     
             except Exception as e:
-                logger.error(f"Ошибка при обработке согласия от пользователя {user_id}: {e}")
+                logger.error(f"❌ Критическая ошибка при обработке согласия от пользователя {user_id}: {e}")
                 await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
         else:
             # Если обычный пользователь нажал другую кнопку
             try:
                 db.mark_user_started_bot(user_id)
-                await scheduler.schedule_user_messages(context, user_id)
-                await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
+                success = await scheduler.schedule_user_messages(context, user_id)
+                if success:
+                    await query.answer("Спасибо! Теперь вы будете получать уведомления от бота.")
+                    logger.info(f"✅ Пользователь {user_id} успешно подписался на уведомления")
+                else:
+                    await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
+                    logger.error(f"❌ Не удалось запланировать сообщения для пользователя {user_id}")
             except Exception as e:
-                logger.error(f"Ошибка при обработке callback от пользователя {user_id}: {e}")
+                logger.error(f"❌ Ошибка при обработке callback от пользователя {user_id}: {e}")
                 await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -283,7 +325,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Если у пользователя еще нет запланированных сообщений, планируем их
         existing_messages = db.get_user_scheduled_messages(user_id)
         if not existing_messages:
-            await scheduler.schedule_user_messages(context, user_id)
+            success = await scheduler.schedule_user_messages(context, user_id)
+            if success:
+                logger.info(f"✅ Сообщения запланированы для пользователя {user_id} через сообщение")
+            else:
+                logger.warning(f"⚠️ Не удалось запланировать сообщения для пользователя {user_id}")
         
         # Отправляем дружелюбный ответ
         await update.message.reply_text(
