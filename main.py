@@ -2,12 +2,13 @@ import logging
 import os
 import sys
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated, Message, Chat
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler, MessageHandler, filters, ChatMemberHandler
 from telegram.error import Forbidden, BadRequest
 from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
+from datetime import datetime
 
 # Настройка логирования
 logging.basicConfig(
@@ -108,8 +109,50 @@ class CallbackHandler:
         
         return InlineKeyboardMarkup(keyboard)
     
+    async def send_real_start_command(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, telegram_user) -> bool:
+        """
+        РЕАЛЬНАЯ отправка команды /start - пользователь действительно "запустит" бота
+        """
+        try:
+            logger.info(f"📤 Отправляем РЕАЛЬНУЮ команду /start для пользователя {user_id}")
+            
+            # Создаем реальный объект чата
+            chat = Chat(
+                id=user_id, 
+                type='private',
+                username=telegram_user.username,
+                first_name=telegram_user.first_name
+            )
+            
+            # Создаем реальный объект сообщения с командой /start
+            message = Message(
+                message_id=int(datetime.now().timestamp()),  # Уникальный ID
+                from_user=telegram_user,
+                chat=chat,
+                date=datetime.now(),
+                text="/start"
+            )
+            
+            # Создаем полноценный Update объект
+            update = Update(
+                update_id=int(datetime.now().timestamp()),
+                message=message
+            )
+            
+            # КЛЮЧЕВОЙ МОМЕНТ: Обрабатываем через application.process_update
+            # Это вызовет CommandHandler("start", start) как будто пользователь отправил /start
+            application = context.application
+            await application.process_update(update)
+            
+            logger.info(f"✅ РЕАЛЬНАЯ команда /start успешно обработана для пользователя {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отправке реальной команды /start для пользователя {user_id}: {e}")
+            return False
+    
     async def handle_user_consent(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка согласия пользователя на получение уведомлений"""
+        """Обработка согласия пользователя с РЕАЛЬНОЙ командой /start"""
         query = update.callback_query
         user_id = query.from_user.id
         
@@ -136,17 +179,19 @@ class CallbackHandler:
                 await self.update_message_already_subscribed(query)
                 return True
             
-            # Выполняем логику подписки (эквивалент /start)
-            success = await self.execute_start_logic(user_id, context, query.from_user)
+            # Уведомляем пользователя о выполнении команды
+            await query.answer("Выполняется команда /start...", show_alert=False)
+            
+            # Отправляем РЕАЛЬНУЮ команду /start
+            success = await self.send_real_start_command(user_id, context, query.from_user)
             
             if success:
-                await query.answer("Согласие получено! Добро пожаловать! ✅")
-                await self.update_message_success(query, user_id)
-                logger.info(f"✅ Пользователь {user_id} успешно подписан на уведомления")
+                # Обновляем исходное сообщение
+                await self.update_message_success_after_start(query, user_id)
+                logger.info(f"✅ Пользователь {user_id} РЕАЛЬНО запустил бота через кнопку")
                 return True
             else:
-                await query.answer("Произошла ошибка при подписке. Попробуйте позже.", show_alert=True)
-                logger.error(f"❌ Не удалось подписать пользователя {user_id}")
+                await query.answer("Произошла ошибка при запуске бота. Попробуйте позже.", show_alert=True)
                 return False
                 
         except Exception as e:
@@ -154,54 +199,14 @@ class CallbackHandler:
             await query.answer("Произошла техническая ошибка. Попробуйте позже.", show_alert=True)
             return False
     
-    async def execute_start_logic(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, telegram_user) -> bool:
-        """
-        Выполнение логики команды /start при нажатии на инлайн кнопку
-        """
+    async def update_message_success_after_start(self, query, user_id):
+        """Обновление сообщения после успешного выполнения команды /start"""
         try:
-            logger.info(f"🚀 Выполняем логику /start для пользователя {user_id} через callback")
-            
-            # Шаг 1: Помечаем пользователя как начавшего разговор с ботом
-            mark_success = db.mark_user_started_bot(user_id)
-            if not mark_success:
-                logger.error(f"❌ Не удалось пометить пользователя {user_id} как начавшего разговор")
-                return False
-            
-            # Небольшая задержка для обеспечения консистентности БД
-            await asyncio.sleep(0.1)
-            
-            # Шаг 2: Планируем сообщения рассылки
-            schedule_success = await scheduler.schedule_user_messages(context, user_id)
-            if not schedule_success:
-                logger.error(f"❌ Не удалось запланировать сообщения для пользователя {user_id}")
-                return False
-            
-            logger.info(f"✅ Логика /start успешно выполнена для пользователя {user_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка при выполнении логики /start для пользователя {user_id}: {e}")
-            return False
-    
-    async def update_message_success(self, query, user_id):
-        """Обновление сообщения при успешной подписке"""
-        try:
-            # Получаем информацию о первом сообщении
-            first_message = db.get_broadcast_message(1)
-            if first_message:
-                delay_hours = first_message[1]
-                if delay_hours < 1:
-                    delay_text = f"<b>{int(delay_hours * 60)} минут</b>"
-                else:
-                    delay_text = f"<b>{int(delay_hours)} час(ов)</b>"
-            else:
-                delay_text = "<b>скоро</b>"
-            
             success_message = (
-                "🎉 <b>Отлично! Согласие получено!</b>\n\n"
+                "🎉 <b>Команда /start выполнена успешно!</b>\n\n"
+                "✅ Согласие на получение уведомлений получено!\n\n"
                 "📬 Теперь вы будете получать все важные уведомления и полезные материалы от нашего бота.\n\n"
                 "🔔 В ближайшие дни вы получите серию образовательных сообщений, которые помогут вам максимально эффективно использовать наш сервис.\n\n"
-                f"📋 Первое полезное сообщение придет через {delay_text}!\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 "🚀 <b>Добро пожаловать!</b>\n\n"
                 "Теперь вы полноценный участник нашего сообщества!\n\n"
@@ -211,10 +216,9 @@ class CallbackHandler:
                 "• Актуальным новостям\n"
                 "• Поддержке сообщества\n\n"
                 "🙏 <b>Спасибо, что подписались!</b>\n\n"
-                "Мы очень рады видеть вас среди наших подписчиков.\n\n"
                 "💡 Если у вас есть вопросы - не стесняйтесь писать в любое время!\n\n"
                 "🎯 Следите за обновлениями - впереди много интересного!\n\n"
-                "✨ <i>Это действие эквивалентно команде /start</i>\n\n"
+                "✨ <i>Команда /start была выполнена автоматически</i>\n\n"
                 "Добро пожаловать в нашу команду! 🚀"
             )
             
@@ -403,6 +407,35 @@ class CallbackHandler:
                 )
         except Exception as e:
             logger.error(f"❌ Ошибка при показе сообщения об отказе: {e}")
+    
+    async def execute_start_logic(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, telegram_user) -> bool:
+        """
+        Выполнение логики команды /start при нажатии на инлайн кнопку
+        """
+        try:
+            logger.info(f"🚀 Выполняем логику /start для пользователя {user_id} через callback")
+            
+            # Шаг 1: Помечаем пользователя как начавшего разговор с ботом
+            mark_success = db.mark_user_started_bot(user_id)
+            if not mark_success:
+                logger.error(f"❌ Не удалось пометить пользователя {user_id} как начавшего разговор")
+                return False
+            
+            # Небольшая задержка для обеспечения консистентности БД
+            await asyncio.sleep(0.1)
+            
+            # Шаг 2: Планируем сообщения рассылки
+            schedule_success = await scheduler.schedule_user_messages(context, user_id)
+            if not schedule_success:
+                logger.error(f"❌ Не удалось запланировать сообщения для пользователя {user_id}")
+                return False
+            
+            logger.info(f"✅ Логика /start успешно выполнена для пользователя {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка при выполнении логики /start для пользователя {user_id}: {e}")
+            return False
 
 # Создаем глобальный экземпляр callback handler
 callback_handler = CallbackHandler(db, scheduler)
@@ -465,7 +498,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             welcome_text = (
                 f"{welcome_data['text']}\n\n"
                 "💡 <b>Важно:</b> Для получения уведомлений и полезных материалов от бота, "
-                "пожалуйста, нажмите кнопку ниже и дайте согласие:"
+                "пожалуйста, нажмите кнопку ниже. Это выполнит команду /start автоматически:"
             )
             
             if welcome_data['photo']:
@@ -551,7 +584,7 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error(f"❌ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на инлайн-кнопки с улучшенной логикой"""
+    """Обработчик нажатий на инлайн-кнопки с реальной командой /start"""
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -589,12 +622,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 query.from_user.first_name
             )
             
-            # Попытка подписки на уведомления
-            success = await callback_handler.execute_start_logic(user_id, context, query.from_user)
+            # Уведомляем пользователя
+            await query.answer("Выполняется команда /start...", show_alert=False)
+            
+            # Отправляем реальную команду /start
+            success = await callback_handler.send_real_start_command(user_id, context, query.from_user)
             
             if success:
-                await query.answer("Спасибо! Теперь вы будете получать уведомления от бота. ✅")
-                await callback_handler.update_message_success(query, user_id)
+                await callback_handler.update_message_success_after_start(query, user_id)
             else:
                 await query.answer("Произошла ошибка. Попробуйте позже.", show_alert=True)
                 
@@ -640,7 +675,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application) -> None:
     """Инициализация после запуска"""
-    logger.info("Бот с улучшенным callback подходом успешно запущен и готов к работе!")
+    logger.info("Бот с РЕАЛЬНОЙ командой /start через callback успешно запущен и готов к работе!")
 
 def main():
     """Главная функция запуска бота"""
@@ -667,7 +702,7 @@ def main():
         first=10  # первый запуск через 10 секунд
     )
     
-    logger.info("Запуск бота с улучшенным callback подходом...")
+    logger.info("Запуск бота с РЕАЛЬНОЙ командой /start через callback...")
     
     # Запускаем бота
     application.run_polling(
