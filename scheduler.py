@@ -44,7 +44,14 @@ class MessageScheduler:
                 self.db.schedule_message(user_id, message_number, scheduled_time)
                 scheduled_count += 1
                 
-                logger.info(f"Запланировано сообщение {message_number} для пользователя {user_id} на {scheduled_time} (через {delay_hours} часов)")
+                # Форматируем время для логов
+                time_diff = scheduled_time - current_time
+                if time_diff.total_seconds() < 3600:  # Меньше часа
+                    time_str = f"{int(time_diff.total_seconds() / 60)} минут"
+                else:
+                    time_str = f"{delay_hours} часов"
+                
+                logger.info(f"Запланировано сообщение {message_number} для пользователя {user_id} на {scheduled_time.strftime('%Y-%m-%d %H:%M:%S')} (через {time_str})")
             
             logger.info(f"Всего запланировано {scheduled_count} сообщений для пользователя {user_id}")
             return True
@@ -56,6 +63,9 @@ class MessageScheduler:
     async def send_scheduled_messages(self, context: ContextTypes.DEFAULT_TYPE):
         """Отправить все запланированные сообщения, время которых настало"""
         try:
+            current_time = datetime.now()
+            logger.debug(f"🔄 Проверка запланированных сообщений на {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
             # Проверяем статус рассылки
             broadcast_status = self.db.get_broadcast_status()
             
@@ -63,31 +73,33 @@ class MessageScheduler:
             if not broadcast_status['enabled']:
                 if broadcast_status['auto_resume_time']:
                     resume_time = datetime.fromisoformat(broadcast_status['auto_resume_time'])
-                    if datetime.now() >= resume_time:
+                    if current_time >= resume_time:
                         # Автоматически включаем рассылку
                         self.db.set_broadcast_status(True, None)
-                        logger.info("Рассылка автоматически возобновлена")
+                        logger.info("✅ Рассылка автоматически возобновлена")
                     else:
-                        logger.debug(f"Рассылка отключена до {resume_time}")
+                        logger.debug(f"❌ Рассылка отключена до {resume_time.strftime('%Y-%m-%d %H:%M:%S')}")
                         return
                 else:
-                    logger.debug("Рассылка отключена без таймера")
+                    logger.debug("❌ Рассылка отключена без таймера")
                     return
             
             # Получаем сообщения, готовые к отправке (только для пользователей с bot_started = 1)
             pending_messages = self.db.get_pending_messages_for_active_users()
             
             if not pending_messages:
-                logger.debug("Нет сообщений для отправки")
+                logger.debug("📭 Нет сообщений для отправки")
                 return
             
-            logger.info(f"Найдено {len(pending_messages)} сообщений для отправки")
+            logger.info(f"📬 Найдено {len(pending_messages)} сообщений для отправки")
             
             sent_count = 0
             failed_count = 0
             
             for message_id, user_id, message_number, text, photo_url in pending_messages:
                 try:
+                    logger.debug(f"📤 Отправляем сообщение {message_number} пользователю {user_id}")
+                    
                     # Небольшая задержка между отправками для избежания лимитов
                     await asyncio.sleep(0.1)
                     
@@ -102,6 +114,7 @@ class MessageScheduler:
                             keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
+                        logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(buttons)} кнопок")
                     
                     # Отправляем сообщение
                     if photo_url:
@@ -113,6 +126,7 @@ class MessageScheduler:
                             parse_mode='HTML',
                             reply_markup=reply_markup
                         )
+                        logger.debug(f"🖼️ Отправлено сообщение с фото")
                     else:
                         # Отправляем только текст
                         await context.bot.send_message(
@@ -122,6 +136,7 @@ class MessageScheduler:
                             disable_web_page_preview=True,
                             reply_markup=reply_markup
                         )
+                        logger.debug(f"📝 Отправлено текстовое сообщение")
                     
                     # Отмечаем как отправленное
                     self.db.mark_message_sent(message_id)
@@ -152,6 +167,12 @@ class MessageScheduler:
             
             if sent_count > 0 or failed_count > 0:
                 logger.info(f"📊 Результаты рассылки: отправлено {sent_count}, ошибок {failed_count}")
+            
+            # Проверяем, есть ли еще запланированные сообщения
+            remaining_messages = self.db.get_pending_messages_for_active_users()
+            if remaining_messages:
+                next_time = min([datetime.fromisoformat(msg[3]) for msg in remaining_messages if len(msg) > 3])
+                logger.debug(f"⏳ Следующее сообщение запланировано на {next_time.strftime('%Y-%m-%d %H:%M:%S')}")
                         
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в send_scheduled_messages: {e}", exc_info=True)
