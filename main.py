@@ -169,20 +169,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = await callback_handler.execute_start_logic(user.id, context, user)
     
     if success:
-        # Отправляем приветственное сообщение /start и убираем клавиатуру
+        # Получаем настраиваемое сообщение подтверждения из базы данных
+        # Используем настройку "success_message" или создаем её
+        try:
+            conn = db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT value FROM settings WHERE key = "success_message"')
+            success_msg = cursor.fetchone()
+            
+            if not success_msg:
+                # Создаем настройку по умолчанию
+                default_success_message = (
+                    "👋 <b>Команда /start выполнена!</b>\n\n"
+                    "🚀 <b>Добро пожаловать!</b>\n\n"
+                    "Теперь вы полноценный участник нашего сообщества!\n\n"
+                    "📚 <b>Вы получите доступ к:</b>\n"
+                    "• Эксклюзивным материалам\n"
+                    "• Полезным советам и инструкциям\n"
+                    "• Актуальным новостям\n"
+                    "• Поддержке сообщества\n\n"
+                    "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                    "Если вы хотите получать материалы от нашего канала, "
+                    "пожалуйста, подайте заявку на вступление в наш канал.\n\n"
+                    "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+                )
+                cursor.execute('INSERT INTO settings (key, value) VALUES (?, ?)', ('success_message', default_success_message))
+                conn.commit()
+                success_text = default_success_message
+            else:
+                success_text = success_msg[0]
+            
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении сообщения подтверждения: {e}")
+            success_text = (
+                "👋 <b>Добро пожаловать!</b>\n\n"
+                "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+            )
+        
+        # Отправляем настраиваемое приветственное сообщение и убираем клавиатуру
         await update.message.reply_text(
-            "👋 <b>Команда /start выполнена!</b>\n\n"
-            "🚀 <b>Добро пожаловать!</b>\n\n"
-            "Теперь вы полноценный участник нашего сообщества!\n\n"
-            "📚 <b>Вы получите доступ к:</b>\n"
-            "• Эксклюзивным материалам\n"
-            "• Полезным советам и инструкциям\n"
-            "• Актуальным новостям\n"
-            "• Поддержке сообщества\n\n"
-            "🙏 <b>Спасибо, что подписались!</b>\n\n"
-            "Если вы хотите получать материалы от нашего канала, "
-            "пожалуйста, подайте заявку на вступление в наш канал.\n\n"
-            "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+            success_text,
             parse_mode='HTML',
             reply_markup=ReplyKeyboardRemove()
         )
@@ -415,17 +444,39 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             if success:
+                # Получаем настраиваемое сообщение подтверждения из базы данных
+                try:
+                    conn = db._get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute('SELECT value FROM settings WHERE key = "success_message"')
+                    success_msg = cursor.fetchone()
+                    conn.close()
+                    
+                    if success_msg:
+                        success_text = success_msg[0]
+                    else:
+                        success_text = (
+                            "👋 <b>Добро пожаловать!</b>\n\n"
+                            "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                            "📚 <b>Вы получите доступ к:</b>\n"
+                            "• Эксклюзивным материалам\n"
+                            "• Полезным советам и инструкциям\n"
+                            "• Актуальным новостям\n"
+                            "• Поддержке сообщества\n\n"
+                            "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                            "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+                        )
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при получении сообщения подтверждения: {e}")
+                    success_text = (
+                        "👋 <b>Добро пожаловать!</b>\n\n"
+                        "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                        "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+                    )
+                
                 # Убираем клавиатуру и отправляем подтверждение
                 await update.message.reply_text(
-                    "👋 <b>Добро пожаловать!</b>\n\n"
-                    "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
-                    "📚 <b>Вы получите доступ к:</b>\n"
-                    "• Эксклюзивным материалам\n"
-                    "• Полезным советам и инструкциям\n"
-                    "• Актуальным новостям\n"
-                    "• Поддержке сообщества\n\n"
-                    "🙏 <b>Спасибо, что подписались!</b>\n\n"
-                    "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+                    success_text,
                     parse_mode='HTML',
                     reply_markup=ReplyKeyboardRemove()
                 )
@@ -467,19 +518,40 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
+            # Получаем настраиваемое сообщение подтверждения
+            try:
+                conn = db._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('SELECT value FROM settings WHERE key = "success_message"')
+                success_msg = cursor.fetchone()
+                conn.close()
+                
+                if success_msg:
+                    success_text = success_msg[0]
+                else:
+                    success_text = (
+                        "👋 <b>Спасибо за сообщение!</b>\n\n"
+                        "Теперь вы будете получать все важные уведомления от нашего бота.\n\n"
+                        "🚀 <b>Добро пожаловать!</b>\n\n"
+                        "Теперь вы полноценный участник нашего сообщества!\n\n"
+                        "📚 <b>Вы получите доступ к:</b>\n"
+                        "• Эксклюзивным материалам\n"
+                        "• Полезным советам и инструкциям\n"
+                        "• Актуальным новостям\n"
+                        "• Поддержке сообщества\n\n"
+                        "Если у вас есть вопросы - обращайтесь к администратору канала.\n\n"
+                        "💬 Не стесняйтесь писать!"
+                    )
+            except Exception as e:
+                logger.error(f"❌ Ошибка при получении сообщения подтверждения: {e}")
+                success_text = (
+                    "👋 <b>Спасибо за сообщение!</b>\n\n"
+                    "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+                )
+            
             # Убираем клавиатуру
             await update.message.reply_text(
-                "👋 <b>Спасибо за сообщение!</b>\n\n"
-                "Теперь вы будете получать все важные уведомления от нашего бота.\n\n"
-                "🚀 <b>Добро пожаловать!</b>\n\n"
-                "Теперь вы полноценный участник нашего сообщества!\n\n"
-                "📚 <b>Вы получите доступ к:</b>\n"
-                "• Эксклюзивным материалам\n"
-                "• Полезным советам и инструкциям\n"
-                "• Актуальным новостям\n"
-                "• Поддержке сообщества\n\n"
-                "Если у вас есть вопросы - обращайтесь к администратору канала.\n\n"
-                "💬 Не стесняйтесь писать!",
+                success_text,
                 parse_mode='HTML',
                 reply_markup=ReplyKeyboardRemove()
             )
@@ -533,16 +605,38 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
+            # Получаем настраиваемое сообщение подтверждения
+            try:
+                conn = db._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('SELECT value FROM settings WHERE key = "success_message"')
+                success_msg = cursor.fetchone()
+                conn.close()
+                
+                if success_msg:
+                    success_text = success_msg[0]
+                else:
+                    success_text = (
+                        "👋 <b>Добро пожаловать!</b>\n\n"
+                        "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                        "📚 <b>Вы получите доступ к:</b>\n"
+                        "• Эксклюзивным материалам\n"
+                        "• Полезным советам и инструкциям\n"
+                        "• Актуальным новостям\n"
+                        "• Поддержке сообщества\n\n"
+                        "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                        "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+                    )
+            except Exception as e:
+                logger.error(f"❌ Ошибка при получении сообщения подтверждения: {e}")
+                success_text = (
+                    "👋 <b>Добро пожаловать!</b>\n\n"
+                    "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                    "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+                )
+            
             await update.message.reply_text(
-                "👋 <b>Добро пожаловать!</b>\n\n"
-                "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
-                "📚 <b>Вы получите доступ к:</b>\n"
-                "• Эксклюзивным материалам\n"
-                "• Полезным советам и инструкциям\n"
-                "• Актуальным новостям\n"
-                "• Поддержке сообщества\n\n"
-                "🙏 <b>Спасибо, что подписались!</b>\n\n"
-                "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+                success_text,
                 parse_mode='HTML',
                 reply_markup=ReplyKeyboardRemove()
             )
