@@ -229,6 +229,124 @@ class MessageScheduler:
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в send_scheduled_messages: {e}", exc_info=True)
     
+    async def send_scheduled_broadcasts(self, context: ContextTypes.DEFAULT_TYPE):
+        """Отправить запланированные массовые рассылки"""
+        try:
+            current_time = datetime.now()
+            logger.debug(f"📡 Проверка запланированных рассылок на {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Проверяем статус рассылки
+            broadcast_status = self.db.get_broadcast_status()
+            
+            # Если рассылка отключена, пропускаем
+            if not broadcast_status['enabled']:
+                logger.debug("❌ Массовые рассылки отключены")
+                return
+            
+            # Получаем рассылки, готовые к отправке
+            pending_broadcasts = self.db.get_pending_broadcasts()
+            
+            if not pending_broadcasts:
+                logger.debug("📭 Нет запланированных рассылок для отправки")
+                return
+            
+            logger.info(f"📡 Найдено {len(pending_broadcasts)} запланированных рассылок для отправки")
+            
+            # Получаем пользователей, которые могут получать рассылки
+            users_with_bot = self.db.get_users_with_bot_started()
+            
+            if not users_with_bot:
+                logger.warning("⚠️ Нет пользователей для массовой рассылки")
+                # Отмечаем рассылки как отправленные
+                for broadcast_id, message_text, photo_url, scheduled_time in pending_broadcasts:
+                    self.db.mark_broadcast_sent(broadcast_id)
+                return
+            
+            logger.info(f"👥 Будем отправлять рассылки {len(users_with_bot)} пользователям")
+            
+            for broadcast_id, message_text, photo_url, scheduled_time in pending_broadcasts:
+                try:
+                    logger.info(f"📤 Начинаем отправку рассылки #{broadcast_id}")
+                    
+                    # Получаем кнопки для этой рассылки
+                    buttons = self.db.get_scheduled_broadcast_buttons(broadcast_id)
+                    reply_markup = None
+                    
+                    if buttons:
+                        # Создаем клавиатуру с кнопками
+                        keyboard = []
+                        for button_id, button_text, button_url, position in buttons:
+                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                        
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id}: {len(buttons)} кнопок")
+                    
+                    sent_count = 0
+                    failed_count = 0
+                    
+                    # Отправляем всем пользователям
+                    for user in users_with_bot:
+                        user_id = user[0]
+                        try:
+                            # Небольшая задержка между отправками
+                            await asyncio.sleep(0.1)
+                            
+                            if photo_url:
+                                # Отправляем с фото
+                                await context.bot.send_photo(
+                                    chat_id=user_id,
+                                    photo=photo_url,
+                                    caption=message_text,
+                                    parse_mode='HTML',
+                                    reply_markup=reply_markup
+                                )
+                            else:
+                                # Отправляем только текст
+                                await context.bot.send_message(
+                                    chat_id=user_id,
+                                    text=message_text,
+                                    parse_mode='HTML',
+                                    disable_web_page_preview=True,
+                                    reply_markup=reply_markup
+                                )
+                            
+                            sent_count += 1
+                            
+                        except Forbidden as e:
+                            # Пользователь заблокировал бота
+                            logger.warning(f"❌ Пользователь {user_id} заблокировал бота при рассылке #{broadcast_id}: {e}")
+                            # Деактивируем пользователя
+                            self.db.deactivate_user(user_id)
+                            failed_count += 1
+                            
+                        except BadRequest as e:
+                            # Неверный chat_id или другая ошибка
+                            logger.error(f"❌ BadRequest для пользователя {user_id} при рассылке #{broadcast_id}: {e}")
+                            failed_count += 1
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Не удалось отправить рассылку #{broadcast_id} пользователю {user_id}: {e}")
+                            failed_count += 1
+                    
+                    # Отмечаем рассылку как отправленную
+                    self.db.mark_broadcast_sent(broadcast_id)
+                    
+                    logger.info(f"✅ Рассылка #{broadcast_id} завершена: отправлено {sent_count}, ошибок {failed_count}")
+                    
+                    # Пауза между разными рассылками
+                    if len(pending_broadcasts) > 1:
+                        await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Критическая ошибка при отправке рассылки #{broadcast_id}: {e}")
+                    # Отмечаем как отправленную, чтобы не зацикливаться
+                    self.db.mark_broadcast_sent(broadcast_id)
+            
+            logger.info(f"📊 Обработка запланированных рассылок завершена")
+                        
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в send_scheduled_broadcasts: {e}", exc_info=True)
+    
     def reschedule_all_messages(self):
         """Перепланировать все сообщения для всех пользователей (при изменении задержек)"""
         # Эта функция может быть полезна, если админ изменил задержки
