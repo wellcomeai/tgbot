@@ -14,48 +14,10 @@ class AdminPanel:
         self.db = db
         self.admin_chat_id = admin_chat_id
         self.waiting_for = {}  # Словарь для отслеживания ожидаемого ввода
-        self.admin_messages = {}  # Словарь для хранения ID сообщений админа {user_id: [message_ids]}
-    
-    async def cleanup_previous_messages(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-        """Удаление предыдущих сообщений админа для очистки чата"""
-        if user_id not in self.admin_messages:
-            return
-        
-        message_ids = self.admin_messages[user_id].copy()
-        
-        # Очищаем список, так как будем удалять сообщения
-        self.admin_messages[user_id] = []
-        
-        # Удаляем сообщения с небольшой задержкой
-        for message_id in message_ids:
-            try:
-                await asyncio.sleep(0.05)  # Небольшая задержка между удалениями
-                await context.bot.delete_message(chat_id=user_id, message_id=message_id)
-                logger.debug(f"🗑️ Удалено сообщение {message_id} для админа {user_id}")
-            except BadRequest as e:
-                # Сообщение уже удалено или недоступно - это нормально
-                logger.debug(f"ℹ️ Не удалось удалить сообщение {message_id}: {e}")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при удалении сообщения {message_id}: {e}")
-                # Продолжаем удалять остальные сообщения
-    
-    def track_admin_message(self, user_id: int, message_id: int):
-        """Добавление ID сообщения в отслеживание"""
-        if user_id not in self.admin_messages:
-            self.admin_messages[user_id] = []
-        
-        self.admin_messages[user_id].append(message_id)
-        
-        # Ограничиваем количество отслеживаемых сообщений (последние 10)
-        if len(self.admin_messages[user_id]) > 10:
-            self.admin_messages[user_id] = self.admin_messages[user_id][-10:]
-        
-        logger.debug(f"📝 Отслеживаем сообщение {message_id} для админа {user_id}")
+        self.broadcast_drafts = {}  # Словарь для хранения черновиков массовых рассылок
     
     async def safe_edit_or_send_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup=None, parse_mode='HTML'):
         """Безопасное редактирование или отправка сообщения с обработкой ошибок"""
-        user_id = update.effective_user.id
-        
         try:
             if update.callback_query:
                 try:
@@ -68,7 +30,7 @@ class AdminPanel:
                     if "Message to edit not found" in str(e) or "Message is not modified" in str(e):
                         # Сообщение уже удалено или не изменилось, отправляем новое
                         sent_message = await context.bot.send_message(
-                            chat_id=user_id,
+                            chat_id=update.effective_user.id,
                             text=text,
                             reply_markup=reply_markup,
                             parse_mode=parse_mode
@@ -82,10 +44,6 @@ class AdminPanel:
                     parse_mode=parse_mode
                 )
             
-            # Отслеживаем новое сообщение
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            
             return sent_message
             
         except Exception as e:
@@ -93,13 +51,11 @@ class AdminPanel:
             # Попытка отправить новое сообщение в случае ошибки
             try:
                 sent_message = await context.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=update.effective_user.id,
                     text=text,
                     reply_markup=reply_markup,
                     parse_mode=parse_mode
                 )
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
                 return sent_message
             except Exception as e2:
                 logger.error(f"❌ Критическая ошибка при отправке сообщения: {e2}")
@@ -174,11 +130,6 @@ class AdminPanel:
     
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать главное меню админа"""
-        user_id = update.effective_user.id
-        
-        # Очищаем предыдущие сообщения
-        await self.cleanup_previous_messages(update, context, user_id)
-        
         broadcast_status = self.db.get_broadcast_status()
         status_icon = "🟢" if broadcast_status['enabled'] else "🔴"
         
@@ -203,8 +154,6 @@ class AdminPanel:
     
     async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать статистику"""
-        user_id = update.effective_user.id
-        
         stats = self.db.get_user_statistics()
         
         text = (
@@ -225,14 +174,9 @@ class AdminPanel:
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
     
     async def show_broadcast_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать статус рассылки"""
-        user_id = update.effective_user.id
-        
         broadcast_status = self.db.get_broadcast_status()
         
         status_text = "✅ Включена" if broadcast_status['enabled'] else "❌ Отключена"
@@ -259,14 +203,9 @@ class AdminPanel:
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
     
     async def show_broadcast_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать меню управления рассылкой"""
-        user_id = update.effective_user.id
-        
         messages = self.db.get_all_broadcast_messages()
         
         keyboard = []
@@ -302,161 +241,149 @@ class AdminPanel:
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
     
-    # ===== НОВАЯ УЛУЧШЕННАЯ СИСТЕМА МАССОВЫХ РАССЫЛОК =====
+    # ===== НОВАЯ СИСТЕМА МАССОВЫХ РАССЫЛОК =====
     
     async def show_send_all_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню отправки массового сообщения"""
+        """Показать меню массовой рассылки с отдельными пунктами"""
         user_id = update.effective_user.id
+        
+        # Инициализируем черновик если его нет
+        if user_id not in self.broadcast_drafts:
+            self.broadcast_drafts[user_id] = {
+                "message_text": "",
+                "photo_data": None,
+                "buttons": [],
+                "scheduled_hours": None,
+                "created_at": datetime.now()
+            }
         
         # Очищаем состояние ожидания
         if user_id in self.waiting_for:
             del self.waiting_for[user_id]
         
-        text = (
-            "📢 <b>Массовая рассылка</b>\n\n"
-            "💡 <b>Возможности:</b>\n"
-            "• Отправка текста и фото\n"
-            "• Добавление кнопок\n"
-            "• Отправка сразу или по расписанию\n"
-            "• Предварительный просмотр\n\n"
-            "📝 Начните с отправки текста сообщения:"
-        )
+        draft = self.broadcast_drafts[user_id]
         
-        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="admin_back")]]
+        # Формируем информацию о текущем состоянии
+        text = "📢 <b>Массовая рассылка</b>\n\n"
+        
+        # Текст
+        if draft["message_text"]:
+            text += f"📝 <b>Текст:</b> {draft['message_text'][:50]}{'...' if len(draft['message_text']) > 50 else ''}\n"
+        else:
+            text += "📝 <b>Текст:</b> <i>Не задан</i>\n"
+        
+        # Фото
+        if draft["photo_data"]:
+            text += "🖼 <b>Фото:</b> Есть\n"
+        else:
+            text += "🖼 <b>Фото:</b> Нет\n"
+        
+        # Кнопки
+        if draft["buttons"]:
+            text += f"🔘 <b>Кнопки:</b> {len(draft['buttons'])}\n"
+        else:
+            text += "🔘 <b>Кнопки:</b> Нет\n"
+        
+        # Время отправки
+        if draft["scheduled_hours"]:
+            scheduled_time = datetime.now() + timedelta(hours=draft["scheduled_hours"])
+            text += f"⏰ <b>Время отправки:</b> {scheduled_time.strftime('%d.%m.%Y %H:%M')}\n"
+        else:
+            text += "⏰ <b>Время отправки:</b> <i>Сразу</i>\n"
+        
+        # Получаем количество пользователей
+        users_count = len(self.db.get_users_with_bot_started())
+        text += f"\n👥 <b>Получателей:</b> {users_count} пользователей\n"
+        
+        text += "\n<b>Выберите действие:</b>"
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="mass_edit_text")],
+            [InlineKeyboardButton("🖼 Добавить фото", callback_data="mass_add_photo")],
+            [InlineKeyboardButton("⏰ Время отправки", callback_data="mass_set_time")],
+            [InlineKeyboardButton("🔘 Добавить кнопку", callback_data="mass_add_button")],
+        ]
+        
+        # Кнопка удаления фото (если есть)
+        if draft["photo_data"]:
+            keyboard.append([InlineKeyboardButton("🗑 Удалить фото", callback_data="mass_remove_photo")])
+        
+        # Кнопка удаления последней кнопки (если есть)
+        if draft["buttons"]:
+            keyboard.append([InlineKeyboardButton("🗑 Удалить последнюю кнопку", callback_data="mass_remove_button")])
+        
+        keyboard.append([InlineKeyboardButton("📋 Предпросмотр", callback_data="mass_preview")])
+        
+        # Кнопка отправки (только если есть текст)
+        if draft["message_text"]:
+            keyboard.append([InlineKeyboardButton("🚀 Отправить сейчас", callback_data="mass_send_now")])
+        
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="admin_back")])
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Устанавливаем состояние ожидания
-        self.waiting_for[user_id] = {
-            "type": "send_all_text",
-            "message_text": None,
-            "photo_data": None,
-            "buttons": [],
-            "scheduled_hours": None,
-            "created_at": datetime.now()
-        }
         
         sent_message = await update.callback_query.edit_message_text(
             text=text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
     
-    async def show_broadcast_options(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать варианты отправки рассылки - ИСПРАВЛЕНО"""
+    async def show_mass_broadcast_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать предварительный просмотр массовой рассылки"""
         user_id = update.effective_user.id
         
-        if user_id not in self.waiting_for:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="❌ Данные рассылки не найдены. Начните сначала.",
-                parse_mode='HTML'
-            )
+        if user_id not in self.broadcast_drafts:
+            await update.callback_query.answer("❌ Черновик не найден!", show_alert=True)
             return
         
-        broadcast_data = self.waiting_for[user_id]
-        message_text = broadcast_data.get("message_text", "")
-        photo_data = broadcast_data.get("photo_data")
-        buttons = broadcast_data.get("buttons", [])
+        draft = self.broadcast_drafts[user_id]
         
-        # Формируем краткое описание
-        text = "🎯 <b>Настройка рассылки</b>\n\n"
-        text += f"📝 <b>Текст:</b> {message_text[:50]}{'...' if len(message_text) > 50 else ''}\n"
-        
-        if photo_data:
-            text += "🖼 <b>Фото:</b> Есть\n"
-        else:
-            text += "🖼 <b>Фото:</b> Нет\n"
-        
-        if buttons:
-            text += f"🔘 <b>Кнопки:</b> {len(buttons)}\n"
-        
-        text += "\n⚡ <b>Выберите действие:</b>"
-        
-        keyboard = [
-            [InlineKeyboardButton("🚀 Отправить сразу", callback_data="send_immediately")],
-            [InlineKeyboardButton("⏰ Запланировать", callback_data="schedule_broadcast")],
-        ]
-        
-        # Кнопки для фото
-        if photo_data:
-            keyboard.append([InlineKeyboardButton("🗑 Удалить фото", callback_data="remove_broadcast_photo")])
-        else:
-            keyboard.append([InlineKeyboardButton("🖼 Добавить фото", callback_data="add_broadcast_photo")])
-        
-        # Кнопки для кнопок
-        if len(buttons) < 10:  # Максимум 10 кнопок
-            keyboard.append([InlineKeyboardButton("🔘 Добавить кнопку", callback_data="add_broadcast_button")])
-        
-        if buttons:
-            keyboard.append([InlineKeyboardButton("🗑 Удалить последнюю кнопку", callback_data="remove_last_button")])
-        
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="admin_back")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # ИСПРАВЛЕНО: Используем context.bot.send_message
-        sent_message = await context.bot.send_message(
-            chat_id=user_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-    
-    async def show_broadcast_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_data):
-        """Показать предварительный просмотр рассылки - ИСПРАВЛЕНО"""
-        user_id = update.effective_user.id
-        
-        message_text = broadcast_data.get("message_text", "")
-        photo_data = broadcast_data.get("photo_data")
-        buttons = broadcast_data.get("buttons", [])
-        scheduled_hours = broadcast_data.get("scheduled_hours")
+        # Валидация
+        if not draft["message_text"]:
+            await update.callback_query.answer("❌ Сначала добавьте текст сообщения!", show_alert=True)
+            return
         
         # Формируем превью
         preview_text = "📋 <b>Предварительный просмотр рассылки</b>\n\n"
         
-        if scheduled_hours:
-            scheduled_time = datetime.now() + timedelta(hours=scheduled_hours)
+        # Время отправки
+        if draft["scheduled_hours"]:
+            scheduled_time = datetime.now() + timedelta(hours=draft["scheduled_hours"])
             preview_text += f"⏰ <b>Запланировано на:</b> {scheduled_time.strftime('%d.%m.%Y %H:%M')}\n"
-            preview_text += f"⌛ <b>Через:</b> {scheduled_hours} час(ов)\n\n"
+            preview_text += f"⌛ <b>Через:</b> {draft['scheduled_hours']} час(ов)\n\n"
         else:
             preview_text += "🚀 <b>Отправка:</b> Немедленно\n\n"
         
-        # Добавляем информацию о пользователях
+        # Получатели
         users_count = len(self.db.get_users_with_bot_started())
         preview_text += f"👥 <b>Получателей:</b> {users_count} пользователей\n\n"
         
-        if photo_data:
+        # Фото
+        if draft["photo_data"]:
             preview_text += "🖼 <b>Фото:</b> Есть\n\n"
         
+        # Текст сообщения
         preview_text += "📝 <b>Текст сообщения:</b>\n"
-        preview_text += f"<code>{message_text}</code>\n\n"
+        preview_text += f"<code>{draft['message_text']}</code>\n\n"
         
-        if buttons:
-            preview_text += f"🔘 <b>Кнопки ({len(buttons)}):</b>\n"
-            for i, button in enumerate(buttons, 1):
+        # Кнопки
+        if draft["buttons"]:
+            preview_text += f"🔘 <b>Кнопки ({len(draft['buttons'])}):</b>\n"
+            for i, button in enumerate(draft["buttons"], 1):
                 preview_text += f"{i}. {button['text']} → {button['url']}\n"
             preview_text += "\n"
         
         preview_text += "✅ Подтвердите отправку:"
         
         keyboard = [
-            [InlineKeyboardButton("✅ Отправить", callback_data="confirm_broadcast")],
-            [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_broadcast")],
+            [InlineKeyboardButton("✅ Отправить", callback_data="mass_confirm_send")],
+            [InlineKeyboardButton("✏️ Редактировать", callback_data="admin_send_all")],
             [InlineKeyboardButton("❌ Отмена", callback_data="admin_back")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # ИСПРАВЛЕНО: Отправляем превью сначала текстом, потом фото если есть
+        # Отправляем превью
         sent_message = await context.bot.send_message(
             chat_id=user_id,
             text=preview_text,
@@ -464,50 +391,58 @@ class AdminPanel:
             parse_mode='HTML'
         )
         
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-        
-        # Если есть фото, отправляем его отдельно для предпросмотра
-        if photo_data:
+        # Если есть фото, отправляем его для предпросмотра
+        if draft["photo_data"]:
             try:
-                photo_message = await context.bot.send_photo(
+                await context.bot.send_photo(
                     chat_id=user_id,
-                    photo=photo_data,
+                    photo=draft["photo_data"],
                     caption="📸 <b>Предпросмотр фото:</b>",
                     parse_mode='HTML'
                 )
-                if photo_message:
-                    self.track_admin_message(user_id, photo_message.message_id)
             except Exception as e:
                 logger.error(f"❌ Ошибка при отправке предпросмотра фото: {e}")
     
-    async def execute_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_data):
-        """Выполнить отправку рассылки - ИСПРАВЛЕНО"""
+    async def execute_mass_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выполнить массовую рассылку"""
         user_id = update.effective_user.id
         
-        message_text = broadcast_data.get("message_text", "")
-        photo_data = broadcast_data.get("photo_data")
-        buttons = broadcast_data.get("buttons", [])
-        scheduled_hours = broadcast_data.get("scheduled_hours")
+        if user_id not in self.broadcast_drafts:
+            await update.callback_query.answer("❌ Черновик не найден!", show_alert=True)
+            return
+        
+        draft = self.broadcast_drafts[user_id]
+        
+        # Валидация
+        if not draft["message_text"]:
+            await update.callback_query.answer("❌ Сначала добавьте текст сообщения!", show_alert=True)
+            return
         
         try:
-            if scheduled_hours:
+            if draft["scheduled_hours"]:
                 # Запланированная рассылка
-                scheduled_time = datetime.now() + timedelta(hours=scheduled_hours)
-                broadcast_id = self.db.add_scheduled_broadcast(message_text, scheduled_time, photo_data)
+                scheduled_time = datetime.now() + timedelta(hours=draft["scheduled_hours"])
+                broadcast_id = self.db.add_scheduled_broadcast(
+                    draft["message_text"], 
+                    scheduled_time, 
+                    draft["photo_data"]
+                )
                 
                 # Добавляем кнопки если есть
-                for i, button in enumerate(buttons, 1):
-                    self.db.add_scheduled_broadcast_button(broadcast_id, button["text"], button["url"], i)
+                for i, button in enumerate(draft["buttons"], 1):
+                    self.db.add_scheduled_broadcast_button(
+                        broadcast_id, 
+                        button["text"], 
+                        button["url"], 
+                        i
+                    )
                 
-                # ИСПРАВЛЕНО: Правильная обработка callback
-                if hasattr(update, 'callback_query') and update.callback_query:
-                    await update.callback_query.answer("✅ Рассылка запланирована!")
+                await update.callback_query.answer("✅ Рассылка запланирована!")
                 
                 result_text = (
                     f"⏰ <b>Рассылка запланирована!</b>\n\n"
                     f"📅 <b>Время отправки:</b> {scheduled_time.strftime('%d.%m.%Y %H:%M')}\n"
-                    f"⌛ <b>Через:</b> {scheduled_hours} час(ов)\n"
+                    f"⌛ <b>Через:</b> {draft['scheduled_hours']} час(ов)\n"
                     f"📨 <b>ID рассылки:</b> #{broadcast_id}"
                 )
                 
@@ -516,23 +451,21 @@ class AdminPanel:
                 users_with_bot = self.db.get_users_with_bot_started()
                 
                 if not users_with_bot:
-                    if hasattr(update, 'callback_query') and update.callback_query:
-                        await update.callback_query.answer("❌ Нет пользователей для рассылки!", show_alert=True)
+                    await update.callback_query.answer("❌ Нет пользователей для рассылки!", show_alert=True)
                     return
                 
                 # Создаем клавиатуру если есть кнопки
                 reply_markup = None
-                if buttons:
+                if draft["buttons"]:
                     keyboard = []
-                    for button in buttons:
+                    for button in draft["buttons"]:
                         keyboard.append([InlineKeyboardButton(button["text"], url=button["url"])])
                     reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 sent_count = 0
                 failed_count = 0
                 
-                if hasattr(update, 'callback_query') and update.callback_query:
-                    await update.callback_query.answer("🚀 Начинаем рассылку...")
+                await update.callback_query.answer("🚀 Начинаем рассылку...")
                 
                 # Отправляем прогресс для больших рассылок
                 if len(users_with_bot) > 50:
@@ -541,33 +474,33 @@ class AdminPanel:
                         text="🚀 <b>Рассылка начата...</b>\n\n📊 Прогресс: 0%",
                         parse_mode='HTML'
                     )
-                    if progress_message:
-                        self.track_admin_message(user_id, progress_message.message_id)
+                else:
+                    progress_message = None
                 
                 for i, user in enumerate(users_with_bot):
                     user_id_to_send = user[0]
                     try:
                         await asyncio.sleep(0.1)  # Небольшая задержка
                         
-                        if photo_data:
+                        if draft["photo_data"]:
                             await context.bot.send_photo(
                                 chat_id=user_id_to_send,
-                                photo=photo_data,
-                                caption=message_text,
+                                photo=draft["photo_data"],
+                                caption=draft["message_text"],
                                 parse_mode='HTML',
                                 reply_markup=reply_markup
                             )
                         else:
                             await context.bot.send_message(
                                 chat_id=user_id_to_send,
-                                text=message_text,
+                                text=draft["message_text"],
                                 parse_mode='HTML',
                                 reply_markup=reply_markup
                             )
                         sent_count += 1
                         
                         # Обновляем прогресс каждые 25 пользователей
-                        if len(users_with_bot) > 50 and i % 25 == 0:
+                        if progress_message and i % 25 == 0:
                             progress = int((i / len(users_with_bot)) * 100)
                             try:
                                 await progress_message.edit_text(
@@ -577,7 +510,7 @@ class AdminPanel:
                                     parse_mode='HTML'
                                 )
                             except:
-                                pass  # Игнорируем ошибки обновления прогресса
+                                pass
                         
                     except Exception as e:
                         failed_count += 1
@@ -589,19 +522,16 @@ class AdminPanel:
                     f"❌ <b>Ошибок:</b> {failed_count}"
                 )
             
-            # Очищаем состояние
-            if user_id in self.waiting_for:
-                del self.waiting_for[user_id]
+            # Очищаем черновик
+            if user_id in self.broadcast_drafts:
+                del self.broadcast_drafts[user_id]
             
-            # ИСПРАВЛЕНО: Отправляем результат
-            sent_message = await context.bot.send_message(
+            # Отправляем результат
+            await context.bot.send_message(
                 chat_id=user_id,
                 text=result_text,
                 parse_mode='HTML'
             )
-            
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
             
             # Возвращаемся в главное меню через 3 секунды
             await asyncio.sleep(3)
@@ -609,14 +539,11 @@ class AdminPanel:
             
         except Exception as e:
             logger.error(f"❌ Ошибка при выполнении рассылки: {e}")
-            if hasattr(update, 'callback_query') and update.callback_query:
-                await update.callback_query.answer("❌ Ошибка при отправке рассылки!", show_alert=True)
+            await update.callback_query.answer("❌ Ошибка при отправке рассылки!", show_alert=True)
     
     async def show_main_menu_safe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Безопасный показ главного меню"""
         user_id = update.effective_user.id
-        
-        await self.cleanup_previous_messages(update, context, user_id)
         
         broadcast_status = self.db.get_broadcast_status()
         status_icon = "🟢" if broadcast_status['enabled'] else "🔴"
@@ -636,25 +563,18 @@ class AdminPanel:
         
         text = "🔧 <b>Админ-панель</b>\n\nВыберите действие:"
         
-        sent_message = await context.bot.send_message(
+        await context.bot.send_message(
             chat_id=user_id,
             text=text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-        
-        return sent_message
     
-    # ===== ОСТАЛЬНЫЕ МЕТОДЫ (продолжение следует...) =====
+    # ===== ОСТАЛЬНЫЕ МЕТОДЫ =====
     
     async def show_users_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать список пользователей"""
-        user_id = update.effective_user.id
-        
-        users = self.db.get_latest_users(10)  # Показываем последних 10
+        users = self.db.get_latest_users(10)
         
         if not users:
             text = "👥 <b>Список пользователей</b>\n\nПользователей пока нет."
@@ -663,7 +583,6 @@ class AdminPanel:
             for user in users:
                 user_id_db, username, first_name, joined_at, is_active, bot_started = user
                 username_str = f"@{username}" if username else "без username"
-                # Форматируем дату
                 join_date = datetime.fromisoformat(joined_at).strftime("%d.%m.%Y %H:%M")
                 bot_status = "💬" if bot_started else "❌"
                 text += f"• {first_name} ({username_str}) {bot_status}\n  ID: {user_id_db}, {join_date}\n\n"
@@ -676,37 +595,27 @@ class AdminPanel:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        sent_message = await update.callback_query.edit_message_text(
+        await update.callback_query.edit_message_text(
             text=text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
     
     async def send_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отправить CSV файл с пользователями"""
-        user_id = update.effective_user.id
-        
         try:
             csv_content = self.db.export_users_to_csv()
             
-            # Создаем файл в памяти
             csv_file = io.BytesIO()
             csv_file.write(csv_content.encode('utf-8'))
             csv_file.seek(0)
             
-            # Отправляем файл
-            sent_message = await context.bot.send_document(
+            await context.bot.send_document(
                 chat_id=update.callback_query.from_user.id,
                 document=csv_file,
                 filename=f"users_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 caption="📊 Список всех пользователей бота"
             )
-            
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
             
             await update.callback_query.answer("CSV файл отправлен!")
             
@@ -722,7 +631,7 @@ class AdminPanel:
         texts = {
             "welcome": "✏️ Отправьте новое приветственное сообщение:",
             "goodbye": "✏️ Отправьте новое прощальное сообщение:",
-            "success_message": "✏️ Отправьте новое сообщение подтверждения (отправляется после успешной подписки):",
+            "success_message": "✏️ Отправьте новое сообщение подтверждения:",
             "broadcast_text": f"✏️ Отправьте новый текст для сообщения {kwargs.get('message_number')}:",
             "broadcast_delay": self._get_delay_text(kwargs.get('message_number')),
             "broadcast_photo": f"🖼 Отправьте фото для сообщения {kwargs.get('message_number')} или ссылку на фото:",
@@ -730,27 +639,27 @@ class AdminPanel:
             "goodbye_photo": "🖼 Отправьте фото для прощального сообщения или ссылку на фото:",
             "edit_button_text": "✏️ Отправьте новый текст для кнопки:",
             "edit_button_url": "🔗 Отправьте новый URL для кнопки:",
-            "schedule_hours": "⏰ Через сколько часов отправить рассылку?\n\nПримеры: 1, 2.5, 24",
-            "add_broadcast_button_text": "✏️ Отправьте текст для кнопки:",
-            "add_broadcast_photo": "🖼 Отправьте фото для рассылки или ссылку на фото:",
             "broadcast_timer": "⏰ Отправьте количество часов, через которое возобновить рассылку:",
             "add_message": "✏️ Отправьте текст нового сообщения:",
             "add_button": f"✏️ Отправьте текст для новой кнопки сообщения {kwargs.get('message_number')}:",
+            # Новые типы для массовой рассылки
+            "mass_text": "✏️ Отправьте текст для массовой рассылки:",
+            "mass_photo": "🖼 Отправьте фото для массовой рассылки или ссылку на фото:",
+            "mass_time": "⏰ Через сколько часов отправить рассылку?\n\nПримеры: 1, 2.5, 24\n\nОставьте пустым для отправки сейчас:",
+            "mass_button_text": "✏️ Отправьте текст для кнопки:",
+            "mass_button_url": "🔗 Отправьте URL для кнопки:",
         }
         
         text = texts.get(input_type, "Отправьте необходимые данные:")
         
-        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="admin_cancel")]]
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="admin_send_all")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        sent_message = await update.callback_query.edit_message_text(
+        await update.callback_query.edit_message_text(
             text=text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
     
     def _get_delay_text(self, message_number):
         """Получить текст для ввода задержки"""
@@ -764,139 +673,6 @@ class AdminPanel:
             f"💡 Примеры: <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>1.5</code>"
         )
     
-    def _get_schedule_time_text(self):
-        """Получить текст для ввода времени планирования"""
-        return (
-            "⏰ Через сколько часов отправить рассылку?\n\n"
-            "📝 <b>Форматы ввода:</b>\n"
-            "• <code>1ч</code> или <code>1 час</code> - через 1 час\n"
-            "• <code>24ч</code> или <code>24 часа</code> - через 24 часа\n"
-            "• <code>0.5</code> - через 30 минут\n"
-            "• <code>48</code> - через 48 часов\n\n"
-            "💡 Примеры: <code>2ч</code>, <code>12 часов</code>, <code>0.5</code>"
-        )
-    
-    # ===== ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ОБРАБОТКИ URL-ССЫЛОК НА ФОТО =====
-    
-    async def handle_photo_url_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, input_type: str, **kwargs):
-        """Обработка URL-ссылок на фото"""
-        user_id = update.effective_user.id
-        
-        if input_type == "broadcast_photo":
-            message_number = kwargs.get("message_number")
-            self.db.update_broadcast_message(message_number, photo_url=url)
-            sent_message = await update.message.reply_text(f"✅ Ссылка на фото для сообщения {message_number} сохранена!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            del self.waiting_for[user_id]
-            await self.show_message_edit_from_context(update, context, message_number)
-        
-        elif input_type == "welcome_photo":
-            welcome_text = self.db.get_welcome_message()['text']
-            self.db.set_welcome_message(welcome_text, photo_url=url)
-            sent_message = await update.message.reply_text("✅ Ссылка на фото для приветственного сообщения сохранена!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            del self.waiting_for[user_id]
-            await self.show_welcome_edit_from_context(update, context)
-        
-        elif input_type == "goodbye_photo":
-            goodbye_text = self.db.get_goodbye_message()['text']
-            self.db.set_goodbye_message(goodbye_text, photo_url=url)
-            sent_message = await update.message.reply_text("✅ Ссылка на фото для прощального сообщения сохранена!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            del self.waiting_for[user_id]
-            await self.show_goodbye_edit_from_context(update, context)
-        
-        elif input_type == "add_broadcast_photo":
-            self.waiting_for[user_id]["photo_data"] = url
-            sent_message = await update.message.reply_text("✅ Ссылка на фото добавлена!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            await self.show_broadcast_options(update, context)
-    
-    # ===== ОЧИСТКА ИСТЕКШИХ СОСТОЯНИЙ =====
-    
-    async def cleanup_expired_waiting_states(self):
-        """Очистка просроченных состояний ожидания"""
-        current_time = datetime.now()
-        expired_users = []
-        
-        for user_id, data in self.waiting_for.items():
-            created_at = data.get("created_at", current_time)
-            if (current_time - created_at).total_seconds() > 1800:  # 30 минут
-                expired_users.append(user_id)
-        
-        for user_id in expired_users:
-            del self.waiting_for[user_id]
-            logger.info(f"🧹 Очищено просроченное состояние для пользователя {user_id}")
-    
-    # ===== МЕТОДЫ ЛОГИРОВАНИЯ =====
-    
-    def log_admin_action(self, user_id: int, action: str, details: str = ""):
-        """Логирование действий администратора"""
-        logger.info(f"👑 Админ {user_id}: {action} - {details}")
-    
-    def log_broadcast_action(self, user_id: int, action: str, details: str = ""):
-        """Логирование действий с рассылкой"""
-        logger.info(f"📢 Админ {user_id}: {action} - {details}")
-    
-    # ===== ВАЛИДАЦИЯ ДАННЫХ =====
-    
-    def validate_broadcast_data(self, broadcast_data: dict) -> tuple[bool, str]:
-        """Валидация данных рассылки перед отправкой"""
-        if not broadcast_data.get("message_text"):
-            return False, "Отсутствует текст сообщения"
-        
-        if len(broadcast_data.get("message_text", "")) > 4096:
-            return False, "Текст сообщения слишком длинный (максимум 4096 символов)"
-        
-        buttons = broadcast_data.get("buttons", [])
-        if len(buttons) > 10:
-            return False, "Слишком много кнопок (максимум 10)"
-        
-        for button in buttons:
-            if not button.get("text") or not button.get("url"):
-                return False, "Некорректная кнопка"
-            
-            if len(button.get("text", "")) > 64:
-                return False, "Текст кнопки слишком длинный (максимум 64 символа)"
-            
-            if len(button.get("url", "")) > 256:
-                return False, "URL кнопки слишком длинный"
-        
-        return True, ""
-    
-    # ===== МЕТОДЫ ДЛЯ РАБОТЫ С ТАЙМЕРАМИ =====
-    
-    async def handle_broadcast_timer(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка установки таймера рассылки"""
-        user_id = update.effective_user.id
-        
-        try:
-            hours = float(text)
-            if hours < 1:
-                raise ValueError("Время должно быть больше 0")
-            
-            resume_time = datetime.now() + timedelta(hours=hours)
-            self.db.set_broadcast_status(False, resume_time.isoformat())
-            
-            sent_message = await update.message.reply_text(
-                f"✅ Рассылка отключена на {hours} часов. Автовозобновление: {resume_time.strftime('%d.%m.%Y %H:%M')}"
-            )
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            
-            del self.waiting_for[user_id]
-            await asyncio.sleep(2)
-            await self.show_main_menu_safe(update, context)
-            
-        except ValueError:
-            sent_message = await update.message.reply_text("❌ Пожалуйста, введите корректное число часов (больше 0)")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-    
     # ===== ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ =====
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -905,7 +681,6 @@ class AdminPanel:
         data = query.data
         user_id = query.from_user.id
         
-        # Всегда отвечаем на callback query
         await query.answer()
         
         try:
@@ -938,90 +713,35 @@ class AdminPanel:
             elif data == "disable_broadcast":
                 self.db.set_broadcast_status(False, None)
                 await self.show_broadcast_status(update, context)
+            elif data == "set_broadcast_timer":
+                await self.request_text_input(update, context, "broadcast_timer")
             
-            # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ УЛУЧШЕННОЙ РАССЫЛКИ =====
-            elif data == "send_immediately":
-                if user_id in self.waiting_for:
-                    broadcast_data = self.waiting_for[user_id]
-                    # Валидация данных перед отправкой
-                    is_valid, error_msg = self.validate_broadcast_data(broadcast_data)
-                    if not is_valid:
-                        await self.show_error_message(update, context, f"❌ {error_msg}")
-                        return
-                    await self.show_broadcast_preview(update, context, broadcast_data)
-                else:
-                    await self.show_error_message(update, context, "❌ Данные рассылки не найдены. Начните сначала.")
-            
-            elif data == "schedule_broadcast":
-                if user_id in self.waiting_for:
-                    broadcast_data = self.waiting_for[user_id]
-                    # Валидация данных перед планированием
-                    is_valid, error_msg = self.validate_broadcast_data(broadcast_data)
-                    if not is_valid:
-                        await self.show_error_message(update, context, f"❌ {error_msg}")
-                        return
-                    await self.request_text_input(update, context, "schedule_hours")
-                else:
-                    await self.show_error_message(update, context, "❌ Данные рассылки не найдены. Начните сначала.")
-            
-            elif data == "add_broadcast_button":
-                if user_id in self.waiting_for:
-                    buttons_count = len(self.waiting_for[user_id].get("buttons", []))
-                    if buttons_count >= 10:
-                        await self.show_error_message(update, context, "❌ Максимум 10 кнопок на сообщение.")
-                        return
-                    await self.request_text_input(update, context, "add_broadcast_button_text")
-                else:
-                    await self.show_error_message(update, context, "❌ Данные рассылки не найдены. Начните сначала.")
-            
-            elif data == "add_broadcast_photo":
-                if user_id in self.waiting_for:
-                    await self.request_text_input(update, context, "add_broadcast_photo")
-                else:
-                    await self.show_error_message(update, context, "❌ Данные рассылки не найдены. Начните сначала.")
-            
-            elif data == "remove_broadcast_photo":
-                if user_id in self.waiting_for:
-                    self.waiting_for[user_id]["photo_data"] = None
-                    await self.show_broadcast_options(update, context)
-                else:
-                    await self.show_error_message(update, context, "❌ Данные рассылки не найдены.")
-            
-            elif data == "remove_last_button":
-                if user_id in self.waiting_for and "buttons" in self.waiting_for[user_id]:
-                    if self.waiting_for[user_id]["buttons"]:
-                        self.waiting_for[user_id]["buttons"].pop()
-                        await self.show_broadcast_options(update, context)
-                    else:
-                        await self.show_error_message(update, context, "❌ Нет кнопок для удаления.")
-                else:
-                    await self.show_error_message(update, context, "❌ Данные рассылки не найдены.")
-            
-            elif data == "confirm_broadcast":
-                if user_id in self.waiting_for:
-                    broadcast_data = self.waiting_for[user_id]
-                    # Финальная валидация
-                    is_valid, error_msg = self.validate_broadcast_data(broadcast_data)
-                    if not is_valid:
-                        await self.show_error_message(update, context, f"❌ {error_msg}")
-                        return
-                    # Логируем действие
-                    self.log_broadcast_action(user_id, "Подтверждение рассылки", self.get_broadcast_summary(broadcast_data))
-                    await self.execute_broadcast(update, context, broadcast_data)
-                else:
-                    await self.show_error_message(update, context, "❌ Данные рассылки не найдены. Начните сначала.")
-            
-            elif data == "edit_broadcast":
-                if user_id in self.waiting_for:
-                    await self.show_broadcast_options(update, context)
-                else:
-                    await self.show_error_message(update, context, "❌ Данные рассылки не найдены. Начните сначала.")
-            
-            elif data == "admin_cancel":
-                if user_id in self.waiting_for:
-                    self.log_admin_action(user_id, "Отмена операции", f"Тип: {self.waiting_for[user_id].get('type', 'unknown')}")
-                    del self.waiting_for[user_id]
-                await self.show_main_menu(update, context)
+            # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ МАССОВОЙ РАССЫЛКИ =====
+            elif data == "mass_edit_text":
+                await self.request_text_input(update, context, "mass_text")
+            elif data == "mass_add_photo":
+                await self.request_text_input(update, context, "mass_photo")
+            elif data == "mass_set_time":
+                await self.request_text_input(update, context, "mass_time")
+            elif data == "mass_add_button":
+                await self.request_text_input(update, context, "mass_button_text")
+            elif data == "mass_remove_photo":
+                if user_id in self.broadcast_drafts:
+                    self.broadcast_drafts[user_id]["photo_data"] = None
+                    await self.show_send_all_menu(update, context)
+            elif data == "mass_remove_button":
+                if user_id in self.broadcast_drafts and self.broadcast_drafts[user_id]["buttons"]:
+                    self.broadcast_drafts[user_id]["buttons"].pop()
+                    await self.show_send_all_menu(update, context)
+            elif data == "mass_preview":
+                await self.show_mass_broadcast_preview(update, context)
+            elif data == "mass_send_now":
+                if user_id in self.broadcast_drafts:
+                    # Убираем время планирования для немедленной отправки
+                    self.broadcast_drafts[user_id]["scheduled_hours"] = None
+                    await self.show_mass_broadcast_preview(update, context)
+            elif data == "mass_confirm_send":
+                await self.execute_mass_broadcast(update, context)
             
             # ===== ОБРАБОТЧИКИ ДЛЯ ОСНОВНЫХ СООБЩЕНИЙ РАССЫЛКИ =====
             elif data.startswith("edit_msg_"):
@@ -1041,7 +761,6 @@ class AdminPanel:
                 await self.request_text_input(update, context, "edit_button_url", button_id=button_id)
             elif data.startswith("delete_button_"):
                 button_id = int(data.split("_")[2])
-                # Получаем message_number для возврата
                 conn = self.db._get_connection()
                 cursor = conn.cursor()
                 cursor.execute('SELECT message_number FROM message_buttons WHERE id = ?', (button_id,))
@@ -1051,7 +770,6 @@ class AdminPanel:
                 if result:
                     message_number = result[0]
                     self.db.delete_message_button(button_id)
-                    self.log_admin_action(user_id, "Удаление кнопки", f"Кнопка ID {button_id} из сообщения {message_number}")
                     await self.show_message_buttons(update, context, message_number)
             
             # ===== ОБРАБОТЧИКИ ДЛЯ ПРИВЕТСТВЕННОГО СООБЩЕНИЯ =====
@@ -1064,7 +782,6 @@ class AdminPanel:
             elif data == "remove_welcome_photo":
                 welcome_text = self.db.get_welcome_message()['text']
                 self.db.set_welcome_message(welcome_text, photo_url="")
-                self.log_admin_action(user_id, "Удаление фото приветствия")
                 await self.show_welcome_edit(update, context)
             
             # ===== ОБРАБОТЧИКИ ДЛЯ ПРОЩАЛЬНОГО СООБЩЕНИЯ =====
@@ -1075,14 +792,12 @@ class AdminPanel:
             elif data == "remove_goodbye_photo":
                 goodbye_text = self.db.get_goodbye_message()['text']
                 self.db.set_goodbye_message(goodbye_text, photo_url="")
-                self.log_admin_action(user_id, "Удаление фото прощания")
                 await self.show_goodbye_edit(update, context)
             
             # ===== ОБРАБОТЧИКИ ДЛЯ СООБЩЕНИЯ ПОДТВЕРЖДЕНИЯ =====
             elif data == "edit_success_message_text":
                 await self.request_text_input(update, context, "success_message")
             elif data == "reset_success_message":
-                # Сбрасываем на сообщение по умолчанию
                 default_success_message = (
                     "👋 <b>Добро пожаловать!</b>\n\n"
                     "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
@@ -1100,12 +815,11 @@ class AdminPanel:
                               ('success_message', default_success_message))
                 conn.commit()
                 conn.close()
-                self.log_admin_action(user_id, "Сброс сообщения подтверждения на умолчание")
                 await self.show_success_message_edit(update, context)
             
             # ===== ДОПОЛНИТЕЛЬНЫЕ ОБРАБОТЧИКИ =====
             elif await self.handle_additional_callbacks(update, context):
-                pass  # Обработано в дополнительном методе
+                pass
             
             else:
                 await self.show_error_message(update, context, "❌ Неизвестная команда.")
@@ -1123,14 +837,11 @@ class AdminPanel:
             del self.waiting_for[user_id]
         
         # Отправляем сообщение об ошибке
-        error_message = await context.bot.send_message(
+        await context.bot.send_message(
             chat_id=user_id,
             text=error_text,
             parse_mode='HTML'
         )
-        
-        if error_message:
-            self.track_admin_message(user_id, error_message.message_id)
         
         # Показываем главное меню через 2 секунды
         await asyncio.sleep(2)
@@ -1163,17 +874,19 @@ class AdminPanel:
                 await self.show_error_message(update, context, "❌ Пустое сообщение. Попробуйте еще раз.")
                 return
             
-            # Обработка в зависимости от типа ввода
-            if input_type == "send_all_text":
-                await self.handle_send_all_text(update, context, text)
-            elif input_type == "schedule_hours":
-                await self.handle_schedule_hours(update, context, text)
-            elif input_type == "add_broadcast_button_text":
-                await self.handle_add_broadcast_button_text(update, context, text)
-            elif input_type == "add_broadcast_button_url":
-                await self.handle_add_broadcast_button_url(update, context, text)
-            elif input_type == "add_broadcast_photo":
-                await self.handle_add_broadcast_photo_text(update, context, text)
+            # ===== ОБРАБОТКА НОВЫХ ТИПОВ ДЛЯ МАССОВОЙ РАССЫЛКИ =====
+            if input_type == "mass_text":
+                await self.handle_mass_text_input(update, context, text)
+            elif input_type == "mass_photo":
+                await self.handle_mass_photo_input(update, context, text)
+            elif input_type == "mass_time":
+                await self.handle_mass_time_input(update, context, text)
+            elif input_type == "mass_button_text":
+                await self.handle_mass_button_text_input(update, context, text)
+            elif input_type == "mass_button_url":
+                await self.handle_mass_button_url_input(update, context, text)
+            
+            # ===== ОБРАБОТКА ОСТАЛЬНЫХ ТИПОВ =====
             elif input_type == "broadcast_timer":
                 await self.handle_broadcast_timer(update, context, text)
             elif input_type == "add_message":
@@ -1187,9 +900,7 @@ class AdminPanel:
                     await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
                     return
                 self.db.set_welcome_message(text)
-                sent_message = await update.message.reply_text("✅ Приветственное сообщение обновлено!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
+                await update.message.reply_text("✅ Приветственное сообщение обновлено!")
                 del self.waiting_for[user_id]
                 await self.show_welcome_edit_from_context(update, context)
                 
@@ -1198,9 +909,7 @@ class AdminPanel:
                     await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
                     return
                 self.db.set_goodbye_message(text)
-                sent_message = await update.message.reply_text("✅ Прощальное сообщение обновлено!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
+                await update.message.reply_text("✅ Прощальное сообщение обновлено!")
                 del self.waiting_for[user_id]
                 await self.show_goodbye_edit_from_context(update, context)
             
@@ -1213,9 +922,7 @@ class AdminPanel:
                 cursor.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ('success_message', text))
                 conn.commit()
                 conn.close()
-                sent_message = await update.message.reply_text("✅ Сообщение подтверждения обновлено!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
+                await update.message.reply_text("✅ Сообщение подтверждения обновлено!")
                 del self.waiting_for[user_id]
                 await self.show_success_message_edit_from_context(update, context)
             
@@ -1226,27 +933,22 @@ class AdminPanel:
                     await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
                     return
                 self.db.update_broadcast_message(message_number, text=text)
-                sent_message = await update.message.reply_text(f"✅ Текст сообщения {message_number} обновлён!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
+                await update.message.reply_text(f"✅ Текст сообщения {message_number} обновлён!")
                 del self.waiting_for[user_id]
                 await self.show_message_edit_from_context(update, context, message_number)
             
             elif input_type == "broadcast_delay":
                 message_number = waiting_data["message_number"]
                 
-                # Парсим новый формат ввода
                 delay_hours, delay_display = self.parse_delay_input(text)
                 
                 if delay_hours is not None and delay_hours > 0:
                     self.db.update_broadcast_message(message_number, delay_hours=delay_hours)
-                    sent_message = await update.message.reply_text(f"✅ Задержка для сообщения {message_number} установлена на {delay_display}!")
-                    if sent_message:
-                        self.track_admin_message(user_id, sent_message.message_id)
+                    await update.message.reply_text(f"✅ Задержка для сообщения {message_number} установлена на {delay_display}!")
                     del self.waiting_for[user_id]
                     await self.show_message_edit_from_context(update, context, message_number)
                 else:
-                    sent_message = await update.message.reply_text(
+                    await update.message.reply_text(
                         "❌ Неверный формат! Примеры правильного ввода:\n\n"
                         "• <code>3м</code> или <code>3 минуты</code>\n"
                         "• <code>2ч</code> или <code>2 часа</code>\n"
@@ -1254,8 +956,6 @@ class AdminPanel:
                         "• <code>0.05</code> (для 3 минут)",
                         parse_mode='HTML'
                     )
-                    if sent_message:
-                        self.track_admin_message(user_id, sent_message.message_id)
             
             # Обработка URL-ссылок на фото
             elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo"]:
@@ -1271,17 +971,13 @@ class AdminPanel:
                     return
                     
                 self.db.update_message_button(button_id, button_text=text)
-                sent_message = await update.message.reply_text("✅ Текст кнопки обновлен!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
+                await update.message.reply_text("✅ Текст кнопки обновлен!")
                 del self.waiting_for[user_id]
                 await self.show_button_edit_from_context(update, context, button_id)
             
             elif input_type == "edit_button_url":
                 if not (text.startswith("http://") or text.startswith("https://")):
-                    sent_message = await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
-                    if sent_message:
-                        self.track_admin_message(user_id, sent_message.message_id)
+                    await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
                     return
                 
                 if len(text) > 256:
@@ -1290,9 +986,7 @@ class AdminPanel:
                 
                 button_id = waiting_data["button_id"]
                 self.db.update_message_button(button_id, button_url=text)
-                sent_message = await update.message.reply_text("✅ URL кнопки обновлен!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
+                await update.message.reply_text("✅ URL кнопки обновлен!")
                 del self.waiting_for[user_id]
                 await self.show_button_edit_from_context(update, context, button_id)
             
@@ -1303,395 +997,168 @@ class AdminPanel:
             logger.error(f"❌ Ошибка при обработке сообщения от админа {user_id}: {e}")
             await self.show_error_message(update, context, "❌ Произошла ошибка при обработке вашего сообщения.")
     
-    # ===== ДОПОЛНИТЕЛЬНЫЕ ОБРАБОТЧИКИ ДЛЯ CALLBACK =====
+    # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ МАССОВОЙ РАССЫЛКИ =====
     
-    async def handle_additional_callbacks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Дополнительные обработчики callback для полноты функционала"""
-        query = update.callback_query
-        data = query.data
-        user_id = query.from_user.id
-        
-        # Обработка для базовых сообщений рассылки
-        if data.startswith("edit_text_"):
-            message_number = int(data.split("_")[2])
-            await self.request_text_input(update, context, "broadcast_text", message_number=message_number)
-        elif data.startswith("edit_delay_"):
-            message_number = int(data.split("_")[2])
-            await self.request_text_input(update, context, "broadcast_delay", message_number=message_number)
-        elif data.startswith("edit_photo_"):
-            message_number = int(data.split("_")[2])
-            await self.request_text_input(update, context, "broadcast_photo", message_number=message_number)
-        elif data.startswith("remove_photo_"):
-            message_number = int(data.split("_")[2])
-            self.db.update_broadcast_message(message_number, photo_url="")
-            self.log_admin_action(user_id, "Удаление фото", f"Сообщение {message_number}")
-            await self.show_message_edit(update, context, message_number)
-        elif data.startswith("add_button_"):
-            message_number = int(data.split("_")[2])
-            # Проверяем лимит кнопок
-            existing_buttons = self.db.get_message_buttons(message_number)
-            if len(existing_buttons) >= 3:
-                await query.answer("❌ Максимум 3 кнопки на сообщение!", show_alert=True)
-                return False
-            await self.request_text_input(update, context, "add_button", message_number=message_number)
-        elif data.startswith("delete_msg_"):
-            message_number = int(data.split("_")[2])
-            # Подтверждение удаления
-            keyboard = [
-                [InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_{message_number}")],
-                [InlineKeyboardButton("❌ Отмена", callback_data=f"edit_msg_{message_number}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            sent_message = await query.edit_message_text(
-                text=f"⚠️ Вы уверены, что хотите удалить сообщение {message_number}?\n\nЭто также отменит все запланированные отправки этого сообщения.",
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-            
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-        elif data.startswith("confirm_delete_"):
-            message_number = int(data.split("_")[2])
-            self.db.delete_broadcast_message(message_number)
-            self.log_admin_action(user_id, "Удаление сообщения", f"Сообщение {message_number}")
-            await self.show_broadcast_menu(update, context)
-        elif data == "set_broadcast_timer":
-            await self.request_text_input(update, context, "broadcast_timer")
-        elif data == "add_message":
-            await self.request_text_input(update, context, "add_message")
-        else:
-            return False  # Не обработано
-        
-        return True  # Обработано
-    
-    # ===== ФИНАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====
-    
-    def get_broadcast_summary(self, broadcast_data: dict) -> str:
-        """Получить краткое описание рассылки"""
-        summary = []
-        
-        message_text = broadcast_data.get("message_text", "")
-        if message_text:
-            summary.append(f"📝 Текст: {message_text[:30]}{'...' if len(message_text) > 30 else ''}")
-        
-        if broadcast_data.get("photo_data"):
-            summary.append("🖼 Фото: Есть")
-        
-        buttons = broadcast_data.get("buttons", [])
-        if buttons:
-            summary.append(f"🔘 Кнопки: {len(buttons)}")
-        
-        scheduled_hours = broadcast_data.get("scheduled_hours")
-        if scheduled_hours:
-            summary.append(f"⏰ Запланировано: через {scheduled_hours} ч.")
-        
-        return "\n".join(summary) if summary else "Нет данных"
-    
-    def format_time_until(self, scheduled_time: datetime) -> str:
-        """Форматировать время до отправки"""
-        now = datetime.now()
-        diff = scheduled_time - now
-        
-        if diff.total_seconds() <= 0:
-            return "Готово к отправке"
-        
-        if diff.days > 0:
-            return f"{diff.days} дн. {diff.seconds // 3600} ч."
-        elif diff.seconds >= 3600:
-            hours = diff.seconds // 3600
-            minutes = (diff.seconds % 3600) // 60
-            return f"{hours} ч. {minutes} мин."
-        else:
-            minutes = diff.seconds // 60
-            return f"{minutes} мин."
-    
-    def format_delay_display(self, delay_hours: float) -> str:
-        """Форматировать отображение задержки"""
-        if delay_hours < 1:
-            return f"{int(delay_hours * 60)} минут"
-        else:
-            return f"{delay_hours} часов"
-    
-    # ===== МЕТОДЫ ДЛЯ РАБОТЫ С ДОБАВЛЕНИЕМ СООБЩЕНИЙ =====
-    
-    async def handle_add_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка добавления нового сообщения"""
+    async def handle_mass_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода текста для массовой рассылки"""
         user_id = update.effective_user.id
-        waiting_data = self.waiting_for[user_id]
-        
-        if waiting_data.get("step") == "text":
-            # Сохраняем текст и запрашиваем задержку
-            self.waiting_for[user_id]["text"] = text
-            self.waiting_for[user_id]["step"] = "delay"
-            sent_message = await update.message.reply_text(
-                "⏰ Теперь отправьте задержку:\n\n"
-                "📝 <b>Форматы ввода:</b>\n"
-                "• <code>30м</code> или <code>30 минут</code> - для минут\n"
-                "• <code>2ч</code> или <code>2 часа</code> - для часов\n"
-                "• <code>1.5</code> - для 1.5 часов\n"
-                "• <code>0.05</code> - для 3 минут",
-                parse_mode='HTML'
-            )
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-        elif waiting_data.get("step") == "delay":
-            # Парсим задержку
-            delay_hours, delay_display = self.parse_delay_input(text)
-            
-            if delay_hours is not None and delay_hours > 0:
-                # Добавляем сообщение
-                message_text = waiting_data["text"]
-                new_number = self.db.add_broadcast_message(message_text, delay_hours)
-                
-                sent_message = await update.message.reply_text(f"✅ Сообщение {new_number} добавлено с задержкой {delay_display}!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-                del self.waiting_for[user_id]
-                await self.show_broadcast_menu_from_context(update, context)
-            else:
-                sent_message = await update.message.reply_text(
-                    "❌ Неверный формат! Примеры правильного ввода:\n\n"
-                    "• <code>3м</code> или <code>3 минуты</code>\n"
-                    "• <code>2ч</code> или <code>2 часа</code>\n"
-                    "• <code>1.5</code> (для 1.5 часов)\n"
-                    "• <code>0.05</code> (для 3 минут)",
-                    parse_mode='HTML'
-                )
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-        else:
-            # Новое сообщение - сначала текст
-            self.waiting_for[user_id]["step"] = "text"
-            await self.handle_add_message(update, context, text)  # Повторная обработка
-    
-    async def handle_add_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка добавления кнопки к сообщению"""
-        user_id = update.effective_user.id
-        waiting_data = self.waiting_for[user_id]
-        
-        if waiting_data.get("step") == "text":
-            # Сохраняем текст и запрашиваем URL
-            self.waiting_for[user_id]["button_text"] = text
-            self.waiting_for[user_id]["step"] = "url"
-            sent_message = await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-        elif waiting_data.get("step") == "url":
-            # Проверяем URL
-            if not (text.startswith("http://") or text.startswith("https://")):
-                sent_message = await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-                return
-            
-            # Добавляем кнопку
-            message_number = waiting_data["message_number"]
-            button_text = waiting_data["button_text"]
-            
-            # Определяем позицию
-            existing_buttons = self.db.get_message_buttons(message_number)
-            position = len(existing_buttons) + 1
-            
-            self.db.add_message_button(message_number, button_text, text, position)
-            sent_message = await update.message.reply_text("✅ Кнопка добавлена!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            del self.waiting_for[user_id]
-            await self.show_message_buttons_from_context(update, context, message_number)
-        else:
-            # Новая кнопка - сначала текст
-            self.waiting_for[user_id]["step"] = "text"
-            await self.handle_add_button(update, context, text)  # Повторная обработка
-    
-    async def handle_add_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка добавления нового сообщения"""
-        user_id = update.effective_user.id
-        waiting_data = self.waiting_for[user_id]
         
         if len(text) > 4096:
             await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
             return
         
-        if waiting_data.get("step") == "text":
-            # Сохраняем текст и запрашиваем задержку
-            self.waiting_for[user_id]["text"] = text
-            self.waiting_for[user_id]["step"] = "delay"
-            sent_message = await update.message.reply_text(
-                "⏰ Теперь отправьте задержку:\n\n"
-                "📝 <b>Форматы ввода:</b>\n"
-                "• <code>30м</code> или <code>30 минут</code> - для минут\n"
-                "• <code>2ч</code> или <code>2 часа</code> - для часов\n"
-                "• <code>1.5</code> - для 1.5 часов\n"
-                "• <code>0.05</code> - для 3 минут",
-                parse_mode='HTML'
-            )
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-        elif waiting_data.get("step") == "delay":
-            # Парсим задержку
-            delay_hours, delay_display = self.parse_delay_input(text)
-            
-            if delay_hours is not None and delay_hours > 0:
-                # Добавляем сообщение
-                message_text = waiting_data["text"]
-                new_number = self.db.add_broadcast_message(message_text, delay_hours)
-                
-                self.log_admin_action(user_id, "Добавление сообщения", f"Сообщение {new_number}, задержка {delay_display}")
-                
-                sent_message = await update.message.reply_text(f"✅ Сообщение {new_number} добавлено с задержкой {delay_display}!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-                del self.waiting_for[user_id]
-                await self.show_broadcast_menu_from_context(update, context)
-            else:
-                sent_message = await update.message.reply_text(
-                    "❌ Неверный формат! Примеры правильного ввода:\n\n"
-                    "• <code>3м</code> или <code>3 минуты</code>\n"
-                    "• <code>2ч</code> или <code>2 часа</code>\n"
-                    "• <code>1.5</code> (для 1.5 часов)\n"
-                    "• <code>0.05</code> (для 3 минут)",
-                    parse_mode='HTML'
-                )
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-        else:
-            # Новое сообщение - сначала текст
-            self.waiting_for[user_id]["step"] = "text"
-            await self.handle_add_message(update, context, text)  # Повторная обработка
+        # Инициализируем черновик если его нет
+        if user_id not in self.broadcast_drafts:
+            self.broadcast_drafts[user_id] = {
+                "message_text": "",
+                "photo_data": None,
+                "buttons": [],
+                "scheduled_hours": None,
+                "created_at": datetime.now()
+            }
+        
+        self.broadcast_drafts[user_id]["message_text"] = text
+        
+        await update.message.reply_text("✅ Текст сообщения сохранен!")
+        del self.waiting_for[user_id]
+        
+        # Возвращаемся в меню
+        await self.show_send_all_menu_from_context(update, context)
     
-    async def handle_add_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка добавления кнопки к сообщению"""
+    async def handle_mass_photo_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода фото для массовой рассылки"""
         user_id = update.effective_user.id
-        waiting_data = self.waiting_for[user_id]
         
-        if waiting_data.get("step") == "text":
-            # Проверяем длину текста кнопки
-            if len(text) > 64:
-                await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 64 символа.")
-                return
-            
-            # Сохраняем текст и запрашиваем URL
-            self.waiting_for[user_id]["button_text"] = text
-            self.waiting_for[user_id]["step"] = "url"
-            sent_message = await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-        elif waiting_data.get("step") == "url":
-            # Проверяем URL
-            if not (text.startswith("http://") or text.startswith("https://")):
-                sent_message = await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-                return
-            
-            if len(text) > 256:
-                await update.message.reply_text("❌ URL слишком длинный.")
-                return
-            
-            # Добавляем кнопку
-            message_number = waiting_data["message_number"]
-            button_text = waiting_data["button_text"]
-            
-            # Определяем позицию
-            existing_buttons = self.db.get_message_buttons(message_number)
-            position = len(existing_buttons) + 1
-            
-            self.db.add_message_button(message_number, button_text, text, position)
-            
-            self.log_admin_action(user_id, "Добавление кнопки", f"Кнопка '{button_text}' к сообщению {message_number}")
-            
-            sent_message = await update.message.reply_text("✅ Кнопка добавлена!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            del self.waiting_for[user_id]
-            await self.show_message_buttons_from_context(update, context, message_number)
+        if not (text.startswith("http://") or text.startswith("https://")):
+            await update.message.reply_text("❌ Отправьте фото или ссылку на фото (начинающуюся с http:// или https://)")
+            return
+        
+        if user_id not in self.broadcast_drafts:
+            self.broadcast_drafts[user_id] = {
+                "message_text": "",
+                "photo_data": None,
+                "buttons": [],
+                "scheduled_hours": None,
+                "created_at": datetime.now()
+            }
+        
+        self.broadcast_drafts[user_id]["photo_data"] = text
+        
+        await update.message.reply_text("✅ Фото добавлено!")
+        del self.waiting_for[user_id]
+        
+        await self.show_send_all_menu_from_context(update, context)
+    
+    async def handle_mass_time_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода времени для массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if user_id not in self.broadcast_drafts:
+            await update.message.reply_text("❌ Черновик не найден!")
+            return
+        
+        # Если пустой текст - отправляем сейчас
+        if not text.strip():
+            self.broadcast_drafts[user_id]["scheduled_hours"] = None
+            await update.message.reply_text("✅ Рассылка будет отправлена сейчас!")
         else:
-            # Новая кнопка - сначала текст
-            self.waiting_for[user_id]["step"] = "text"
-            await self.handle_add_button(update, context, text)  # Повторная обработка
-    
-    # ===== ФИНАЛЬНАЯ ОЧИСТКА И ИНИЦИАЛИЗАЦИЯ =====
-    
-    async def initialize_admin_panel(self):
-        """Инициализация админ-панели"""
-        logger.info("🔧 Инициализация админ-панели...")
-        
-        # Очищаем устаревшие состояния при старте
-        await self.cleanup_expired_waiting_states()
-        
-        # Проверяем статус рассылки
-        broadcast_status = self.db.get_broadcast_status()
-        if broadcast_status['auto_resume_time']:
-            resume_time = datetime.fromisoformat(broadcast_status['auto_resume_time'])
-            if datetime.now() >= resume_time:
-                self.db.set_broadcast_status(True, None)
-                logger.info("✅ Рассылка автоматически возобновлена")
-        
-        logger.info("✅ Админ-панель инициализирована")
-    
-    def get_admin_stats(self) -> dict:
-        """Получить статистику админ-панели"""
-        return {
-            "waiting_states": len(self.waiting_for),
-            "tracked_messages": sum(len(msgs) for msgs in self.admin_messages.values()),
-            "broadcast_enabled": self.db.get_broadcast_status()['enabled'],
-            "total_users": len(self.db.get_users_with_bot_started()),
-            "total_broadcast_messages": len(self.db.get_all_broadcast_messages()),
-            "scheduled_broadcasts": len(self.db.get_scheduled_broadcasts())
-        }
-    
-    def __del__(self):
-        """Деструктор для очистки ресурсов"""
-        try:
-            # Очищаем все состояния ожидания
-            if hasattr(self, 'waiting_for'):
-                self.waiting_for.clear()
-            
-            # Очищаем отслеживаемые сообщения
-            if hasattr(self, 'admin_messages'):
-                self.admin_messages.clear()
+            try:
+                hours = float(text.strip())
+                if hours <= 0:
+                    await update.message.reply_text("❌ Количество часов должно быть больше 0")
+                    return
                 
-            logger.debug("🧹 Админ-панель очищена")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при очистке админ-панели: {e}")
+                if hours > 8760:  # Больше года
+                    await update.message.reply_text("❌ Слишком большое количество часов")
+                    return
+                
+                self.broadcast_drafts[user_id]["scheduled_hours"] = hours
+                scheduled_time = datetime.now() + timedelta(hours=hours)
+                await update.message.reply_text(f"✅ Рассылка запланирована на {scheduled_time.strftime('%d.%m.%Y %H:%M')}!")
+                
+            except ValueError:
+                await update.message.reply_text("❌ Введите корректное число часов")
+                return
+        
+        del self.waiting_for[user_id]
+        await self.show_send_all_menu_from_context(update, context)
     
-    # ===== КОНЕЦ КЛАССА AdminPanel =====
+    async def handle_mass_button_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода текста кнопки для массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if len(text) > 64:
+            await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 64 символа.")
+            return
+        
+        if user_id not in self.broadcast_drafts:
+            await update.message.reply_text("❌ Черновик не найден!")
+            return
+        
+        # Сохраняем текст кнопки и переходим к вводу URL
+        self.waiting_for[user_id]["button_text"] = text
+        self.waiting_for[user_id]["type"] = "mass_button_url"
+        
+        await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
+    
+    async def handle_mass_button_url_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода URL кнопки для массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if not (text.startswith("http://") or text.startswith("https://")):
+            await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
+            return
+        
+        if len(text) > 256:
+            await update.message.reply_text("❌ URL слишком длинный.")
+            return
+        
+        if user_id not in self.broadcast_drafts:
+            await update.message.reply_text("❌ Черновик не найден!")
+            return
+        
+        # Проверяем лимит кнопок
+        if len(self.broadcast_drafts[user_id]["buttons"]) >= 10:
+            await update.message.reply_text("❌ Максимум 10 кнопок на сообщение.")
+            return
+        
+        button_text = self.waiting_for[user_id]["button_text"]
+        
+        # Добавляем кнопку
+        self.broadcast_drafts[user_id]["buttons"].append({
+            "text": button_text,
+            "url": text
+        })
+        
+        await update.message.reply_text("✅ Кнопка добавлена!")
+        del self.waiting_for[user_id]
+        
+        await self.show_send_all_menu_from_context(update, context)
     
     async def handle_photo_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, waiting_data: dict):
         """Обработка загруженного фото"""
         user_id = update.effective_user.id
         input_type = waiting_data["type"]
         
-        if input_type == "send_all_text":
-            # Фото с подписью для массовой рассылки
-            text = update.message.caption or ""
-            if not text:
-                await update.message.reply_text("❌ Отправьте фото с подписью (текстом сообщения)")
-                return
-            
+        if input_type == "mass_photo":
+            # Фото для массовой рассылки
             photo_file_id = update.message.photo[-1].file_id
             
-            self.waiting_for[user_id]["message_text"] = text
-            self.waiting_for[user_id]["photo_data"] = photo_file_id
+            if user_id not in self.broadcast_drafts:
+                self.broadcast_drafts[user_id] = {
+                    "message_text": "",
+                    "photo_data": None,
+                    "buttons": [],
+                    "scheduled_hours": None,
+                    "created_at": datetime.now()
+                }
             
-            sent_message = await update.message.reply_text("✅ Сообщение с фото получено!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
+            self.broadcast_drafts[user_id]["photo_data"] = photo_file_id
             
-            await self.show_broadcast_options(update, context)
+            await update.message.reply_text("✅ Фото добавлено!")
+            del self.waiting_for[user_id]
             
-        elif input_type == "add_broadcast_photo":
-            # Фото для рассылки
-            photo_file_id = update.message.photo[-1].file_id
-            
-            self.waiting_for[user_id]["photo_data"] = photo_file_id
-            
-            sent_message = await update.message.reply_text("✅ Фото добавлено к рассылке!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            
-            await self.show_broadcast_options(update, context)
+            await self.show_send_all_menu_from_context(update, context)
         
         elif input_type == "broadcast_photo":
             # Фото для базового сообщения рассылки
@@ -1699,9 +1166,7 @@ class AdminPanel:
             photo_file_id = update.message.photo[-1].file_id
             
             self.db.update_broadcast_message(message_number, photo_url=photo_file_id)
-            sent_message = await update.message.reply_text(f"✅ Фото для сообщения {message_number} обновлено!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
+            await update.message.reply_text(f"✅ Фото для сообщения {message_number} обновлено!")
             del self.waiting_for[user_id]
             await self.show_message_edit_from_context(update, context, message_number)
         
@@ -1710,9 +1175,7 @@ class AdminPanel:
             photo_file_id = update.message.photo[-1].file_id
             welcome_text = self.db.get_welcome_message()['text']
             self.db.set_welcome_message(welcome_text, photo_url=photo_file_id)
-            sent_message = await update.message.reply_text("✅ Фото для приветственного сообщения обновлено!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
+            await update.message.reply_text("✅ Фото для приветственного сообщения обновлено!")
             del self.waiting_for[user_id]
             await self.show_welcome_edit_from_context(update, context)
         
@@ -1721,9 +1184,7 @@ class AdminPanel:
             photo_file_id = update.message.photo[-1].file_id
             goodbye_text = self.db.get_goodbye_message()['text']
             self.db.set_goodbye_message(goodbye_text, photo_url=photo_file_id)
-            sent_message = await update.message.reply_text("✅ Фото для прощального сообщения обновлено!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
+            await update.message.reply_text("✅ Фото для прощального сообщения обновлено!")
             del self.waiting_for[user_id]
             await self.show_goodbye_edit_from_context(update, context)
         
@@ -1731,6 +1192,22 @@ class AdminPanel:
             await self.show_error_message(update, context, "❌ Неожиданное фото.")
     
     # ===== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ КОНТЕКСТНЫХ ПЕРЕХОДОВ =====
+    
+    async def show_send_all_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню массовой рассылки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_send_all_menu(fake_update, context)
     
     async def show_welcome_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать меню редактирования приветственного сообщения из контекста"""
@@ -1824,149 +1301,236 @@ class AdminPanel:
         
         return True
     
-    async def handle_photo_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, waiting_data: dict):
-        """Обработка загруженного фото"""
+    async def handle_broadcast_timer(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка установки таймера рассылки"""
         user_id = update.effective_user.id
-        input_type = waiting_data["type"]
         
-        if input_type == "send_all_text":
-            # Фото с подписью для массовой рассылки
-            text = update.message.caption or ""
-            if not text:
-                await update.message.reply_text("❌ Отправьте фото с подписью (текстом сообщения)")
-                return
+        try:
+            hours = float(text)
+            if hours < 1:
+                raise ValueError("Время должно быть больше 0")
             
-            photo_file_id = update.message.photo[-1].file_id
+            resume_time = datetime.now() + timedelta(hours=hours)
+            self.db.set_broadcast_status(False, resume_time.isoformat())
             
-            self.waiting_for[user_id]["message_text"] = text
-            self.waiting_for[user_id]["photo_data"] = photo_file_id
+            await update.message.reply_text(
+                f"✅ Рассылка отключена на {hours} часов. Автовозобновление: {resume_time.strftime('%d.%m.%Y %H:%M')}"
+            )
             
-            sent_message = await update.message.reply_text("✅ Сообщение с фото получено!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
+            del self.waiting_for[user_id]
+            await asyncio.sleep(2)
+            await self.show_main_menu_safe(update, context)
             
-            await self.show_broadcast_options(update, context)
-            
-        elif input_type == "add_broadcast_photo":
-            # Фото для рассылки
-            photo_file_id = update.message.photo[-1].file_id
-            
-            self.waiting_for[user_id]["photo_data"] = photo_file_id
-            
-            sent_message = await update.message.reply_text("✅ Фото добавлено к рассылке!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            
-            await self.show_broadcast_options(update, context)
-        
-        else:
-            await self.show_error_message(update, context, "❌ Неожиданное фото.")
+        except ValueError:
+            await update.message.reply_text("❌ Пожалуйста, введите корректное число часов (больше 0)")
     
-    async def handle_send_all_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка текста для массовой рассылки"""
+    async def handle_photo_url_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, input_type: str, **kwargs):
+        """Обработка URL-ссылок на фото"""
         user_id = update.effective_user.id
+        
+        if input_type == "broadcast_photo":
+            message_number = kwargs.get("message_number")
+            self.db.update_broadcast_message(message_number, photo_url=url)
+            await update.message.reply_text(f"✅ Ссылка на фото для сообщения {message_number} сохранена!")
+            del self.waiting_for[user_id]
+            await self.show_message_edit_from_context(update, context, message_number)
+        
+        elif input_type == "welcome_photo":
+            welcome_text = self.db.get_welcome_message()['text']
+            self.db.set_welcome_message(welcome_text, photo_url=url)
+            await update.message.reply_text("✅ Ссылка на фото для приветственного сообщения сохранена!")
+            del self.waiting_for[user_id]
+            await self.show_welcome_edit_from_context(update, context)
+        
+        elif input_type == "goodbye_photo":
+            goodbye_text = self.db.get_goodbye_message()['text']
+            self.db.set_goodbye_message(goodbye_text, photo_url=url)
+            await update.message.reply_text("✅ Ссылка на фото для прощального сообщения сохранена!")
+            del self.waiting_for[user_id]
+            await self.show_goodbye_edit_from_context(update, context)
+    
+    # ===== МЕТОДЫ ДЛЯ ОБРАБОТКИ ОСТАЛЬНЫХ CALLBACK =====
+    
+    async def handle_additional_callbacks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Дополнительные обработчики callback для полноты функционала"""
+        query = update.callback_query
+        data = query.data
+        user_id = query.from_user.id
+        
+        # Обработка для базовых сообщений рассылки
+        if data.startswith("edit_text_"):
+            message_number = int(data.split("_")[2])
+            await self.request_text_input(update, context, "broadcast_text", message_number=message_number)
+        elif data.startswith("edit_delay_"):
+            message_number = int(data.split("_")[2])
+            await self.request_text_input(update, context, "broadcast_delay", message_number=message_number)
+        elif data.startswith("edit_photo_"):
+            message_number = int(data.split("_")[2])
+            await self.request_text_input(update, context, "broadcast_photo", message_number=message_number)
+        elif data.startswith("remove_photo_"):
+            message_number = int(data.split("_")[2])
+            self.db.update_broadcast_message(message_number, photo_url="")
+            await self.show_message_edit(update, context, message_number)
+        elif data.startswith("add_button_"):
+            message_number = int(data.split("_")[2])
+            # Проверяем лимит кнопок
+            existing_buttons = self.db.get_message_buttons(message_number)
+            if len(existing_buttons) >= 3:
+                await query.answer("❌ Максимум 3 кнопки на сообщение!", show_alert=True)
+                return False
+            await self.request_text_input(update, context, "add_button", message_number=message_number)
+        elif data.startswith("delete_msg_"):
+            message_number = int(data.split("_")[2])
+            # Подтверждение удаления
+            keyboard = [
+                [InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_{message_number}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"edit_msg_{message_number}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text=f"⚠️ Вы уверены, что хотите удалить сообщение {message_number}?\n\nЭто также отменит все запланированные отправки этого сообщения.",
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        elif data.startswith("confirm_delete_"):
+            message_number = int(data.split("_")[2])
+            self.db.delete_broadcast_message(message_number)
+            await self.show_broadcast_menu(update, context)
+        elif data == "add_message":
+            await self.request_text_input(update, context, "add_message")
+        else:
+            return False  # Не обработано
+        
+        return True  # Обработано
+    
+    async def handle_add_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка добавления нового сообщения"""
+        user_id = update.effective_user.id
+        waiting_data = self.waiting_for[user_id]
         
         if len(text) > 4096:
             await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
             return
         
-        self.waiting_for[user_id]["message_text"] = text
-        
-        sent_message = await update.message.reply_text("✅ Текст сообщения получен!")
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-        
-        await self.show_broadcast_options(update, context)
-    
-    async def handle_schedule_hours(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка времени планирования"""
-        user_id = update.effective_user.id
-        
-        try:
-            hours = float(text)
-            if hours <= 0:
-                await update.message.reply_text("❌ Количество часов должно быть больше 0")
-                return
+        if waiting_data.get("step") == "text":
+            # Сохраняем текст и запрашиваем задержку
+            self.waiting_for[user_id]["text"] = text
+            self.waiting_for[user_id]["step"] = "delay"
+            await update.message.reply_text(
+                "⏰ Теперь отправьте задержку:\n\n"
+                "📝 <b>Форматы ввода:</b>\n"
+                "• <code>30м</code> или <code>30 минут</code> - для минут\n"
+                "• <code>2ч</code> или <code>2 часа</code> - для часов\n"
+                "• <code>1.5</code> - для 1.5 часов\n"
+                "• <code>0.05</code> - для 3 минут",
+                parse_mode='HTML'
+            )
+        elif waiting_data.get("step") == "delay":
+            # Парсим задержку
+            delay_hours, delay_display = self.parse_delay_input(text)
             
-            if hours > 8760:  # Больше года
-                await update.message.reply_text("❌ Слишком большое количество часов")
-                return
-            
-            self.waiting_for[user_id]["scheduled_hours"] = hours
-            broadcast_data = self.waiting_for[user_id]
-            await self.show_broadcast_preview(update, context, broadcast_data)
-            
-        except ValueError:
-            await update.message.reply_text("❌ Введите корректное число часов")
-    
-    async def handle_add_broadcast_button_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка текста кнопки для рассылки"""
-        user_id = update.effective_user.id
-        
-        if len(text) > 64:
-            await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 64 символа.")
-            return
-        
-        self.waiting_for[user_id]["button_text"] = text
-        self.waiting_for[user_id]["type"] = "add_broadcast_button_url"
-        
-        sent_message = await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-    
-    async def handle_add_broadcast_button_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка URL кнопки для рассылки"""
-        user_id = update.effective_user.id
-        
-        if not (text.startswith("http://") or text.startswith("https://")):
-            await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
-            return
-        
-        if len(text) > 256:
-            await update.message.reply_text("❌ URL слишком длинный.")
-            return
-        
-        button_text = self.waiting_for[user_id]["button_text"]
-        
-        if "buttons" not in self.waiting_for[user_id]:
-            self.waiting_for[user_id]["buttons"] = []
-        
-        self.waiting_for[user_id]["buttons"].append({
-            "text": button_text,
-            "url": text
-        })
-        
-        # Возвращаемся к вариантам рассылки
-        self.waiting_for[user_id]["type"] = "send_all_text"
-        
-        sent_message = await update.message.reply_text("✅ Кнопка добавлена!")
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-        
-        await self.show_broadcast_options(update, context)
-    
-    async def handle_add_broadcast_photo_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка ссылки на фото для рассылки"""
-        user_id = update.effective_user.id
-        
-        if text.startswith("http://") or text.startswith("https://"):
-            # Это ссылка на фото
-            self.waiting_for[user_id]["photo_data"] = text
-            
-            sent_message = await update.message.reply_text("✅ Ссылка на фото добавлена!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            
-            await self.show_broadcast_options(update, context)
+            if delay_hours is not None and delay_hours > 0:
+                # Добавляем сообщение
+                message_text = waiting_data["text"]
+                new_number = self.db.add_broadcast_message(message_text, delay_hours)
+                
+                await update.message.reply_text(f"✅ Сообщение {new_number} добавлено с задержкой {delay_display}!")
+                del self.waiting_for[user_id]
+                await self.show_broadcast_menu_from_context(update, context)
+            else:
+                await update.message.reply_text(
+                    "❌ Неверный формат! Примеры правильного ввода:\n\n"
+                    "• <code>3м</code> или <code>3 минуты</code>\n"
+                    "• <code>2ч</code> или <code>2 часа</code>\n"
+                    "• <code>1.5</code> (для 1.5 часов)\n"
+                    "• <code>0.05</code> (для 3 минут)",
+                    parse_mode='HTML'
+                )
         else:
-            await update.message.reply_text("❌ Отправьте фото или ссылку на фото (начинающуюся с http:// или https://)")
+            # Новое сообщение - сначала текст
+            self.waiting_for[user_id]["step"] = "text"
+            await self.handle_add_message(update, context, text)  # Повторная обработка
     
-    # ===== МЕТОДЫ ДЛЯ РЕДАКТИРОВАНИЯ ОБЫЧНЫХ СООБЩЕНИЙ РАССЫЛКИ =====
+    async def handle_add_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка добавления кнопки к сообщению"""
+        user_id = update.effective_user.id
+        waiting_data = self.waiting_for[user_id]
+        
+        if waiting_data.get("step") == "text":
+            # Проверяем длину текста кнопки
+            if len(text) > 64:
+                await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 64 символа.")
+                return
+            
+            # Сохраняем текст и запрашиваем URL
+            self.waiting_for[user_id]["button_text"] = text
+            self.waiting_for[user_id]["step"] = "url"
+            await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
+        elif waiting_data.get("step") == "url":
+            # Проверяем URL
+            if not (text.startswith("http://") or text.startswith("https://")):
+                await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
+                return
+            
+            if len(text) > 256:
+                await update.message.reply_text("❌ URL слишком длинный.")
+                return
+            
+            # Добавляем кнопку
+            message_number = waiting_data["message_number"]
+            button_text = waiting_data["button_text"]
+            
+            # Определяем позицию
+            existing_buttons = self.db.get_message_buttons(message_number)
+            position = len(existing_buttons) + 1
+            
+            self.db.add_message_button(message_number, button_text, text, position)
+            
+            await update.message.reply_text("✅ Кнопка добавлена!")
+            del self.waiting_for[user_id]
+            await self.show_message_buttons_from_context(update, context, message_number)
+        else:
+            # Новая кнопка - сначала текст
+            self.waiting_for[user_id]["step"] = "text"
+            await self.handle_add_button(update, context, text)  # Повторная обработка
+    
+    async def show_broadcast_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню рассылки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_broadcast_menu(fake_update, context)
+    
+    async def show_message_buttons_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
+        """Показать кнопки сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_message_buttons(fake_update, context, message_number)
+    
+    # ===== МЕТОДЫ ДЛЯ РЕДАКТИРОВАНИЯ СООБЩЕНИЙ =====
     
     async def show_message_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
         """Показать меню редактирования конкретного сообщения"""
-        user_id = update.effective_user.id
-        
         msg_data = self.db.get_broadcast_message(message_number)
         if not msg_data:
             await update.callback_query.answer("Сообщение не найдено!", show_alert=True)
@@ -2014,19 +1578,14 @@ class AdminPanel:
             f"{buttons_info}"
         )
         
-        sent_message = await update.callback_query.edit_message_text(
+        await update.callback_query.edit_message_text(
             text=message_text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
     
     async def show_message_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
         """Показать меню управления кнопками сообщения"""
-        user_id = update.effective_user.id
-        
         buttons = self.db.get_message_buttons(message_number)
         
         keyboard = []
@@ -2046,19 +1605,14 @@ class AdminPanel:
             "Выберите кнопку для редактирования или добавьте новую:"
         )
         
-        sent_message = await update.callback_query.edit_message_text(
+        await update.callback_query.edit_message_text(
             text=text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
     
     async def show_button_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
         """Показать меню редактирования кнопки"""
-        user_id = update.effective_user.id
-        
         # Получаем информацию о кнопке
         conn = self.db._get_connection()
         cursor = conn.cursor()
@@ -2091,19 +1645,119 @@ class AdminPanel:
             "Выберите действие:"
         )
         
-        sent_message = await update.callback_query.edit_message_text(
+        await update.callback_query.edit_message_text(
             text=text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
+    
+    async def show_welcome_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования приветственного сообщения"""
+        welcome_data = self.db.get_welcome_message()
+        welcome_buttons = self.db.get_welcome_buttons()
         
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_welcome_text")],
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_welcome_photo")]
+        ]
+        
+        if welcome_data['photo']:
+            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_welcome_photo")])
+        
+        # Управление кнопками
+        keyboard.append([InlineKeyboardButton("⌨️ Управление кнопками", callback_data="manage_welcome_buttons")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Добавляем информацию о кнопках
+        buttons_info = ""
+        if welcome_buttons:
+            buttons_info = f"\n\n<b>⌨️ Кнопки ({len(welcome_buttons)}):</b>\n"
+            for i, (button_id, button_text, position) in enumerate(welcome_buttons, 1):
+                buttons_info += f"{i}. {button_text}\n"
+        
+        message_text = (
+            "👋 <b>Приветственное сообщение</b>\n\n"
+            f"<b>Текущий текст:</b>\n{welcome_data['text']}\n\n"
+            f"<b>Фото:</b> {'Есть' if welcome_data['photo'] else 'Нет'}"
+            f"{buttons_info}"
+        )
+        
+        await update.callback_query.edit_message_text(
+            text=message_text,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    async def show_welcome_buttons_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню управления кнопками приветственного сообщения"""
+        welcome_buttons = self.db.get_welcome_buttons()
+        
+        keyboard = []
+        
+        for button_id, button_text, position in welcome_buttons:
+            keyboard.append([InlineKeyboardButton(f"⌨️ {button_text}", callback_data=f"edit_welcome_button_{button_id}")])
+        
+        if len(welcome_buttons) < 5:  # Максимум 5 кнопок
+            keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data="add_welcome_button")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_welcome")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"⌨️ <b>Кнопки приветствия</b>\n\n"
+            f"Текущие кнопки: {len(welcome_buttons)}/5\n\n"
+            "Выберите кнопку для редактирования или добавьте новую:"
+        )
+        
+        await update.callback_query.edit_message_text(
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    async def show_goodbye_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования прощального сообщения"""
+        goodbye_data = self.db.get_goodbye_message()
+        goodbye_buttons = self.db.get_goodbye_buttons()
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_goodbye_text")],
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_goodbye_photo")]
+        ]
+        
+        if goodbye_data['photo']:
+            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_goodbye_photo")])
+        
+        # Управление кнопками
+        keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data="manage_goodbye_buttons")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Добавляем информацию о кнопках
+        buttons_info = ""
+        if goodbye_buttons:
+            buttons_info = f"\n<b>Кнопки ({len(goodbye_buttons)}):</b>\n"
+            for i, (button_id, button_text, button_url, position) in enumerate(goodbye_buttons, 1):
+                buttons_info += f"{i}. {button_text} → {button_url}\n"
+        
+        message_text = (
+            "😢 <b>Прощальное сообщение</b>\n\n"
+            f"<b>Текущий текст:</b>\n{goodbye_data['text']}\n\n"
+            f"<b>Фото:</b> {'Есть' if goodbye_data['photo'] else 'Нет'}"
+            f"{buttons_info}"
+        )
+        
+        await update.callback_query.edit_message_text(
+            text=message_text,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
     
     async def show_success_message_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать меню редактирования сообщения подтверждения"""
-        user_id = update.effective_user.id
-        
         # Получаем текущее сообщение подтверждения
         conn = self.db._get_connection()
         cursor = conn.cursor()
@@ -2139,167 +1793,14 @@ class AdminPanel:
             f"<b>Текущий текст:</b>\n{current_message}"
         )
         
-        sent_message = await update.callback_query.edit_message_text(
+        await update.callback_query.edit_message_text(
             text=message_text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-    
-    # ===== МЕТОДЫ ДЛЯ ПРИВЕТСТВЕННОГО СООБЩЕНИЯ =====
-    
-    async def show_welcome_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню редактирования приветственного сообщения"""
-        user_id = update.effective_user.id
-        
-        welcome_data = self.db.get_welcome_message()
-        welcome_buttons = self.db.get_welcome_buttons()
-        
-        keyboard = [
-            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_welcome_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_welcome_photo")]
-        ]
-        
-        if welcome_data['photo']:
-            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_welcome_photo")])
-        
-        # Управление кнопками
-        keyboard.append([InlineKeyboardButton("⌨️ Управление механическими кнопками", callback_data="manage_welcome_buttons")])
-        
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Добавляем информацию о кнопках
-        buttons_info = ""
-        if welcome_buttons:
-            buttons_info = f"\n\n<b>⌨️ Механические кнопки ({len(welcome_buttons)}):</b>\n"
-            for i, (button_id, button_text, position) in enumerate(welcome_buttons, 1):
-                # Получаем количество последующих сообщений
-                follow_messages = self.db.get_welcome_follow_messages(button_id)
-                follow_count = len(follow_messages)
-                buttons_info += f"{i}. {button_text} ({follow_count} сообщ.)\n"
-            buttons_info += "\n💡 <b>Пользователи видят эти кнопки внизу экрана</b>"
-        else:
-            buttons_info += (
-                "\n\n<b>⚠️ Механические кнопки не настроены</b>\n"
-                "Пользователи видят стандартные кнопки:\n"
-                "• ✅ Согласиться на получение уведомлений\n"
-                "• 📋 Что я буду получать?\n"
-                "• ℹ️ Подробнее о боте\n\n"
-                "💡 <b>Рекомендация:</b> Добавьте свои кнопки для полного контроля!"
-            )
-        
-        message_text = (
-            "👋 <b>Приветственное сообщение</b>\n\n"
-            f"<b>Текущий текст:</b>\n{welcome_data['text']}\n\n"
-            f"<b>Фото:</b> {'Есть' if welcome_data['photo'] else 'Нет'}"
-            f"{buttons_info}"
-        )
-        
-        sent_message = await update.callback_query.edit_message_text(
-            text=message_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-    
-    async def show_welcome_buttons_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню управления кнопками приветственного сообщения"""
-        user_id = update.effective_user.id
-        
-        welcome_buttons = self.db.get_welcome_buttons()
-        
-        keyboard = []
-        
-        for button_id, button_text, position in welcome_buttons:
-            # Получаем количество последующих сообщений
-            follow_messages = self.db.get_welcome_follow_messages(button_id)
-            follow_count = len(follow_messages)
-            
-            button_display = f"⌨️ {button_text} ({follow_count} сообщ.)"
-            keyboard.append([InlineKeyboardButton(button_display, callback_data=f"edit_welcome_button_{button_id}")])
-        
-        if len(welcome_buttons) < 5:  # Максимум 5 механических кнопок
-            keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data="add_welcome_button")])
-        
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_welcome")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        text = (
-            f"⌨️ <b>Механические кнопки приветствия</b>\n\n"
-            f"Текущие кнопки: {len(welcome_buttons)}/5\n\n"
-            "💡 <b>Что это:</b>\n"
-            "• Кнопки отображаются внизу экрана у пользователя\n"
-            "• При нажатии автоматически подписывается на рассылку\n"
-            "• Можно настроить последующие сообщения\n\n"
-            "Выберите кнопку для редактирования или добавьте новую:"
-        )
-        
-        sent_message = await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-    
-    # ===== МЕТОДЫ ДЛЯ ПРОЩАЛЬНОГО СООБЩЕНИЯ =====
-    
-    async def show_goodbye_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню редактирования прощального сообщения"""
-        user_id = update.effective_user.id
-        
-        goodbye_data = self.db.get_goodbye_message()
-        goodbye_buttons = self.db.get_goodbye_buttons()
-        
-        keyboard = [
-            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_goodbye_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_goodbye_photo")]
-        ]
-        
-        if goodbye_data['photo']:
-            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_goodbye_photo")])
-        
-        # Управление кнопками
-        keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data="manage_goodbye_buttons")])
-        
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Добавляем информацию о кнопках
-        buttons_info = ""
-        if goodbye_buttons:
-            buttons_info = f"\n<b>Кнопки ({len(goodbye_buttons)}):</b>\n"
-            for i, (button_id, button_text, button_url, position) in enumerate(goodbye_buttons, 1):
-                buttons_info += f"{i}. {button_text} → {button_url}\n"
-        
-        message_text = (
-            "😢 <b>Прощальное сообщение</b>\n\n"
-            f"<b>Текущий текст:</b>\n{goodbye_data['text']}\n\n"
-            f"<b>Фото:</b> {'Есть' if goodbye_data['photo'] else 'Нет'}"
-            f"{buttons_info}"
-        )
-        
-        sent_message = await update.callback_query.edit_message_text(
-            text=message_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-        
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
-    
-    # ===== МЕТОДЫ ДЛЯ ЗАПЛАНИРОВАННЫХ РАССЫЛОК =====
     
     async def show_scheduled_broadcasts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать запланированные рассылки"""
-        user_id = update.effective_user.id
-        
         broadcasts = self.db.get_scheduled_broadcasts(include_sent=False)
         
         keyboard = []
@@ -2318,7 +1819,6 @@ class AdminPanel:
                 button_display = f"{photo_icon}{button_icon} {time_str}: {short_text}"
                 keyboard.append([InlineKeyboardButton(button_display, callback_data=f"edit_scheduled_broadcast_{broadcast_id}")])
         
-        keyboard.append([InlineKeyboardButton("➕ Запланировать рассылку", callback_data="add_scheduled_broadcast")])
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -2330,45 +1830,50 @@ class AdminPanel:
             "Выберите рассылку для редактирования:"
         )
         
-        sent_message = await update.callback_query.edit_message_text(
+        await update.callback_query.edit_message_text(
             text=text,
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
+    
+    # ===== ОЧИСТКА И ИНИЦИАЛИЗАЦИЯ =====
+    
+    async def initialize_admin_panel(self):
+        """Инициализация админ-панели"""
+        logger.info("🔧 Инициализация админ-панели...")
         
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
+        # Проверяем статус рассылки
+        broadcast_status = self.db.get_broadcast_status()
+        if broadcast_status['auto_resume_time']:
+            resume_time = datetime.fromisoformat(broadcast_status['auto_resume_time'])
+            if datetime.now() >= resume_time:
+                self.db.set_broadcast_status(True, None)
+                logger.info("✅ Рассылка автоматически возобновлена")
+        
+        logger.info("✅ Админ-панель инициализирована")
     
-    # ===== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ВОЗВРАТА К НУЖНЫМ ЭКРАНАМ =====
+    def get_admin_stats(self) -> dict:
+        """Получить статистику админ-панели"""
+        return {
+            "waiting_states": len(self.waiting_for),
+            "broadcast_drafts": len(self.broadcast_drafts),
+            "broadcast_enabled": self.db.get_broadcast_status()['enabled'],
+            "total_users": len(self.db.get_users_with_bot_started()),
+            "total_broadcast_messages": len(self.db.get_all_broadcast_messages()),
+            "scheduled_broadcasts": len(self.db.get_scheduled_broadcasts())
+        }
     
-    async def show_main_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать главное меню из контекста сообщения"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
+    def __del__(self):
+        """Деструктор для очистки ресурсов"""
+        try:
+            # Очищаем все состояния ожидания
+            if hasattr(self, 'waiting_for'):
+                self.waiting_for.clear()
+            
+            # Очищаем черновики рассылок
+            if hasattr(self, 'broadcast_drafts'):
+                self.broadcast_drafts.clear()
                 
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_main_menu(fake_update, context)
-    
-    async def show_broadcast_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню рассылки из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_broadcast_menu(fake_update, context)
+            logger.debug("🧹 Админ-панель очищена")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при очистке админ-панели: {e}")
