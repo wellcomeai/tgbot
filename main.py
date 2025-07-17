@@ -91,6 +91,70 @@ class CallbackHandler:
         except Exception as e:
             logger.error(f"❌ Критическая ошибка при выполнении логики /start для пользователя {user_id}: {e}")
             return False
+    
+    async def handle_welcome_button_callback(self, user_id: int, callback_data: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """
+        Обработка нажатия на кнопку приветственного сообщения
+        """
+        try:
+            logger.info(f"🔘 Пользователь {user_id} нажал кнопку приветствия: {callback_data}")
+            
+            # Сначала выполняем стандартную логику /start
+            start_success = await self.execute_start_logic(user_id, context, None)
+            if not start_success:
+                logger.error(f"❌ Не удалось выполнить логику /start для пользователя {user_id}")
+                return False
+            
+            # Находим кнопку по callback_data
+            welcome_buttons = self.db.get_welcome_buttons()
+            button_id = None
+            
+            for btn_id, btn_text, btn_callback, position in welcome_buttons:
+                if btn_callback == callback_data:
+                    button_id = btn_id
+                    break
+            
+            if not button_id:
+                logger.warning(f"⚠️ Кнопка с callback_data '{callback_data}' не найдена")
+                return True  # Возвращаем True, так как основная логика /start выполнена
+            
+            # Получаем последующие сообщения для этой кнопки
+            follow_messages = self.db.get_welcome_follow_messages(button_id)
+            
+            if not follow_messages:
+                logger.info(f"ℹ️ Нет последующих сообщений для кнопки {button_id}")
+                return True
+            
+            # Отправляем все последующие сообщения
+            for msg_id, msg_num, text, photo_url in follow_messages:
+                try:
+                    if photo_url:
+                        await context.bot.send_photo(
+                            chat_id=user_id,
+                            photo=photo_url,
+                            caption=text,
+                            parse_mode='HTML'
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=text,
+                            parse_mode='HTML'
+                        )
+                    
+                    logger.info(f"✅ Отправлено последующее сообщение {msg_num} пользователю {user_id}")
+                    
+                    # Небольшая пауза между сообщениями
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при отправке последующего сообщения {msg_num} пользователю {user_id}: {e}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке кнопки приветствия для пользователя {user_id}: {e}")
+            return False
 
 # Создаем глобальный экземпляр callback handler
 callback_handler = CallbackHandler(db, scheduler)
@@ -135,7 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик заявок на вступление в канал с обычной кнопкой для согласия"""
+    """Обработчик заявок на вступление в канал с кнопками из админ-панели"""
     chat_join_request = update.chat_join_request
     user = chat_join_request.from_user
     
@@ -147,39 +211,70 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Добавляем пользователя в базу данных
         db.add_user(user.id, user.username, user.first_name)
         
-        # Получаем приветственное сообщение
+        # Получаем приветственное сообщение и кнопки
         welcome_data = db.get_welcome_message()
+        welcome_buttons = db.get_welcome_buttons()
         
-        # Создаем обычную клавиатуру для согласия
-        keyboard = [
-            [KeyboardButton("✅ Согласиться на получение уведомлений")],
-            [KeyboardButton("📋 Что я буду получать?")],
-            [KeyboardButton("ℹ️ Подробнее о боте")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(
-            keyboard, 
-            resize_keyboard=True,
-            one_time_keyboard=True,
-            input_field_placeholder="Выберите действие..."
-        )
+        # Создаем клавиатуру
+        reply_markup = None
         
-        # Отправляем приветственное сообщение с обычной клавиатурой
+        if welcome_buttons:
+            # Создаем инлайн-клавиатуру с кнопками из админ-панели
+            keyboard = []
+            for button_id, button_text, callback_data, position in welcome_buttons:
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+            
+            # Добавляем стандартные кнопки для совместимости
+            keyboard.extend([
+                [KeyboardButton("📋 Что я буду получать?")],
+                [KeyboardButton("ℹ️ Подробнее о боте")]
+            ])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        else:
+            # Если кнопок нет, используем стандартную клавиатуру
+            keyboard = [
+                [KeyboardButton("✅ Согласиться на получение уведомлений")],
+                [KeyboardButton("📋 Что я буду получать?")],
+                [KeyboardButton("ℹ️ Подробнее о боте")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(
+                keyboard, 
+                resize_keyboard=True,
+                one_time_keyboard=True,
+                input_field_placeholder="Выберите действие..."
+            )
+        
+        # Отправляем приветственное сообщение
         try:
             welcome_text = (
                 f"{welcome_data['text']}\n\n"
                 "💡 <b>Важно:</b> Для получения уведомлений и полезных материалов от бота, "
-                "пожалуйста, нажмите кнопку ниже. Это автоматически выполнит команду /start:\n\n"
+                "пожалуйста, нажмите одну из кнопок ниже:\n\n"
                 "👇 <b>Выберите действие:</b>"
             )
             
             if welcome_data['photo']:
-                await context.bot.send_photo(
-                    chat_id=user.id,
-                    photo=welcome_data['photo'],
-                    caption=welcome_text,
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
+                if isinstance(reply_markup, InlineKeyboardMarkup):
+                    await context.bot.send_photo(
+                        chat_id=user.id,
+                        photo=welcome_data['photo'],
+                        caption=welcome_text,
+                        parse_mode='HTML',
+                        reply_markup=reply_markup
+                    )
+                else:
+                    await context.bot.send_photo(
+                        chat_id=user.id,
+                        photo=welcome_data['photo'],
+                        caption=welcome_text,
+                        parse_mode='HTML'
+                    )
+                    await context.bot.send_message(
+                        chat_id=user.id,
+                        text="👇 Выберите действие:",
+                        reply_markup=reply_markup
+                    )
             else:
                 await context.bot.send_message(
                     chat_id=user.id,
@@ -188,7 +283,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                     reply_markup=reply_markup
                 )
             
-            logger.info(f"✅ Приветственное сообщение с обычной клавиатурой отправлено пользователю {user.id}")
+            logger.info(f"✅ Приветственное сообщение отправлено пользователю {user.id}")
             
         except Forbidden as e:
             logger.warning(f"⚠️ Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
@@ -227,8 +322,17 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
         # Отменяем запланированные сообщения
         db.cancel_user_messages(user.id)
         
-        # Получаем прощальное сообщение
+        # Получаем прощальное сообщение и кнопки
         goodbye_data = db.get_goodbye_message()
+        goodbye_buttons = db.get_goodbye_buttons()
+        
+        # Создаем инлайн-клавиатуру если есть кнопки
+        reply_markup = None
+        if goodbye_buttons:
+            keyboard = []
+            for button_id, button_text, button_url, position in goodbye_buttons:
+                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+            reply_markup = InlineKeyboardMarkup(keyboard)
         
         # Отправляем прощальное сообщение
         try:
@@ -237,13 +341,15 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
                     chat_id=user.id,
                     photo=goodbye_data['photo'],
                     caption=goodbye_data['text'],
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
                 )
             else:
                 await context.bot.send_message(
                     chat_id=user.id,
                     text=goodbye_data['text'],
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
                 )
             
             logger.info(f"✅ Прощальное сообщение отправлено пользователю {user.id}")
@@ -255,9 +361,10 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error(f"❌ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на инлайн-кнопки (в основном для админ-панели)"""
+    """Обработчик нажатий на инлайн-кнопки"""
     query = update.callback_query
     user_id = query.from_user.id
+    callback_data = query.data
     
     # Проверяем, является ли пользователь админом
     if user_id == ADMIN_CHAT_ID:
@@ -265,9 +372,55 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await admin_panel.handle_callback(update, context)
         return
     
-    # Для обычных пользователей обрабатываем только известные callback данные
-    # (они могут остаться от старых сообщений)
-    if query.data in [CALLBACK_USER_CONSENT, CALLBACK_START_NOTIFICATIONS]:
+    # Проверяем, является ли это кнопкой приветственного сообщения
+    welcome_buttons = db.get_welcome_buttons()
+    welcome_callbacks = [btn_callback for _, _, btn_callback, _ in welcome_buttons]
+    
+    if callback_data in welcome_callbacks:
+        await query.answer("⏳ Обрабатываем ваш запрос...")
+        
+        try:
+            # Обрабатываем нажатие на кнопку приветствия
+            success = await callback_handler.handle_welcome_button_callback(
+                user_id, callback_data, context
+            )
+            
+            if success:
+                # Убираем клавиатуру и отправляем подтверждение
+                await query.edit_message_reply_markup(reply_markup=None)
+                
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="👋 <b>Добро пожаловать!</b>\n\n"
+                    "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                    "📚 <b>Вы получите доступ к:</b>\n"
+                    "• Эксклюзивным материалам\n"
+                    "• Полезным советам и инструкциям\n"
+                    "• Актуальным новостям\n"
+                    "• Поддержке сообщества\n\n"
+                    "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                    "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+                    parse_mode='HTML'
+                )
+                logger.info(f"✅ Пользователь {user_id} успешно подписан через кнопку приветствия")
+            else:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="❌ Произошла ошибка при подписке на уведомления. "
+                    "Попробуйте еще раз или обратитесь к администратору."
+                )
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке кнопки приветствия от пользователя {user_id}: {e}")
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="❌ Произошла техническая ошибка. Попробуйте позже."
+            )
+        
+        return
+    
+    # Для остальных callback данных (старые кнопки)
+    if callback_data in [CALLBACK_USER_CONSENT, CALLBACK_START_NOTIFICATIONS]:
         await query.answer(
             "Пожалуйста, используйте кнопки клавиатуры для взаимодействия с ботом.",
             show_alert=True
@@ -294,7 +447,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=reply_markup
         )
         
-    elif query.data in [CALLBACK_BOT_INFO, CALLBACK_WHAT_WILL_RECEIVE, CALLBACK_DECLINE]:
+    elif callback_data in [CALLBACK_BOT_INFO, CALLBACK_WHAT_WILL_RECEIVE, CALLBACK_DECLINE]:
         await query.answer(
             "Пожалуйста, используйте кнопки клавиатуры для взаимодействия с ботом.",
             show_alert=True
@@ -545,7 +698,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application) -> None:
     """Инициализация после запуска"""
-    logger.info("Бот с обычными кнопками для согласия успешно запущен и готов к работе!")
+    logger.info("Бот с поддержкой кнопок приветствия и прощания успешно запущен и готов к работе!")
 
 def main():
     """Главная функция запуска бота"""
@@ -572,7 +725,14 @@ def main():
         first=10  # первый запуск через 10 секунд
     )
     
-    logger.info("Запуск бота с обычными кнопками для согласия...")
+    # Запускаем фоновую задачу для запланированных массовых рассылок
+    application.job_queue.run_repeating(
+        scheduler.send_scheduled_broadcasts,
+        interval=120,  # каждые 2 минуты
+        first=20  # первый запуск через 20 секунд
+    )
+    
+    logger.info("Запуск бота с поддержкой кнопок приветствия и запланированных рассылок...")
     
     # Запускаем бота
     application.run_polling(
