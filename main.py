@@ -92,12 +92,12 @@ class CallbackHandler:
             logger.error(f"❌ Критическая ошибка при выполнении логики /start для пользователя {user_id}: {e}")
             return False
     
-    async def handle_welcome_button_callback(self, user_id: int, callback_data: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    async def handle_welcome_button_press(self, user_id: int, button_text: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """
-        Обработка нажатия на кнопку приветственного сообщения
+        Обработка нажатия на механическую кнопку приветственного сообщения
         """
         try:
-            logger.info(f"🔘 Пользователь {user_id} нажал кнопку приветствия: {callback_data}")
+            logger.info(f"⌨️ Пользователь {user_id} нажал механическую кнопку: {button_text}")
             
             # Сначала выполняем стандартную логику /start
             start_success = await self.execute_start_logic(user_id, context, None)
@@ -105,18 +105,14 @@ class CallbackHandler:
                 logger.error(f"❌ Не удалось выполнить логику /start для пользователя {user_id}")
                 return False
             
-            # Находим кнопку по callback_data
-            welcome_buttons = self.db.get_welcome_buttons()
-            button_id = None
+            # Находим кнопку по тексту
+            button_data = self.db.get_welcome_button_by_text(button_text)
             
-            for btn_id, btn_text, btn_callback, position in welcome_buttons:
-                if btn_callback == callback_data:
-                    button_id = btn_id
-                    break
-            
-            if not button_id:
-                logger.warning(f"⚠️ Кнопка с callback_data '{callback_data}' не найдена")
+            if not button_data:
+                logger.warning(f"⚠️ Кнопка с текстом '{button_text}' не найдена")
                 return True  # Возвращаем True, так как основная логика /start выполнена
+            
+            button_id = button_data[0]
             
             # Получаем последующие сообщения для этой кнопки
             follow_messages = self.db.get_welcome_follow_messages(button_id)
@@ -153,7 +149,7 @@ class CallbackHandler:
             return True
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при обработке кнопки приветствия для пользователя {user_id}: {e}")
+            logger.error(f"❌ Ошибка при обработке механической кнопки для пользователя {user_id}: {e}")
             return False
 
 # Создаем глобальный экземпляр callback handler
@@ -199,7 +195,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик заявок на вступление в канал с кнопками из админ-панели"""
+    """Обработчик заявок на вступление в канал с механическими кнопками из админ-панели"""
     chat_join_request = update.chat_join_request
     user = chat_join_request.from_user
     
@@ -215,17 +211,22 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         welcome_data = db.get_welcome_message()
         welcome_buttons = db.get_welcome_buttons()
         
-        # Создаем клавиатуру
+        # Создаем механическую клавиатуру
         reply_markup = None
         
         if welcome_buttons:
-            # Если админ настроил кнопки - используем ТОЛЬКО их
+            # Если админ настроил кнопки - создаем механическую клавиатуру
             keyboard = []
-            for button_id, button_text, callback_data, position in welcome_buttons:
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+            for button_id, button_text, position in welcome_buttons:
+                keyboard.append([KeyboardButton(button_text)])
             
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            logger.info(f"✅ Используем {len(welcome_buttons)} кнопок, настроенных админом")
+            reply_markup = ReplyKeyboardMarkup(
+                keyboard, 
+                resize_keyboard=True,
+                one_time_keyboard=True,
+                input_field_placeholder="Выберите действие..."
+            )
+            logger.info(f"✅ Используем {len(welcome_buttons)} механических кнопок, настроенных админом")
         else:
             # Если админ не настроил кнопки, используем стандартную клавиатуру
             keyboard = [
@@ -351,53 +352,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await admin_panel.handle_callback(update, context)
         return
     
-    # Проверяем, является ли это кнопкой приветственного сообщения
-    welcome_buttons = db.get_welcome_buttons()
-    welcome_callbacks = [btn_callback for _, _, btn_callback, _ in welcome_buttons]
-    
-    if callback_data in welcome_callbacks:
-        await query.answer("⏳ Обрабатываем ваш запрос...")
-        
-        try:
-            # Обрабатываем нажатие на кнопку приветствия
-            success = await callback_handler.handle_welcome_button_callback(
-                user_id, callback_data, context
-            )
-            
-            if success:
-                # Убираем клавиатуру и отправляем подтверждение
-                await query.edit_message_reply_markup(reply_markup=None)
-                
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="👋 <b>Добро пожаловать!</b>\n\n"
-                    "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
-                    "📚 <b>Вы получите доступ к:</b>\n"
-                    "• Эксклюзивным материалам\n"
-                    "• Полезным советам и инструкциям\n"
-                    "• Актуальным новостям\n"
-                    "• Поддержке сообщества\n\n"
-                    "🙏 <b>Спасибо, что подписались!</b>\n\n"
-                    "💬 Если у вас есть вопросы - не стесняйтесь писать!",
-                    parse_mode='HTML'
-                )
-                logger.info(f"✅ Пользователь {user_id} успешно подписан через кнопку приветствия")
-            else:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="❌ Произошла ошибка при подписке на уведомления. "
-                    "Попробуйте еще раз или обратитесь к администратору."
-                )
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка при обработке кнопки приветствия от пользователя {user_id}: {e}")
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="❌ Произошла техническая ошибка. Попробуйте позже."
-            )
-        
-        return
-    
     # Для остальных callback данных (старые кнопки)
     if callback_data in [CALLBACK_USER_CONSENT, CALLBACK_START_NOTIFICATIONS]:
         await query.answer(
@@ -449,7 +403,49 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await admin_panel.handle_message(update, context)
         return
     
-    # Обрабатываем нажатия на обычные кнопки
+    # Сначала проверяем, является ли это кнопкой, настроенной админом
+    welcome_buttons = db.get_welcome_buttons()
+    admin_button_texts = [button_text for _, button_text, _ in welcome_buttons]
+    
+    if message_text in admin_button_texts:
+        # Обрабатываем нажатие на кнопку, настроенную админом
+        try:
+            success = await callback_handler.handle_welcome_button_press(
+                user_id, message_text, context
+            )
+            
+            if success:
+                # Убираем клавиатуру и отправляем подтверждение
+                await update.message.reply_text(
+                    "👋 <b>Добро пожаловать!</b>\n\n"
+                    "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                    "📚 <b>Вы получите доступ к:</b>\n"
+                    "• Эксклюзивным материалам\n"
+                    "• Полезным советам и инструкциям\n"
+                    "• Актуальным новостям\n"
+                    "• Поддержке сообщества\n\n"
+                    "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                    "💬 Если у вас есть вопросы - не стесняйтесь писать!",
+                    parse_mode='HTML',
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                logger.info(f"✅ Пользователь {user_id} успешно подписан через кнопку '{message_text}'")
+            else:
+                await update.message.reply_text(
+                    "❌ Произошла ошибка при подписке на уведомления. "
+                    "Попробуйте еще раз или обратитесь к администратору.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке кнопки '{message_text}' от пользователя {user_id}: {e}")
+            await update.message.reply_text(
+                "❌ Произошла техническая ошибка. Попробуйте позже.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        return
+    
+    # Затем обрабатываем стандартные кнопки
     if message_text == "✅ Согласиться на получение уведомлений":
         await handle_consent_button(update, context)
         return
