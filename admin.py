@@ -79,6 +79,348 @@ class AdminPanel:
                     minutes = int(hours * 60)
                     return hours, f"{minutes} минут"
                 else:
+                    sent_message = await update.message.reply_text(
+                        "❌ Неверный формат! Примеры:\n\n"
+                        "• <code>2ч</code> или <code>2 часа</code>\n"
+                        "• <code>24</code> (для 24 часов)\n"
+                        "• <code>0.5</code> (для 30 минут)",
+                        parse_mode='HTML'
+                    )
+                    if sent_message:
+                        self.track_admin_message(user_id, sent_message.message_id)
+        
+        # ===== ОБРАБОТКА ФОТО И ССЫЛОК НА ФОТО =====
+        elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo", "edit_welcome_follow_photo", "edit_scheduled_photo"]:
+            # Если отправили текст вместо фото - проверяем, может это ссылка
+            if text and (text.startswith("http://") or text.startswith("https://")):
+                if input_type == "broadcast_photo":
+                    message_number = waiting_data["message_number"]
+                    self.db.update_broadcast_message(message_number, photo_url=text)
+                    sent_message = await update.message.reply_text(f"✅ Ссылка на фото для сообщения {message_number} сохранена!")
+                    if sent_message:
+                        self.track_admin_message(user_id, sent_message.message_id)
+                    del self.waiting_for[user_id]
+                    await self.show_message_edit_from_context(update, context, message_number)
+                elif input_type == "welcome_photo":
+                    welcome_text = self.db.get_welcome_message()['text']
+                    self.db.set_welcome_message(welcome_text, photo_url=text)
+                    sent_message = await update.message.reply_text("✅ Ссылка на фото для приветственного сообщения сохранена!")
+                    if sent_message:
+                        self.track_admin_message(user_id, sent_message.message_id)
+                    del self.waiting_for[user_id]
+                    await self.show_welcome_edit_from_context(update, context)
+                elif input_type == "goodbye_photo":
+                    goodbye_text = self.db.get_goodbye_message()['text']
+                    self.db.set_goodbye_message(goodbye_text, photo_url=text)
+                    sent_message = await update.message.reply_text("✅ Ссылка на фото для прощального сообщения сохранена!")
+                    if sent_message:
+                        self.track_admin_message(user_id, sent_message.message_id)
+                    del self.waiting_for[user_id]
+                    await self.show_goodbye_edit_from_context(update, context)
+            else:
+                sent_message = await update.message.reply_text("❌ Пожалуйста, отправьте фото или ссылку на фото")
+                if sent_message:
+                    self.track_admin_message(user_id, sent_message.message_id)
+        
+        elif input_type == "edit_scheduled_text":
+            broadcast_id = waiting_data["broadcast_id"]
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('UPDATE scheduled_broadcasts SET message_text = ? WHERE id = ?', (text, broadcast_id))
+            conn.commit()
+            conn.close()
+            sent_message = await update.message.reply_text("✅ Текст рассылки обновлен!")
+            if sent_message:
+                self.track_admin_message(user_id, sent_message.message_id)
+            del self.waiting_for[user_id]
+            await self.show_scheduled_broadcast_edit_from_context(update, context, broadcast_id)
+        
+        elif input_type == "edit_scheduled_time":
+            broadcast_id = waiting_data["broadcast_id"]
+            hours, hours_display = self.parse_hours_input(text)
+            
+            if hours is not None and hours > 0:
+                new_scheduled_time = datetime.now() + timedelta(hours=hours)
+                conn = self.db._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('UPDATE scheduled_broadcasts SET scheduled_time = ? WHERE id = ?', (new_scheduled_time, broadcast_id))
+                conn.commit()
+                conn.close()
+                
+                sent_message = await update.message.reply_text(
+                    f"✅ Время рассылки обновлено!\n\n"
+                    f"📅 Новое время: {new_scheduled_time.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"⏰ Через: {hours_display}"
+                )
+                if sent_message:
+                    self.track_admin_message(user_id, sent_message.message_id)
+                del self.waiting_for[user_id]
+                await self.show_scheduled_broadcast_edit_from_context(update, context, broadcast_id)
+            else:
+                sent_message = await update.message.reply_text(
+                    "❌ Неверный формат! Примеры:\n\n"
+                    "• <code>2ч</code> или <code>2 часа</code>\n"
+                    "• <code>24</code> (для 24 часов)\n"
+                    "• <code>0.5</code> (для 30 минут)",
+                    parse_mode='HTML'
+                )
+                if sent_message:
+                    self.track_admin_message(user_id, sent_message.message_id)
+        
+        elif input_type == "add_scheduled_button":
+            if "step" not in waiting_data:
+                # Сохраняем текст и запрашиваем URL
+                self.waiting_for[user_id]["button_text"] = text
+                self.waiting_for[user_id]["step"] = "url"
+                sent_message = await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
+                if sent_message:
+                    self.track_admin_message(user_id, sent_message.message_id)
+            elif waiting_data["step"] == "url":
+                # Проверяем URL
+                if not (text.startswith("http://") or text.startswith("https://")):
+                    sent_message = await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
+                    if sent_message:
+                        self.track_admin_message(user_id, sent_message.message_id)
+                    return
+                
+                # Добавляем кнопку
+                broadcast_id = waiting_data["broadcast_id"]
+                button_text = waiting_data["button_text"]
+                existing_buttons = self.db.get_scheduled_broadcast_buttons(broadcast_id)
+                position = len(existing_buttons) + 1
+                
+                self.db.add_scheduled_broadcast_button(broadcast_id, button_text, text, position)
+                sent_message = await update.message.reply_text("✅ Кнопка добавлена!")
+                if sent_message:
+                    self.track_admin_message(user_id, sent_message.message_id)
+                del self.waiting_for[user_id]
+                await self.show_scheduled_broadcast_buttons_from_context(update, context, broadcast_id)
+        
+        elif input_type == "edit_scheduled_button_text":
+            button_id = waiting_data["button_id"]
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('UPDATE scheduled_broadcast_buttons SET button_text = ? WHERE id = ?', (text, button_id))
+            conn.commit()
+            conn.close()
+            sent_message = await update.message.reply_text("✅ Текст кнопки обновлен!")
+            if sent_message:
+                self.track_admin_message(user_id, sent_message.message_id)
+            del self.waiting_for[user_id]
+            await self.show_scheduled_button_edit_from_context(update, context, button_id)
+        
+        elif input_type == "edit_scheduled_button_url":
+            if not (text.startswith("http://") or text.startswith("https://")):
+                sent_message = await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
+                if sent_message:
+                    self.track_admin_message(user_id, sent_message.message_id)
+                return
+            
+            button_id = waiting_data["button_id"]
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('UPDATE scheduled_broadcast_buttons SET button_url = ? WHERE id = ?', (text, button_id))
+            conn.commit()
+            conn.close()
+            sent_message = await update.message.reply_text("✅ URL кнопки обновлен!")
+            if sent_message:
+                self.track_admin_message(user_id, sent_message.message_id)
+            del self.waiting_for[user_id]
+            await self.show_scheduled_button_edit_from_context(update, context, button_id)
+    
+    # ===== ДОПОЛНИТЕЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====
+    
+    async def show_welcome_buttons_management_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать управление кнопками приветствия из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_welcome_buttons_management(fake_update, context)
+    
+    async def show_welcome_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
+        """Показать редактирование кнопки приветствия из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_welcome_button_edit(fake_update, context, button_id)
+    
+    async def show_welcome_follow_messages_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
+        """Показать последующие сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_welcome_follow_messages(fake_update, context, button_id)
+    
+    async def show_welcome_follow_message_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_id):
+        """Показать редактирование последующего сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_welcome_follow_message_edit(fake_update, context, message_id)
+    
+    async def show_welcome_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования приветственного сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_welcome_edit(fake_update, context)
+    
+    async def show_goodbye_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования прощального сообщения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_goodbye_edit(fake_update, context)
+    
+    async def show_goodbye_buttons_management_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать управление кнопками прощания из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_goodbye_buttons_management(fake_update, context)
+    
+    async def show_goodbye_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
+        """Показать редактирование кнопки прощания из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_goodbye_button_edit(fake_update, context, button_id)
+    
+    async def show_scheduled_broadcasts_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать запланированные рассылки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_scheduled_broadcasts(fake_update, context)
+    
+    async def show_scheduled_broadcast_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_id):
+        """Показать редактирование рассылки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_scheduled_broadcast_edit(fake_update, context, broadcast_id)
+    
+    async def show_scheduled_broadcast_buttons_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_id):
+        """Показать кнопки рассылки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_scheduled_broadcast_buttons(fake_update, context, broadcast_id)
+    
+    async def show_scheduled_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
+        """Показать редактирование кнопки рассылки из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_scheduled_button_edit(fake_update, context, button_id)
                     return hours, f"{hours} часов"
                     
         except ValueError:
@@ -2190,343 +2532,3 @@ class AdminPanel:
                     del self.waiting_for[user_id]
                     await self.show_scheduled_broadcasts_from_context(update, context)
                 else:
-                    sent_message = await update.message.reply_text(
-                        "❌ Неверный формат! Примеры:\n\n"
-                        "• <code>2ч</code> или <code>2 часа</code>\n"
-                        "• <code>24</code> (для 24 часов)\n"
-                        "• <code>0.5</code> (для 30 минут)",
-                        parse_mode='HTML'
-                    )
-                    if sent_message:
-                        self.track_admin_message(user_id, sent_message.message_id)
-        
-        # ===== ОБРАБОТКА ФОТО И ССЫЛОК НА ФОТО =====
-        elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo", "edit_welcome_follow_photo", "edit_scheduled_photo"]:
-            # Если отправили текст вместо фото - проверяем, может это ссылка
-            if text and (text.startswith("http://") or text.startswith("https://")):
-                if input_type == "broadcast_photo":
-                    message_number = waiting_data["message_number"]
-                    self.db.update_broadcast_message(message_number, photo_url=text)
-                    sent_message = await update.message.reply_text(f"✅ Ссылка на фото для сообщения {message_number} сохранена!")
-                    if sent_message:
-                        self.track_admin_message(user_id, sent_message.message_id)
-                    del self.waiting_for[user_id]
-                    await self.show_message_edit_from_context(update, context, message_number)
-                elif input_type == "welcome_photo":
-                    welcome_text = self.db.get_welcome_message()['text']
-                    self.db.set_welcome_message(welcome_text, photo_url=text)
-                    sent_message = await update.message.reply_text("✅ Ссылка на фото для приветственного сообщения сохранена!")
-                    if sent_message:
-                        self.track_admin_message(user_id, sent_message.message_id)
-                    del self.waiting_for[user_id]
-                    await self.show_welcome_edit_from_context(update, context)
-                elif input_type == "goodbye_photo":
-                    goodbye_text = self.db.get_goodbye_message()['text']
-                    self.db.set_goodbye_message(goodbye_text, photo_url=text)
-                    sent_message = await update.message.reply_text("✅ Ссылка на фото для прощального сообщения сохранена!")
-                    if sent_message:
-                        self.track_admin_message(user_id, sent_message.message_id)
-                    del self.waiting_for[user_id]
-                    await self.show_goodbye_edit_from_context(update, context)
-        elif input_type == "edit_scheduled_text":
-            broadcast_id = waiting_data["broadcast_id"]
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute('UPDATE scheduled_broadcasts SET message_text = ? WHERE id = ?', (text, broadcast_id))
-            conn.commit()
-            conn.close()
-            sent_message = await update.message.reply_text("✅ Текст рассылки обновлен!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            del self.waiting_for[user_id]
-            await self.show_scheduled_broadcast_edit_from_context(update, context, broadcast_id)
-        
-        elif input_type == "edit_scheduled_time":
-            broadcast_id = waiting_data["broadcast_id"]
-            hours, hours_display = self.parse_hours_input(text)
-            
-            if hours is not None and hours > 0:
-                new_scheduled_time = datetime.now() + timedelta(hours=hours)
-                conn = self.db._get_connection()
-                cursor = conn.cursor()
-                cursor.execute('UPDATE scheduled_broadcasts SET scheduled_time = ? WHERE id = ?', (new_scheduled_time, broadcast_id))
-                conn.commit()
-                conn.close()
-                
-                sent_message = await update.message.reply_text(
-                    f"✅ Время рассылки обновлено!\n\n"
-                    f"📅 Новое время: {new_scheduled_time.strftime('%d.%m.%Y %H:%M')}\n"
-                    f"⏰ Через: {hours_display}"
-                )
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-                del self.waiting_for[user_id]
-                await self.show_scheduled_broadcast_edit_from_context(update, context, broadcast_id)
-            else:
-                sent_message = await update.message.reply_text(
-                    "❌ Неверный формат! Примеры:\n\n"
-                    "• <code>2ч</code> или <code>2 часа</code>\n"
-                    "• <code>24</code> (для 24 часов)\n"
-                    "• <code>0.5</code> (для 30 минут)",
-                    parse_mode='HTML'
-                )
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-        
-        elif input_type == "add_scheduled_button":
-            if "step" not in waiting_data:
-                # Сохраняем текст и запрашиваем URL
-                self.waiting_for[user_id]["button_text"] = text
-                self.waiting_for[user_id]["step"] = "url"
-                sent_message = await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-            elif waiting_data["step"] == "url":
-                # Проверяем URL
-                if not (text.startswith("http://") or text.startswith("https://")):
-                    sent_message = await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
-                    if sent_message:
-                        self.track_admin_message(user_id, sent_message.message_id)
-                    return
-                
-                # Добавляем кнопку
-                broadcast_id = waiting_data["broadcast_id"]
-                button_text = waiting_data["button_text"]
-                existing_buttons = self.db.get_scheduled_broadcast_buttons(broadcast_id)
-                position = len(existing_buttons) + 1
-                
-                self.db.add_scheduled_broadcast_button(broadcast_id, button_text, text, position)
-                sent_message = await update.message.reply_text("✅ Кнопка добавлена!")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-                del self.waiting_for[user_id]
-                await self.show_scheduled_broadcast_buttons_from_context(update, context, broadcast_id)
-        
-        elif input_type == "edit_scheduled_button_text":
-            button_id = waiting_data["button_id"]
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute('UPDATE scheduled_broadcast_buttons SET button_text = ? WHERE id = ?', (text, button_id))
-            conn.commit()
-            conn.close()
-            sent_message = await update.message.reply_text("✅ Текст кнопки обновлен!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            del self.waiting_for[user_id]
-            await self.show_scheduled_button_edit_from_context(update, context, button_id)
-        
-        elif input_type == "edit_scheduled_button_url":
-            if not (text.startswith("http://") or text.startswith("https://")):
-                sent_message = await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-                return
-            
-            button_id = waiting_data["button_id"]
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute('UPDATE scheduled_broadcast_buttons SET button_url = ? WHERE id = ?', (text, button_id))
-            conn.commit()
-            conn.close()
-            sent_message = await update.message.reply_text("✅ URL кнопки обновлен!")
-            if sent_message:
-                self.track_admin_message(user_id, sent_message.message_id)
-            del self.waiting_for[user_id]
-            await self.show_scheduled_button_edit_from_context(update, context, button_id)
-            else:
-                sent_message = await update.message.reply_text("❌ Пожалуйста, отправьте фото или ссылку на фото")
-                if sent_message:
-                    self.track_admin_message(user_id, sent_message.message_id)
-    
-    # ===== ДОПОЛНИТЕЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====
-    
-    async def show_welcome_buttons_management_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать управление кнопками приветствия из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_welcome_buttons_management(fake_update, context)
-    
-    async def show_welcome_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
-        """Показать редактирование кнопки приветствия из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_welcome_button_edit(fake_update, context, button_id)
-    
-    async def show_welcome_follow_messages_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
-        """Показать последующие сообщения из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_welcome_follow_messages(fake_update, context, button_id)
-    
-    async def show_welcome_follow_message_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_id):
-        """Показать редактирование последующего сообщения из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_welcome_follow_message_edit(fake_update, context, message_id)
-    
-    async def show_welcome_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню редактирования приветственного сообщения из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_welcome_edit(fake_update, context)
-    
-    async def show_goodbye_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню редактирования прощального сообщения из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_goodbye_edit(fake_update, context)
-    
-    async def show_goodbye_buttons_management_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать управление кнопками прощания из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_goodbye_buttons_management(fake_update, context)
-    
-    async def show_goodbye_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
-        """Показать редактирование кнопки прощания из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_goodbye_button_edit(fake_update, context, button_id)
-    
-    async def show_scheduled_broadcasts_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать запланированные рассылки из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-    
-    async def show_scheduled_broadcast_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_id):
-        """Показать редактирование рассылки из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_scheduled_broadcast_edit(fake_update, context, broadcast_id)
-    
-    async def show_scheduled_broadcast_buttons_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, broadcast_id):
-        """Показать кнопки рассылки из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_scheduled_broadcast_buttons(fake_update, context, broadcast_id)
-    
-    async def show_scheduled_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
-        """Показать редактирование кнопки рассылки из контекста"""
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-                self.from_user = message.from_user
-                
-            async def edit_message_text(self, text, reply_markup, parse_mode):
-                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-        
-        fake_update = type('FakeUpdate', (), {})()
-        fake_update.callback_query = FakeQuery(update.message)
-        fake_update.effective_user = update.effective_user
-        
-        await self.show_scheduled_button_edit(fake_update, context, button_id)
