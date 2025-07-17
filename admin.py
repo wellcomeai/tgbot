@@ -340,7 +340,7 @@ class AdminPanel:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_welcome_photo")])
         
         # Управление кнопками
-        keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data="manage_welcome_buttons")])
+        keyboard.append([InlineKeyboardButton("⌨️ Управление механическими кнопками", callback_data="manage_welcome_buttons")])
         
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -348,16 +348,16 @@ class AdminPanel:
         # Добавляем информацию о кнопках
         buttons_info = ""
         if welcome_buttons:
-            buttons_info = f"\n\n<b>🔘 Настроенные кнопки ({len(welcome_buttons)}):</b>\n"
-            for i, (button_id, button_text, callback_data, position) in enumerate(welcome_buttons, 1):
+            buttons_info = f"\n\n<b>⌨️ Механические кнопки ({len(welcome_buttons)}):</b>\n"
+            for i, (button_id, button_text, position) in enumerate(welcome_buttons, 1):
                 # Получаем количество последующих сообщений
                 follow_messages = self.db.get_welcome_follow_messages(button_id)
                 follow_count = len(follow_messages)
                 buttons_info += f"{i}. {button_text} ({follow_count} сообщ.)\n"
-            buttons_info += "\n💡 <b>Пользователи видят ТОЛЬКО эти кнопки</b>"
+            buttons_info += "\n💡 <b>Пользователи видят эти кнопки внизу экрана</b>"
         else:
             buttons_info += (
-                "\n\n<b>⚠️ Кнопки не настроены</b>\n"
+                "\n\n<b>⚠️ Механические кнопки не настроены</b>\n"
                 "Пользователи видят стандартные кнопки:\n"
                 "• ✅ Согласиться на получение уведомлений\n"
                 "• 📋 Что я буду получать?\n"
@@ -384,23 +384,27 @@ class AdminPanel:
         
         keyboard = []
         
-        for button_id, button_text, callback_data, position in welcome_buttons:
+        for button_id, button_text, position in welcome_buttons:
             # Получаем количество последующих сообщений
             follow_messages = self.db.get_welcome_follow_messages(button_id)
             follow_count = len(follow_messages)
             
-            button_display = f"📝 {button_text} ({follow_count} сообщ.)"
+            button_display = f"⌨️ {button_text} ({follow_count} сообщ.)"
             keyboard.append([InlineKeyboardButton(button_display, callback_data=f"edit_welcome_button_{button_id}")])
         
-        if len(welcome_buttons) < 3:  # Максимум 3 кнопки
+        if len(welcome_buttons) < 5:  # Максимум 5 механических кнопок
             keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data="add_welcome_button")])
         
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_welcome")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         text = (
-            f"🔘 <b>Кнопки приветственного сообщения</b>\n\n"
-            f"Текущие кнопки: {len(welcome_buttons)}/3\n\n"
+            f"⌨️ <b>Механические кнопки приветствия</b>\n\n"
+            f"Текущие кнопки: {len(welcome_buttons)}/5\n\n"
+            "💡 <b>Что это:</b>\n"
+            "• Кнопки отображаются внизу экрана у пользователя\n"
+            "• При нажатии автоматически подписывается на рассылку\n"
+            "• Можно настроить последующие сообщения\n\n"
             "Выберите кнопку для редактирования или добавьте новую:"
         )
         
@@ -415,7 +419,7 @@ class AdminPanel:
         conn = self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT button_text, callback_data 
+            SELECT button_text 
             FROM welcome_buttons 
             WHERE id = ?
         ''', (button_id,))
@@ -426,7 +430,7 @@ class AdminPanel:
             await update.callback_query.answer("Кнопка не найдена!", show_alert=True)
             return
         
-        button_text, callback_data = button_data
+        button_text = button_data[0]
         follow_messages = self.db.get_welcome_follow_messages(button_id)
         
         keyboard = [
@@ -447,9 +451,12 @@ class AdminPanel:
                 messages_info += f"{msg_num}. {photo_icon}{short_text}\n"
         
         text = (
-            f"🔘 <b>Редактирование кнопки</b>\n\n"
-            f"<b>Текст:</b> {button_text}\n"
-            f"<b>Callback данные:</b> {callback_data}"
+            f"⌨️ <b>Редактирование механической кнопки</b>\n\n"
+            f"<b>Текст кнопки:</b> {button_text}\n\n"
+            f"💡 <b>Как работает:</b>\n"
+            f"• Пользователь видит эту кнопку внизу экрана\n"
+            f"• При нажатии автоматически подписывается\n"
+            f"• Получает все настроенные последующие сообщения"
             f"{messages_info}"
         )
         
@@ -1646,15 +1653,12 @@ class AdminPanel:
         
         # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПРИВЕТСТВЕННОГО СООБЩЕНИЯ =====
         elif input_type == "add_welcome_button":
-            # Генерируем уникальный callback_data
-            callback_data = f"welcome_btn_{int(datetime.now().timestamp())}"
-            
             # Определяем позицию
             existing_buttons = self.db.get_welcome_buttons()
             position = len(existing_buttons) + 1
             
-            button_id = self.db.add_welcome_button(text, callback_data, position)
-            await update.message.reply_text("✅ Кнопка добавлена!")
+            button_id = self.db.add_welcome_button(text, position)
+            await update.message.reply_text("✅ Механическая кнопка добавлена!")
             del self.waiting_for[user_id]
             await self.show_welcome_buttons_management_from_context(update, context)
         
