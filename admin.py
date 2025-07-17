@@ -37,6 +37,7 @@ class AdminPanel:
                 logger.debug(f"ℹ️ Не удалось удалить сообщение {message_id}: {e}")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при удалении сообщения {message_id}: {e}")
+                # Продолжаем удалять остальные сообщения
     
     def track_admin_message(self, user_id: int, message_id: int):
         """Добавление ID сообщения в отслеживание"""
@@ -50,6 +51,59 @@ class AdminPanel:
             self.admin_messages[user_id] = self.admin_messages[user_id][-10:]
         
         logger.debug(f"📝 Отслеживаем сообщение {message_id} для админа {user_id}")
+    
+    async def safe_edit_or_send_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup=None, parse_mode='HTML'):
+        """Безопасное редактирование или отправка сообщения с обработкой ошибок"""
+        user_id = update.effective_user.id
+        
+        try:
+            if update.callback_query:
+                try:
+                    sent_message = await update.callback_query.edit_message_text(
+                        text=text,
+                        reply_markup=reply_markup,
+                        parse_mode=parse_mode
+                    )
+                except BadRequest as e:
+                    if "Message to edit not found" in str(e) or "Message is not modified" in str(e):
+                        # Сообщение уже удалено или не изменилось, отправляем новое
+                        sent_message = await context.bot.send_message(
+                            chat_id=user_id,
+                            text=text,
+                            reply_markup=reply_markup,
+                            parse_mode=parse_mode
+                        )
+                    else:
+                        raise
+            else:
+                sent_message = await update.message.reply_text(
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+            
+            # Отслеживаем новое сообщение
+            if sent_message:
+                self.track_admin_message(user_id, sent_message.message_id)
+            
+            return sent_message
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отправке/редактировании сообщения: {e}")
+            # Попытка отправить новое сообщение в случае ошибки
+            try:
+                sent_message = await context.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+                if sent_message:
+                    self.track_admin_message(user_id, sent_message.message_id)
+                return sent_message
+            except Exception as e2:
+                logger.error(f"❌ Критическая ошибка при отправке сообщения: {e2}")
+                return None
     
     def parse_delay_input(self, text):
         """Парсинг ввода задержки в различных форматах"""
@@ -134,6 +188,7 @@ class AdminPanel:
             [InlineKeyboardButton(f"{status_icon} Статус рассылки", callback_data="admin_broadcast_status")],
             [InlineKeyboardButton("👋 Приветственное сообщение", callback_data="admin_welcome")],
             [InlineKeyboardButton("😢 Прощальное сообщение", callback_data="admin_goodbye")],
+            [InlineKeyboardButton("✅ Сообщение подтверждения", callback_data="admin_success_message")],
             [InlineKeyboardButton("📢 Отправить всем сообщение", callback_data="admin_send_all")],
             [InlineKeyboardButton("⏰ Запланированные рассылки", callback_data="admin_scheduled_broadcasts")],
             [InlineKeyboardButton("👥 Список пользователей", callback_data="admin_users")]
@@ -142,22 +197,9 @@ class AdminPanel:
         
         text = "🔧 <b>Админ-панель</b>\n\nВыберите действие:"
         
-        if update.callback_query:
-            sent_message = await update.callback_query.edit_message_text(
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        else:
-            sent_message = await update.message.reply_text(
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        
-        # Отслеживаем новое сообщение
-        if sent_message:
-            self.track_admin_message(user_id, sent_message.message_id)
+        # Используем безопасный метод отправки/редактирования
+        sent_message = await self.safe_edit_or_send_message(update, context, text, reply_markup)
+        return sent_message
     
     async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать статистику"""
@@ -401,6 +443,54 @@ class AdminPanel:
         if sent_message:
             self.track_admin_message(user_id, sent_message.message_id)
     
+    async def show_success_message_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования сообщения подтверждения"""
+        user_id = update.effective_user.id
+        
+        # Получаем текущее сообщение подтверждения
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM settings WHERE key = "success_message"')
+        success_msg = cursor.fetchone()
+        conn.close()
+        
+        if success_msg:
+            current_message = success_msg[0]
+        else:
+            current_message = (
+                "👋 <b>Добро пожаловать!</b>\n\n"
+                "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                "📚 <b>Вы получите доступ к:</b>\n"
+                "• Эксклюзивным материалам\n"
+                "• Полезным советам и инструкциям\n"
+                "• Актуальным новостям\n"
+                "• Поддержке сообщества\n\n"
+                "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+            )
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_success_message_text")],
+            [InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_success_message")],
+            [InlineKeyboardButton("« Назад", callback_data="admin_back")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message_text = (
+            "✅ <b>Сообщение подтверждения</b>\n\n"
+            "Это сообщение отправляется пользователям после успешной подписки.\n\n"
+            f"<b>Текущий текст:</b>\n{current_message}"
+        )
+        
+        sent_message = await update.callback_query.edit_message_text(
+            text=message_text,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+        
+        if sent_message:
+            self.track_admin_message(user_id, sent_message.message_id)
+
     # ===== МЕТОДЫ ДЛЯ ПРИВЕТСТВЕННОГО СООБЩЕНИЯ =====
     
     async def show_welcome_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1278,6 +1368,7 @@ class AdminPanel:
         texts = {
             "welcome": "✏️ Отправьте новое приветственное сообщение:",
             "goodbye": "✏️ Отправьте новое прощальное сообщение:",
+            "success_message": "✏️ Отправьте новое сообщение подтверждения (отправляется после успешной подписки):",
             "broadcast_text": f"✏️ Отправьте новый текст для сообщения {kwargs.get('message_number')}:",
             "broadcast_delay": self._get_delay_text(kwargs.get('message_number')),
             "broadcast_photo": f"🖼 Отправьте фото для сообщения {kwargs.get('message_number')} или ссылку на фото:",
@@ -1627,6 +1718,22 @@ class AdminPanel:
         
         await self.show_scheduled_button_edit(fake_update, context, button_id)
     
+    async def show_success_message_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать редактирование сообщения подтверждения из контекста"""
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
+                self.from_user = message.from_user
+                
+            async def edit_message_text(self, text, reply_markup, parse_mode):
+                return await self.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        fake_update = type('FakeUpdate', (), {})()
+        fake_update.callback_query = FakeQuery(update.message)
+        fake_update.effective_user = update.effective_user
+        
+        await self.show_success_message_edit(fake_update, context)
+    
     # ===== ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ =====
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1647,6 +1754,8 @@ class AdminPanel:
             await self.show_welcome_edit(update, context)
         elif data == "admin_goodbye":
             await self.show_goodbye_edit(update, context)
+        elif data == "admin_success_message":
+            await self.show_success_message_edit(update, context)
         elif data == "admin_users":
             await self.show_users_list(update, context)
         elif data == "admin_scheduled_broadcasts":
@@ -1671,6 +1780,29 @@ class AdminPanel:
             await self.request_text_input(update, context, "welcome")
         elif data == "edit_goodbye_text":
             await self.request_text_input(update, context, "goodbye")
+        elif data == "edit_success_message_text":
+            await self.request_text_input(update, context, "success_message")
+        elif data == "reset_success_message":
+            # Сбрасываем на сообщение по умолчанию
+            default_success_message = (
+                "👋 <b>Добро пожаловать!</b>\n\n"
+                "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                "📚 <b>Вы получите доступ к:</b>\n"
+                "• Эксклюзивным материалам\n"
+                "• Полезным советам и инструкциям\n"
+                "• Актуальным новостям\n"
+                "• Поддержке сообщества\n\n"
+                "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+            )
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 
+                          ('success_message', default_success_message))
+            conn.commit()
+            conn.close()
+            await query.answer("Сообщение сброшено на значение по умолчанию!")
+            await self.show_success_message_edit(update, context)
         elif data == "edit_welcome_photo":
             await self.request_text_input(update, context, "welcome_photo")
         elif data == "edit_goodbye_photo":
@@ -1710,12 +1842,14 @@ class AdminPanel:
             await self.show_welcome_buttons_management(update, context)
         elif data == "add_welcome_button":
             await self.request_text_input(update, context, "add_welcome_button")
-        elif data.startswith("edit_welcome_button_"):
-            button_id = int(data.split("_")[3])
-            await self.show_welcome_button_edit(update, context, button_id)
+        
+        # ИСПРАВЛЕННАЯ ОБРАБОТКА КНОПОК ПРИВЕТСТВИЯ
         elif data.startswith("edit_welcome_button_text_"):
             button_id = int(data.split("_")[4])
             await self.request_text_input(update, context, "edit_welcome_button_text", button_id=button_id)
+        elif data.startswith("edit_welcome_button_") and not data.startswith("edit_welcome_button_text_"):
+            button_id = int(data.split("_")[3])
+            await self.show_welcome_button_edit(update, context, button_id)
         elif data.startswith("delete_welcome_button_"):
             button_id = int(data.split("_")[3])
             self.db.delete_welcome_button(button_id)
@@ -1727,15 +1861,17 @@ class AdminPanel:
         elif data.startswith("add_welcome_follow_"):
             button_id = int(data.split("_")[3])
             await self.request_text_input(update, context, "add_welcome_follow", welcome_button_id=button_id)
-        elif data.startswith("edit_welcome_follow_"):
-            message_id = int(data.split("_")[3])
-            await self.show_welcome_follow_message_edit(update, context, message_id)
+        
+        # ИСПРАВЛЕННАЯ ОБРАБОТКА ПОСЛЕДУЮЩИХ СООБЩЕНИЙ ПРИВЕТСТВИЯ
         elif data.startswith("edit_welcome_follow_text_"):
             message_id = int(data.split("_")[4])
             await self.request_text_input(update, context, "edit_welcome_follow_text", message_id=message_id)
         elif data.startswith("edit_welcome_follow_photo_"):
             message_id = int(data.split("_")[4])
             await self.request_text_input(update, context, "edit_welcome_follow_photo", message_id=message_id)
+        elif data.startswith("edit_welcome_follow_") and not data.startswith("edit_welcome_follow_text_") and not data.startswith("edit_welcome_follow_photo_"):
+            message_id = int(data.split("_")[3])
+            await self.show_welcome_follow_message_edit(update, context, message_id)
         elif data.startswith("remove_welcome_follow_photo_"):
             message_id = int(data.split("_")[4])
             self.db.update_welcome_follow_message(message_id, photo_url="")
@@ -1762,15 +1898,17 @@ class AdminPanel:
             await self.show_goodbye_buttons_management(update, context)
         elif data == "add_goodbye_button":
             await self.request_text_input(update, context, "add_goodbye_button")
-        elif data.startswith("edit_goodbye_button_"):
-            button_id = int(data.split("_")[3])
-            await self.show_goodbye_button_edit(update, context, button_id)
+        
+        # ИСПРАВЛЕННАЯ ОБРАБОТКА КНОПОК ПРОЩАНИЯ
         elif data.startswith("edit_goodbye_button_text_"):
             button_id = int(data.split("_")[4])
             await self.request_text_input(update, context, "edit_goodbye_button_text", button_id=button_id)
         elif data.startswith("edit_goodbye_button_url_"):
             button_id = int(data.split("_")[4])
             await self.request_text_input(update, context, "edit_goodbye_button_url", button_id=button_id)
+        elif data.startswith("edit_goodbye_button_") and not data.startswith("edit_goodbye_button_text_") and not data.startswith("edit_goodbye_button_url_"):
+            button_id = int(data.split("_")[3])
+            await self.show_goodbye_button_edit(update, context, button_id)
         elif data.startswith("delete_goodbye_button_"):
             button_id = int(data.split("_")[3])
             self.db.delete_goodbye_button(button_id)
@@ -1783,6 +1921,8 @@ class AdminPanel:
         elif data.startswith("edit_scheduled_broadcast_"):
             broadcast_id = int(data.split("_")[3])
             await self.show_scheduled_broadcast_edit(update, context, broadcast_id)
+        
+        # ИСПРАВЛЕННАЯ ОБРАБОТКА РЕДАКТИРОВАНИЯ ЗАПЛАНИРОВАННЫХ РАССЫЛОК
         elif data.startswith("edit_scheduled_text_"):
             broadcast_id = int(data.split("_")[3])
             await self.request_text_input(update, context, "edit_scheduled_text", broadcast_id=broadcast_id)
@@ -1813,16 +1953,17 @@ class AdminPanel:
         elif data.startswith("add_scheduled_button_"):
             broadcast_id = int(data.split("_")[3])
             await self.request_text_input(update, context, "add_scheduled_button", broadcast_id=broadcast_id)
-        elif data.startswith("edit_scheduled_button_"):
-            if data.startswith("edit_scheduled_button_text_"):
-                button_id = int(data.split("_")[4])
-                await self.request_text_input(update, context, "edit_scheduled_button_text", button_id=button_id)
-            elif data.startswith("edit_scheduled_button_url_"):
-                button_id = int(data.split("_")[4])
-                await self.request_text_input(update, context, "edit_scheduled_button_url", button_id=button_id)
-            else:
-                button_id = int(data.split("_")[3])
-                await self.show_scheduled_button_edit(update, context, button_id)
+        
+        # ИСПРАВЛЕННАЯ ОБРАБОТКА КНОПОК ЗАПЛАНИРОВАННЫХ РАССЫЛОК
+        elif data.startswith("edit_scheduled_button_text_"):
+            button_id = int(data.split("_")[4])
+            await self.request_text_input(update, context, "edit_scheduled_button_text", button_id=button_id)
+        elif data.startswith("edit_scheduled_button_url_"):
+            button_id = int(data.split("_")[4])
+            await self.request_text_input(update, context, "edit_scheduled_button_url", button_id=button_id)
+        elif data.startswith("edit_scheduled_button_") and not data.startswith("edit_scheduled_button_text_") and not data.startswith("edit_scheduled_button_url_"):
+            button_id = int(data.split("_")[3])
+            await self.show_scheduled_button_edit(update, context, button_id)
         elif data.startswith("delete_scheduled_button_"):
             button_id = int(data.split("_")[3])
             # Получаем broadcast_id для возврата
@@ -1871,15 +2012,17 @@ class AdminPanel:
         elif data.startswith("add_button_"):
             message_number = int(data.split("_")[2])
             await self.request_text_input(update, context, "add_button", message_number=message_number)
-        elif data.startswith("edit_button_"):
-            button_id = int(data.split("_")[2])
-            await self.show_button_edit(update, context, button_id)
+        
+        # ИСПРАВЛЕННАЯ ОБРАБОТКА КНОПОК - сначала проверяем полные паттерны
         elif data.startswith("edit_button_text_"):
             button_id = int(data.split("_")[3])
             await self.request_text_input(update, context, "edit_button_text", button_id=button_id)
         elif data.startswith("edit_button_url_"):
             button_id = int(data.split("_")[3])
             await self.request_text_input(update, context, "edit_button_url", button_id=button_id)
+        elif data.startswith("edit_button_") and not data.startswith("edit_button_text_") and not data.startswith("edit_button_url_"):
+            button_id = int(data.split("_")[2])
+            await self.show_button_edit(update, context, button_id)
         elif data.startswith("delete_button_"):
             button_id = int(data.split("_")[2])
             # Получаем message_number для возврата
@@ -1894,6 +2037,8 @@ class AdminPanel:
                 self.db.delete_message_button(button_id)
                 await query.answer("Кнопка удалена!")
                 await self.show_message_buttons(update, context, message_number)
+        
+        # ИСПРАВЛЕННАЯ ОБРАБОТКА ТЕКСТА И ЗАДЕРЖКИ
         elif data.startswith("edit_text_"):
             message_number = int(data.split("_")[2])
             await self.request_text_input(update, context, "broadcast_text", message_number=message_number)
@@ -2141,6 +2286,18 @@ class AdminPanel:
                 self.track_admin_message(user_id, sent_message.message_id)
             del self.waiting_for[user_id]
             await self.show_goodbye_edit_from_context(update, context)
+        
+        elif input_type == "success_message":
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ('success_message', text))
+            conn.commit()
+            conn.close()
+            sent_message = await update.message.reply_text("✅ Сообщение подтверждения обновлено!")
+            if sent_message:
+                self.track_admin_message(user_id, sent_message.message_id)
+            del self.waiting_for[user_id]
+            await self.show_success_message_edit_from_context(update, context)
             
         elif input_type == "broadcast_text":
             message_number = waiting_data["message_number"]
