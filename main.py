@@ -219,20 +219,15 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup = None
         
         if welcome_buttons:
-            # Создаем инлайн-клавиатуру с кнопками из админ-панели
+            # Если админ настроил кнопки - используем ТОЛЬКО их
             keyboard = []
             for button_id, button_text, callback_data, position in welcome_buttons:
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
             
-            # Добавляем стандартные кнопки для совместимости
-            keyboard.extend([
-                [KeyboardButton("📋 Что я буду получать?")],
-                [KeyboardButton("ℹ️ Подробнее о боте")]
-            ])
-            
             reply_markup = InlineKeyboardMarkup(keyboard)
+            logger.info(f"✅ Используем {len(welcome_buttons)} кнопок, настроенных админом")
         else:
-            # Если кнопок нет, используем стандартную клавиатуру
+            # Если админ не настроил кнопки, используем стандартную клавиатуру
             keyboard = [
                 [KeyboardButton("✅ Согласиться на получение уведомлений")],
                 [KeyboardButton("📋 Что я буду получать?")],
@@ -244,37 +239,21 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                 one_time_keyboard=True,
                 input_field_placeholder="Выберите действие..."
             )
+            logger.info("✅ Используем стандартные кнопки (админ не настроил свои)")
         
         # Отправляем приветственное сообщение
         try:
-            welcome_text = (
-                f"{welcome_data['text']}\n\n"
-                "💡 <b>Важно:</b> Для получения уведомлений и полезных материалов от бота, "
-                "пожалуйста, нажмите одну из кнопок ниже:\n\n"
-                "👇 <b>Выберите действие:</b>"
-            )
+            # Используем текст сообщения как есть, без дополнительных подсказок
+            welcome_text = welcome_data['text']
             
             if welcome_data['photo']:
-                if isinstance(reply_markup, InlineKeyboardMarkup):
-                    await context.bot.send_photo(
-                        chat_id=user.id,
-                        photo=welcome_data['photo'],
-                        caption=welcome_text,
-                        parse_mode='HTML',
-                        reply_markup=reply_markup
-                    )
-                else:
-                    await context.bot.send_photo(
-                        chat_id=user.id,
-                        photo=welcome_data['photo'],
-                        caption=welcome_text,
-                        parse_mode='HTML'
-                    )
-                    await context.bot.send_message(
-                        chat_id=user.id,
-                        text="👇 Выберите действие:",
-                        reply_markup=reply_markup
-                    )
+                await context.bot.send_photo(
+                    chat_id=user.id,
+                    photo=welcome_data['photo'],
+                    caption=welcome_text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
             else:
                 await context.bot.send_message(
                     chat_id=user.id,
