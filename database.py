@@ -618,6 +618,8 @@ class Database:
         
         conn.commit()
         conn.close()
+        
+        logger.info(f"Обновлена кнопка приветствия #{button_id}")
     
     def get_welcome_button_by_text(self, button_text):
         """Получение кнопки приветствия по тексту"""
@@ -647,6 +649,8 @@ class Database:
         
         conn.commit()
         conn.close()
+        
+        logger.info(f"Удалена кнопка приветствия #{button_id} со всеми связанными сообщениями")
     
     # ===== МЕТОДЫ ДЛЯ ПОСЛЕДУЮЩИХ СООБЩЕНИЙ ПОСЛЕ КНОПОК =====
     
@@ -707,6 +711,8 @@ class Database:
         
         conn.commit()
         conn.close()
+        
+        logger.info(f"Обновлено последующее сообщение #{message_id}")
     
     def delete_welcome_follow_message(self, message_id):
         """Удаление последующего сообщения"""
@@ -717,6 +723,8 @@ class Database:
         
         conn.commit()
         conn.close()
+        
+        logger.info(f"Удалено последующее сообщение #{message_id}")
     
     # ===== МЕТОДЫ ДЛЯ КНОПОК ПРОЩАЛЬНОГО СООБЩЕНИЯ =====
     
@@ -767,6 +775,8 @@ class Database:
         
         conn.commit()
         conn.close()
+        
+        logger.info(f"Обновлена кнопка прощания #{button_id}")
     
     def delete_goodbye_button(self, button_id):
         """Удаление кнопки прощального сообщения"""
@@ -777,6 +787,8 @@ class Database:
         
         conn.commit()
         conn.close()
+        
+        logger.info(f"Удалена кнопка прощания #{button_id}")
     
     # ===== МЕТОДЫ ДЛЯ ЗАПЛАНИРОВАННЫХ МАССОВЫХ РАССЫЛОК =====
     
@@ -907,6 +919,8 @@ class Database:
         
         conn.commit()
         conn.close()
+        
+        logger.info(f"Удалена кнопка запланированной рассылки #{button_id}")
     
     # ===== ОСТАЛЬНЫЕ МЕТОДЫ (без изменений) =====
     
