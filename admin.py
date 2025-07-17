@@ -348,12 +348,22 @@ class AdminPanel:
         # Добавляем информацию о кнопках
         buttons_info = ""
         if welcome_buttons:
-            buttons_info = f"\n<b>Кнопки ({len(welcome_buttons)}):</b>\n"
+            buttons_info = f"\n\n<b>🔘 Настроенные кнопки ({len(welcome_buttons)}):</b>\n"
             for i, (button_id, button_text, callback_data, position) in enumerate(welcome_buttons, 1):
                 # Получаем количество последующих сообщений
                 follow_messages = self.db.get_welcome_follow_messages(button_id)
                 follow_count = len(follow_messages)
                 buttons_info += f"{i}. {button_text} ({follow_count} сообщ.)\n"
+            buttons_info += "\n💡 <b>Пользователи видят ТОЛЬКО эти кнопки</b>"
+        else:
+            buttons_info += (
+                "\n\n<b>⚠️ Кнопки не настроены</b>\n"
+                "Пользователи видят стандартные кнопки:\n"
+                "• ✅ Согласиться на получение уведомлений\n"
+                "• 📋 Что я буду получать?\n"
+                "• ℹ️ Подробнее о боте\n\n"
+                "💡 <b>Рекомендация:</b> Добавьте свои кнопки для полного контроля!"
+            )
         
         message_text = (
             "👋 <b>Приветственное сообщение</b>\n\n"
