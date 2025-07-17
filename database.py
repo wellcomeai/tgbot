@@ -79,12 +79,11 @@ class Database:
                 )
             ''')
             
-            # НОВАЯ: Таблица кнопок для приветственного сообщения
+            # НОВАЯ: Таблица кнопок для приветственного сообщения (механические кнопки)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS welcome_buttons (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    button_text TEXT NOT NULL,
-                    callback_data TEXT NOT NULL,
+                    button_text TEXT NOT NULL UNIQUE,
                     position INTEGER DEFAULT 1
                 )
             ''')
@@ -100,6 +99,31 @@ class Database:
                     FOREIGN KEY (welcome_button_id) REFERENCES welcome_buttons(id)
                 )
             ''')
+            
+            # Проверяем, есть ли старая структура с callback_data и обновляем
+            cursor.execute("PRAGMA table_info(welcome_buttons)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'callback_data' in columns:
+                # Создаем новую таблицу
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS welcome_buttons_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        button_text TEXT NOT NULL UNIQUE,
+                        position INTEGER DEFAULT 1
+                    )
+                ''')
+                
+                # Копируем данные, убирая callback_data
+                cursor.execute('''
+                    INSERT INTO welcome_buttons_new (id, button_text, position)
+                    SELECT id, button_text, position FROM welcome_buttons
+                ''')
+                
+                # Удаляем старую таблицу и переименовываем новую
+                cursor.execute('DROP TABLE welcome_buttons')
+                cursor.execute('ALTER TABLE welcome_buttons_new RENAME TO welcome_buttons')
+                
+                logger.info("Обновлена структура таблицы welcome_buttons для механических кнопок")
             
             # НОВАЯ: Таблица кнопок для прощального сообщения
             cursor.execute('''
@@ -556,7 +580,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT id, button_text, callback_data, position 
+            SELECT id, button_text, position 
             FROM welcome_buttons 
             ORDER BY position
         ''')
@@ -565,24 +589,24 @@ class Database:
         conn.close()
         return buttons
     
-    def add_welcome_button(self, button_text, callback_data, position=1):
+    def add_welcome_button(self, button_text, position=1):
         """Добавление кнопки к приветственному сообщению"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
-            INSERT INTO welcome_buttons (button_text, callback_data, position)
-            VALUES (?, ?, ?)
-        ''', (button_text, callback_data, position))
+            INSERT INTO welcome_buttons (button_text, position)
+            VALUES (?, ?)
+        ''', (button_text, position))
         
         button_id = cursor.lastrowid
         conn.commit()
         conn.close()
         
-        logger.info(f"Добавлена кнопка приветствия: {button_text}")
+        logger.info(f"Добавлена механическая кнопка приветствия: {button_text}")
         return button_id
     
-    def update_welcome_button(self, button_id, button_text=None, callback_data=None):
+    def update_welcome_button(self, button_id, button_text=None):
         """Обновление кнопки приветственного сообщения"""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -592,13 +616,23 @@ class Database:
                 UPDATE welcome_buttons SET button_text = ? WHERE id = ?
             ''', (button_text, button_id))
         
-        if callback_data is not None:
-            cursor.execute('''
-                UPDATE welcome_buttons SET callback_data = ? WHERE id = ?
-            ''', (callback_data, button_id))
-        
         conn.commit()
         conn.close()
+    
+    def get_welcome_button_by_text(self, button_text):
+        """Получение кнопки приветствия по тексту"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, button_text, position 
+            FROM welcome_buttons 
+            WHERE button_text = ?
+        ''', (button_text,))
+        
+        button = cursor.fetchone()
+        conn.close()
+        return button
     
     def delete_welcome_button(self, button_id):
         """Удаление кнопки приветственного сообщения и всех связанных сообщений"""
