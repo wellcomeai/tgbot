@@ -195,7 +195,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик заявок на вступление в канал - БЕЗ отправки приветственного сообщения"""
+    """Обработчик заявок на вступление в канал - С АВТОМАТИЧЕСКИМ ПРИВЕТСТВЕННЫМ СООБЩЕНИЕМ"""
     chat_join_request = update.chat_join_request
     user = chat_join_request.from_user
     
@@ -207,10 +207,69 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Добавляем пользователя в базу данных
         db.add_user(user.id, user.username, user.first_name)
         
-        logger.info(f"✅ Пользователь {user.id} добавлен в базу данных без отправки приветственного сообщения")
+        # Получаем приветственное сообщение от админа
+        welcome_data = db.get_welcome_message()
+        welcome_buttons = db.get_welcome_buttons()
         
-        # НЕ ОТПРАВЛЯЕМ приветственное сообщение - админы сами добавят сообщения
-        # Пользователь должен будет написать боту /start или использовать кнопки, которые настроят админы
+        # Создаем клавиатуру
+        reply_markup = None
+        
+        # Сначала проверяем, есть ли кнопки, настроенные админом
+        if welcome_buttons:
+            # Используем механические кнопки (кнопки клавиатуры)
+            keyboard = []
+            for button_id, button_text, position in welcome_buttons:
+                keyboard.append([KeyboardButton(button_text)])
+            
+            reply_markup = ReplyKeyboardMarkup(
+                keyboard, 
+                resize_keyboard=True,
+                one_time_keyboard=True,
+                input_field_placeholder="Выберите действие..."
+            )
+            logger.info(f"📱 Создана клавиатура с {len(welcome_buttons)} механическими кнопками")
+        else:
+            # Используем стандартные кнопки
+            keyboard = [
+                [KeyboardButton("✅ Согласиться на получение уведомлений")],
+                [KeyboardButton("📋 Что я буду получать?")],
+                [KeyboardButton("ℹ️ Подробнее о боте")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(
+                keyboard, 
+                resize_keyboard=True,
+                one_time_keyboard=True,
+                input_field_placeholder="Выберите действие..."
+            )
+            logger.info("📱 Создана стандартная клавиатура")
+        
+        # Отправляем приветственное сообщение
+        try:
+            if welcome_data['photo']:
+                sent_message = await context.bot.send_photo(
+                    chat_id=user.id,
+                    photo=welcome_data['photo'],
+                    caption=welcome_data['text'],
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+            else:
+                sent_message = await context.bot.send_message(
+                    chat_id=user.id,
+                    text=welcome_data['text'],
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+            
+            logger.info(f"✅ Приветственное сообщение отправлено пользователю {user.id}")
+            
+        except Forbidden as e:
+            logger.warning(f"⚠️ Не удалось отправить приветственное сообщение пользователю {user.id}: пользователь не начал диалог с ботом")
+            
+        except Exception as e:
+            logger.error(f"❌ Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
+        
+        logger.info(f"✅ Пользователь {user.id} добавлен в базу данных с автоматическим приветственным сообщением")
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке заявки от {user.id}: {e}")
@@ -614,7 +673,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application) -> None:
     """Инициализация после запуска"""
-    logger.info("🚀 Бот с улучшенной админ-панелью и без приветственного сообщения успешно запущен!")
+    logger.info("🚀 Бот с улучшенной админ-панелью и автоматическим приветственным сообщением успешно запущен!")
 
 def main():
     """Главная функция запуска бота"""
