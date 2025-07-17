@@ -67,7 +67,7 @@ class Database:
                 cursor.execute('ALTER TABLE broadcast_messages ADD COLUMN photo_url TEXT DEFAULT NULL')
                 logger.info("Добавлена колонка photo_url в broadcast_messages")
             
-            # Таблица кнопок для сообщений
+            # Таблица кнопок для сообщений рассылки
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS message_buttons (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +76,62 @@ class Database:
                     button_url TEXT NOT NULL,
                     position INTEGER DEFAULT 1,
                     FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
+                )
+            ''')
+            
+            # НОВАЯ: Таблица кнопок для приветственного сообщения
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS welcome_buttons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    button_text TEXT NOT NULL,
+                    callback_data TEXT NOT NULL,
+                    position INTEGER DEFAULT 1
+                )
+            ''')
+            
+            # НОВАЯ: Таблица последующих сообщений после нажатия кнопок приветствия
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS welcome_follow_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    welcome_button_id INTEGER,
+                    message_number INTEGER,
+                    text TEXT NOT NULL,
+                    photo_url TEXT DEFAULT NULL,
+                    FOREIGN KEY (welcome_button_id) REFERENCES welcome_buttons(id)
+                )
+            ''')
+            
+            # НОВАЯ: Таблица кнопок для прощального сообщения
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS goodbye_buttons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    button_text TEXT NOT NULL,
+                    button_url TEXT NOT NULL,
+                    position INTEGER DEFAULT 1
+                )
+            ''')
+            
+            # НОВАЯ: Таблица запланированных массовых рассылок
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS scheduled_broadcasts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_text TEXT NOT NULL,
+                    photo_url TEXT DEFAULT NULL,
+                    scheduled_time TIMESTAMP NOT NULL,
+                    is_sent INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # НОВАЯ: Таблица кнопок для запланированных рассылок
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS scheduled_broadcast_buttons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    broadcast_id INTEGER,
+                    button_text TEXT NOT NULL,
+                    button_url TEXT NOT NULL,
+                    position INTEGER DEFAULT 1,
+                    FOREIGN KEY (broadcast_id) REFERENCES scheduled_broadcasts(id)
                 )
             ''')
             
@@ -98,7 +154,7 @@ class Database:
                 VALUES ('auto_resume_time', '')
             ''')
             
-            # Таблица запланированных сообщений
+            # Таблица запланированных сообщений (автоматическая рассылка)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS scheduled_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -492,6 +548,334 @@ class Database:
         
         conn.commit()
         conn.close()
+    
+    # ===== МЕТОДЫ ДЛЯ КНОПОК ПРИВЕТСТВЕННОГО СООБЩЕНИЯ =====
+    
+    def get_welcome_buttons(self):
+        """Получение всех кнопок приветственного сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, button_text, callback_data, position 
+            FROM welcome_buttons 
+            ORDER BY position
+        ''')
+        buttons = cursor.fetchall()
+        
+        conn.close()
+        return buttons
+    
+    def add_welcome_button(self, button_text, callback_data, position=1):
+        """Добавление кнопки к приветственному сообщению"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO welcome_buttons (button_text, callback_data, position)
+            VALUES (?, ?, ?)
+        ''', (button_text, callback_data, position))
+        
+        button_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Добавлена кнопка приветствия: {button_text}")
+        return button_id
+    
+    def update_welcome_button(self, button_id, button_text=None, callback_data=None):
+        """Обновление кнопки приветственного сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        if button_text is not None:
+            cursor.execute('''
+                UPDATE welcome_buttons SET button_text = ? WHERE id = ?
+            ''', (button_text, button_id))
+        
+        if callback_data is not None:
+            cursor.execute('''
+                UPDATE welcome_buttons SET callback_data = ? WHERE id = ?
+            ''', (callback_data, button_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def delete_welcome_button(self, button_id):
+        """Удаление кнопки приветственного сообщения и всех связанных сообщений"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Удаляем связанные последующие сообщения
+        cursor.execute('DELETE FROM welcome_follow_messages WHERE welcome_button_id = ?', (button_id,))
+        
+        # Удаляем саму кнопку
+        cursor.execute('DELETE FROM welcome_buttons WHERE id = ?', (button_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    # ===== МЕТОДЫ ДЛЯ ПОСЛЕДУЮЩИХ СООБЩЕНИЙ ПОСЛЕ КНОПОК =====
+    
+    def get_welcome_follow_messages(self, welcome_button_id):
+        """Получение всех последующих сообщений для кнопки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, message_number, text, photo_url 
+            FROM welcome_follow_messages 
+            WHERE welcome_button_id = ? 
+            ORDER BY message_number
+        ''', (welcome_button_id,))
+        
+        messages = cursor.fetchall()
+        conn.close()
+        return messages
+    
+    def add_welcome_follow_message(self, welcome_button_id, text, photo_url=None):
+        """Добавление последующего сообщения для кнопки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Определяем номер сообщения
+        cursor.execute('''
+            SELECT MAX(message_number) FROM welcome_follow_messages 
+            WHERE welcome_button_id = ?
+        ''', (welcome_button_id,))
+        max_number = cursor.fetchone()[0]
+        message_number = (max_number or 0) + 1
+        
+        cursor.execute('''
+            INSERT INTO welcome_follow_messages (welcome_button_id, message_number, text, photo_url)
+            VALUES (?, ?, ?, ?)
+        ''', (welcome_button_id, message_number, text, photo_url))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Добавлено последующее сообщение {message_number} для кнопки {welcome_button_id}")
+        return message_number
+    
+    def update_welcome_follow_message(self, message_id, text=None, photo_url=None):
+        """Обновление последующего сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        if text is not None:
+            cursor.execute('''
+                UPDATE welcome_follow_messages SET text = ? WHERE id = ?
+            ''', (text, message_id))
+        
+        if photo_url is not None:
+            cursor.execute('''
+                UPDATE welcome_follow_messages SET photo_url = ? WHERE id = ?
+            ''', (photo_url if photo_url else None, message_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def delete_welcome_follow_message(self, message_id):
+        """Удаление последующего сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM welcome_follow_messages WHERE id = ?', (message_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    # ===== МЕТОДЫ ДЛЯ КНОПОК ПРОЩАЛЬНОГО СООБЩЕНИЯ =====
+    
+    def get_goodbye_buttons(self):
+        """Получение всех кнопок прощального сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, button_text, button_url, position 
+            FROM goodbye_buttons 
+            ORDER BY position
+        ''')
+        buttons = cursor.fetchall()
+        
+        conn.close()
+        return buttons
+    
+    def add_goodbye_button(self, button_text, button_url, position=1):
+        """Добавление кнопки к прощальному сообщению"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO goodbye_buttons (button_text, button_url, position)
+            VALUES (?, ?, ?)
+        ''', (button_text, button_url, position))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Добавлена кнопка прощания: {button_text}")
+    
+    def update_goodbye_button(self, button_id, button_text=None, button_url=None):
+        """Обновление кнопки прощального сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        if button_text is not None:
+            cursor.execute('''
+                UPDATE goodbye_buttons SET button_text = ? WHERE id = ?
+            ''', (button_text, button_id))
+        
+        if button_url is not None:
+            cursor.execute('''
+                UPDATE goodbye_buttons SET button_url = ? WHERE id = ?
+            ''', (button_url, button_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def delete_goodbye_button(self, button_id):
+        """Удаление кнопки прощального сообщения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM goodbye_buttons WHERE id = ?', (button_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    # ===== МЕТОДЫ ДЛЯ ЗАПЛАНИРОВАННЫХ МАССОВЫХ РАССЫЛОК =====
+    
+    def get_scheduled_broadcasts(self, include_sent=False):
+        """Получение запланированных массовых рассылок"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        if include_sent:
+            cursor.execute('''
+                SELECT id, message_text, photo_url, scheduled_time, is_sent, created_at
+                FROM scheduled_broadcasts 
+                ORDER BY scheduled_time
+            ''')
+        else:
+            cursor.execute('''
+                SELECT id, message_text, photo_url, scheduled_time, is_sent, created_at
+                FROM scheduled_broadcasts 
+                WHERE is_sent = 0
+                ORDER BY scheduled_time
+            ''')
+        
+        broadcasts = cursor.fetchall()
+        conn.close()
+        return broadcasts
+    
+    def add_scheduled_broadcast(self, message_text, scheduled_time, photo_url=None):
+        """Добавление запланированной массовой рассылки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO scheduled_broadcasts (message_text, photo_url, scheduled_time)
+            VALUES (?, ?, ?)
+        ''', (message_text, photo_url, scheduled_time))
+        
+        broadcast_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Добавлена запланированная рассылка #{broadcast_id} на {scheduled_time}")
+        return broadcast_id
+    
+    def delete_scheduled_broadcast(self, broadcast_id):
+        """Удаление запланированной рассылки и всех её кнопок"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Удаляем кнопки
+        cursor.execute('DELETE FROM scheduled_broadcast_buttons WHERE broadcast_id = ?', (broadcast_id,))
+        
+        # Удаляем рассылку
+        cursor.execute('DELETE FROM scheduled_broadcasts WHERE id = ?', (broadcast_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Удалена запланированная рассылка #{broadcast_id}")
+    
+    def mark_broadcast_sent(self, broadcast_id):
+        """Отметить рассылку как отправленную"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE scheduled_broadcasts SET is_sent = 1 WHERE id = ?
+        ''', (broadcast_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_pending_broadcasts(self):
+        """Получение рассылок, готовых к отправке"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        current_time = datetime.now()
+        cursor.execute('''
+            SELECT id, message_text, photo_url, scheduled_time
+            FROM scheduled_broadcasts 
+            WHERE is_sent = 0 AND scheduled_time <= ?
+            ORDER BY scheduled_time
+        ''', (current_time,))
+        
+        broadcasts = cursor.fetchall()
+        conn.close()
+        return broadcasts
+    
+    # ===== МЕТОДЫ ДЛЯ КНОПОК ЗАПЛАНИРОВАННЫХ РАССЫЛОК =====
+    
+    def get_scheduled_broadcast_buttons(self, broadcast_id):
+        """Получение кнопок для запланированной рассылки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, button_text, button_url, position 
+            FROM scheduled_broadcast_buttons 
+            WHERE broadcast_id = ? 
+            ORDER BY position
+        ''', (broadcast_id,))
+        
+        buttons = cursor.fetchall()
+        conn.close()
+        return buttons
+    
+    def add_scheduled_broadcast_button(self, broadcast_id, button_text, button_url, position=1):
+        """Добавление кнопки к запланированной рассылке"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO scheduled_broadcast_buttons (broadcast_id, button_text, button_url, position)
+            VALUES (?, ?, ?, ?)
+        ''', (broadcast_id, button_text, button_url, position))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Добавлена кнопка к рассылке #{broadcast_id}")
+    
+    def delete_scheduled_broadcast_button(self, button_id):
+        """Удаление кнопки запланированной рассылки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM scheduled_broadcast_buttons WHERE id = ?', (button_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    # ===== ОСТАЛЬНЫЕ МЕТОДЫ (без изменений) =====
     
     def get_broadcast_message(self, message_number):
         """Получение сообщения рассылки по номеру"""
