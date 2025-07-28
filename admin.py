@@ -1454,12 +1454,6 @@ class AdminPanel:
         except Exception as e:
             if 'Event loop is closed' not in str(e):
                 logger.error(f"❌ Ошибка при очистке админ-панели: {e}")
-}\n\n"
-            f"<b>Задержка:</b> {delay_str} после регистрации\n"
-            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
-            f"{buttons_info}\n\n"
-            f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
-        )
         
         await self.send_new_menu_message(context, user_id, message_text, reply_markup)
     
