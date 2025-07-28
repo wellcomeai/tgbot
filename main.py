@@ -13,8 +13,9 @@ from admin import AdminPanel
 from scheduler import MessageScheduler
 from flask import Flask, request, jsonify
 import threading
+import concurrent.futures
 
-# Настройка логирования
+# Настройка логирования для Render
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
@@ -24,91 +25,115 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Отключаем логи Flask для чистоты
+# Отключаем избыточные логи для чистоты
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
 
-# Конфигурация
+# ===== КОНФИГУРАЦИЯ ДЛЯ RENDER =====
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '0'))
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
-# 🔧 НАСТРОЙКИ ДЛЯ ДВУХ СЕРВЕРОВ НА RENDER
-RENDER_PORT = int(os.environ.get('PORT', '10000'))  # Основной порт для Flask
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')  # https://yourapp.onrender.com
+# Настройки для Render
+RENDER_PORT = int(os.environ.get('PORT', '10000'))
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 USE_WEBHOOK = os.environ.get('USE_WEBHOOK', 'true').lower() == 'true'
 
-# Внутренний порт для Telegram application (не используется внешне)
-TELEGRAM_INTERNAL_PORT = RENDER_PORT + 1
+# НОВОЕ: Настройка для Render Disk
+RENDER_DISK_PATH = os.environ.get('RENDER_DISK_PATH')
 
-# Проверка наличия обязательных переменных
+# Проверка обязательных переменных
 if not BOT_TOKEN:
-    logger.error("BOT_TOKEN не установлен!")
+    logger.error("❌ BOT_TOKEN не установлен!")
     raise ValueError("BOT_TOKEN не установлен в переменных окружения")
 
 if ADMIN_CHAT_ID == 0:
-    logger.error("ADMIN_CHAT_ID не установлен!")
+    logger.error("❌ ADMIN_CHAT_ID не установлен!")
     raise ValueError("ADMIN_CHAT_ID не установлен в переменных окружения")
 
 if not CHANNEL_ID:
-    logger.error("CHANNEL_ID не установлен!")
+    logger.error("❌ CHANNEL_ID не установлен!")
     raise ValueError("CHANNEL_ID не установлен в переменных окружения")
 
 if USE_WEBHOOK and not WEBHOOK_URL:
-    logger.error("WEBHOOK_URL не установлен для режима webhook!")
+    logger.error("❌ WEBHOOK_URL не установлен для режима webhook!")
     raise ValueError("WEBHOOK_URL обязателен для режима webhook на Render")
 
-logger.info(f"🚀 Конфигурация двух серверов:")
-logger.info(f"   🌐 Flask сервер (внешний): порт {RENDER_PORT}")
-logger.info(f"   🤖 Telegram сервер (внутренний): порт {TELEGRAM_INTERNAL_PORT}")
-logger.info(f"   📱 Telegram webhook: {WEBHOOK_URL}/bot{BOT_TOKEN}")
-logger.info(f"   💰 Payment webhook: {WEBHOOK_URL}/webhook/payment")
+# Логирование конфигурации
+logger.info(f"🚀 Конфигурация для Render:")
+logger.info(f"   🌐 Flask порт: {RENDER_PORT}")
+logger.info(f"   📱 Webhook URL: {WEBHOOK_URL}")
+logger.info(f"   💾 Render Disk: {RENDER_DISK_PATH or 'НЕ НАСТРОЕН'}")
 logger.info(f"   👤 Admin ID: {ADMIN_CHAT_ID}")
 logger.info(f"   📢 Channel: {CHANNEL_ID}")
 
-# Создаем директорию для данных в папке проекта
-PROJECT_DIR = Path(__file__).parent
-DATA_DIR = PROJECT_DIR / 'data'
-DATA_DIR.mkdir(exist_ok=True)
-logger.info(f"📂 Директория данных: {DATA_DIR}")
+# ===== ИНИЦИАЛИЗАЦИЯ КОМПОНЕНТОВ =====
+# Создаём базу данных с учётом Render Disk
+try:
+    if RENDER_DISK_PATH:
+        logger.info(f"🗄️ Используем Render Disk для базы данных: {RENDER_DISK_PATH}")
+        db = Database()  # Используем переменную окружения внутри Database
+    else:
+        logger.warning("⚠️ RENDER_DISK_PATH не настроен, используем локальное хранилище")
+        db = Database()
+    
+    # Выводим информацию о базе данных
+    db_info = db.get_database_info()
+    logger.info(f"📊 База данных: {db_info}")
+    
+except Exception as e:
+    logger.error(f"❌ Критическая ошибка инициализации базы данных: {e}")
+    raise
 
-# Инициализация компонентов
-db = Database(str(DATA_DIR / 'bot_database.db'))
+# Инициализируем остальные компоненты
 admin_panel = AdminPanel(db, ADMIN_CHAT_ID)
 scheduler = MessageScheduler(db)
 
-# Глобальные переменные для интеграции серверов
+# Глобальные переменные для интеграции
 bot_application = None
 bot_instance = None
 
-# 🌐 СОЗДАЕМ FLASK ПРИЛОЖЕНИЕ ДЛЯ ВНЕШНИХ WEBHOOK'ОВ
+# ===== FLASK ПРИЛОЖЕНИЕ ДЛЯ WEBHOOK'ОВ =====
 flask_app = Flask(__name__)
 
 @flask_app.route(f'/bot{BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
-    """Обработка Telegram webhook через Flask"""
+    """Обработка Telegram webhook через Flask - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     try:
         # Получаем данные от Telegram
         update_data = request.get_json()
         
         if not update_data:
-            logger.warning("Получен пустой Telegram webhook")
+            logger.warning("⚠️ Получен пустой Telegram webhook")
             return jsonify({'ok': False}), 400
         
         logger.debug(f"📱 Получен Telegram update: {update_data.get('update_id')}")
         
-        # Создаем Update объект
-        update = Update.de_json(update_data, bot_instance)
+        # ИСПРАВЛЕНИЕ: Обрабатываем webhook в отдельном thread pool
+        def process_update():
+            try:
+                # Создаем Update объект
+                update = Update.de_json(update_data, bot_instance)
+                
+                # Создаем новый event loop для этого thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                # Обрабатываем update
+                if bot_application:
+                    loop.run_until_complete(bot_application.process_update(update))
+                
+                # Закрываем loop
+                loop.close()
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка в thread обработки update: {e}")
         
-        # Обрабатываем асинхронно
-        if bot_application:
-            # Создаем задачу в event loop
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(bot_application.process_update(update))
-            loop.close()
-        else:
-            logger.error("❌ Bot application не инициализирован")
-            return jsonify({'error': 'Bot not initialized'}), 500
+        # Запускаем обработку в отдельном потоке
+        import threading
+        thread = threading.Thread(target=process_update)
+        thread.start()
         
         return jsonify({'ok': True})
         
@@ -118,13 +143,13 @@ def telegram_webhook():
 
 @flask_app.route('/webhook/payment', methods=['POST'])
 def payment_webhook():
-    """Обработка Payment webhook через Flask"""
+    """Обработка Payment webhook - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     try:
         # Получаем платежные данные
         payment_data = request.get_json()
         
         if not payment_data:
-            logger.warning("Получен пустой payment webhook")
+            logger.warning("⚠️ Получен пустой payment webhook")
             return jsonify({'error': 'Empty payload'}), 400
         
         logger.info(f"💰 Получен payment webhook: {payment_data}")
@@ -133,7 +158,7 @@ def payment_webhook():
         required_fields = ['user_id', 'payment_status', 'amount']
         for field in required_fields:
             if field not in payment_data:
-                logger.error(f"Отсутствует обязательное поле: {field}")
+                logger.error(f"❌ Отсутствует обязательное поле: {field}")
                 return jsonify({'error': f'Missing required field: {field}'}), 400
         
         user_id = payment_data.get('user_id')
@@ -144,28 +169,48 @@ def payment_webhook():
         try:
             user_id = int(user_id)
         except (ValueError, TypeError):
-            logger.error(f"Неверный формат user_id: {user_id}")
+            logger.error(f"❌ Неверный формат user_id: {user_id}")
             return jsonify({'error': 'Invalid user_id format'}), 400
         
         if payment_status not in ['success', 'failed', 'pending']:
-            logger.error(f"Неверный payment_status: {payment_status}")
+            logger.error(f"❌ Неверный payment_status: {payment_status}")
             return jsonify({'error': 'Invalid payment_status'}), 400
         
         # Проверяем, существует ли пользователь
         user = db.get_user(user_id)
         if not user:
-            logger.error(f"Пользователь {user_id} не найден")
+            logger.error(f"❌ Пользователь {user_id} не найден")
             return jsonify({'error': 'User not found'}), 404
+        
+        # ИСПРАВЛЕНИЕ: Обрабатываем в отдельном потоке
+        def process_payment():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                success = loop.run_until_complete(handle_successful_payment(user_id, amount, payment_data))
+                
+                loop.close()
+                return success
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка в thread обработки платежа: {e}")
+                return False
         
         # Обрабатываем только успешные платежи
         if payment_status == 'success':
-            # Обрабатываем синхронно в отдельном event loop
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            success = loop.run_until_complete(handle_successful_payment(user_id, amount, payment_data))
-            loop.close()
+            # Запускаем в отдельном потоке
+            import threading
+            result_container = {'success': False}
             
-            if success:
+            def payment_thread():
+                result_container['success'] = process_payment()
+            
+            thread = threading.Thread(target=payment_thread)
+            thread.start()
+            thread.join(timeout=30)  # Ждём максимум 30 секунд
+            
+            if result_container['success']:
                 logger.info(f"✅ Успешно обработан платеж для пользователя {user_id}")
                 return jsonify({
                     'status': 'success',
@@ -178,7 +223,7 @@ def payment_webhook():
         else:
             # Логируем неуспешные платежи
             db.log_payment(user_id, amount, payment_status, payment_data.get('utm_source'), payment_data.get('utm_id'))
-            logger.info(f"Зафиксирован неуспешный платеж: {payment_status} для пользователя {user_id}")
+            logger.info(f"📝 Зафиксирован неуспешный платеж: {payment_status} для пользователя {user_id}")
             return jsonify({
                 'status': 'logged',
                 'message': f'Payment status {payment_status} logged'
@@ -190,20 +235,39 @@ def payment_webhook():
 
 @flask_app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'ok',
-        'telegram_webhook': f'/bot{BOT_TOKEN}',
-        'payment_webhook': '/webhook/payment',
-        'timestamp': datetime.now().isoformat(),
-        'bot_running': bot_instance is not None,
-        'flask_port': RENDER_PORT,
-        'telegram_port': TELEGRAM_INTERNAL_PORT
-    })
+    """Health check endpoint с подробной диагностикой"""
+    try:
+        # Получаем информацию о базе данных
+        db_info = db.get_database_info()
+        
+        health_data = {
+            'status': 'ok',
+            'timestamp': datetime.now().isoformat(),
+            'service': 'telegram_bot',
+            'telegram_webhook': f'/bot{BOT_TOKEN}',
+            'payment_webhook': '/webhook/payment',
+            'bot_running': bot_instance is not None,
+            'flask_port': RENDER_PORT,
+            'database': db_info,
+            'render_disk_configured': RENDER_DISK_PATH is not None,
+            'webhook_url': WEBHOOK_URL
+        }
+        
+        return jsonify(health_data)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в health check: {e}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 async def handle_successful_payment(user_id: int, amount: str, webhook_data: dict) -> bool:
     """Асинхронная обработка успешного платежа"""
     try:
+        logger.info(f"💰 Обрабатываем успешный платеж для пользователя {user_id}")
+        
         # Получаем UTM данные
         utm_source = webhook_data.get('utm_source', '')
         utm_id = webhook_data.get('utm_id', '')
@@ -225,7 +289,7 @@ async def handle_successful_payment(user_id: int, amount: str, webhook_data: dic
         if bot_instance:
             await send_payment_success_notification(user_id, amount)
         else:
-            logger.warning("❌ Bot не инициализирован, не удалось отправить уведомление")
+            logger.warning("⚠️ Bot не инициализирован, не удалось отправить уведомление")
         
         return True
         
@@ -273,7 +337,7 @@ async def send_payment_success_notification(user_id: int, amount: str):
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке уведомления об оплате пользователю {user_id}: {e}")
 
-# ===== ВОССТАНОВЛЕННЫЕ КОНСТАНТЫ ДЛЯ CALLBACK ДАННЫХ =====
+# ===== КОНСТАНТЫ ДЛЯ CALLBACK ДАННЫХ =====
 CALLBACK_USER_CONSENT = "user_consent"
 CALLBACK_START_NOTIFICATIONS = "start_notifications"
 CALLBACK_BOT_INFO = "bot_info"
@@ -281,7 +345,7 @@ CALLBACK_WHAT_WILL_RECEIVE = "what_will_receive"
 CALLBACK_SETTINGS = "settings"
 CALLBACK_DECLINE = "decline"
 
-# ===== ВОССТАНОВЛЕННЫЙ ПОЛНЫЙ CALLBACK HANDLER =====
+# ===== CALLBACK HANDLER =====
 class CallbackHandler:
     """Класс для обработки различных запросов от пользователей"""
     
@@ -290,9 +354,7 @@ class CallbackHandler:
         self.scheduler = scheduler
     
     async def execute_start_logic(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, telegram_user) -> bool:
-        """
-        Выполнение логики команды /start
-        """
+        """Выполнение логики команды /start"""
         try:
             logger.info(f"🚀 Выполняем логику /start для пользователя {user_id}")
             
@@ -319,9 +381,7 @@ class CallbackHandler:
             return False
     
     async def handle_welcome_button_press(self, user_id: int, button_text: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        """
-        Обработка нажатия на механическую кнопку приветственного сообщения
-        """
+        """Обработка нажатия на механическую кнопку приветственного сообщения"""
         try:
             logger.info(f"⌨️ Пользователь {user_id} нажал механическую кнопку: {button_text}")
             
@@ -381,10 +441,10 @@ class CallbackHandler:
 # Создаем глобальный экземпляр callback handler
 callback_handler = CallbackHandler(db, scheduler)
 
-# ===== ВОССТАНОВЛЕННЫЕ TELEGRAM BOT HANDLERS =====
+# ===== TELEGRAM BOT HANDLERS =====
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start - теперь работает с реальными командами"""
+    """Обработчик команды /start"""
     user = update.effective_user
     
     # Проверяем, является ли пользователь админом
@@ -451,7 +511,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик заявок на вступление в канал - С АВТОМАТИЧЕСКИМ ПРИВЕТСТВЕННЫМ СООБЩЕНИЕМ"""
+    """Обработчик заявок на вступление в канал"""
     chat_join_request = update.chat_join_request
     user = chat_join_request.from_user
     
@@ -789,10 +849,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=ReplyKeyboardRemove()
             )
 
-# ===== ВОССТАНОВЛЕННЫЕ ОБРАБОТЧИКИ КНОПОК =====
+# ===== ОБРАБОТЧИКИ КНОПОК =====
 
 async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатия на кнопку согласия - ПРОСТОЕ РЕШЕНИЕ"""
+    """Обработка нажатия на кнопку согласия"""
     user_id = update.effective_user.id
     
     try:
@@ -830,7 +890,7 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
         
-        # ПРОСТОЕ РЕШЕНИЕ: Просто выполняем логику start()
+        # Выполняем логику start()
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
@@ -996,7 +1056,7 @@ async def handle_back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
-    logger.error(f"Exception while handling an update: {context.error}")
+    logger.error(f"❌ Exception while handling an update: {context.error}")
 
 def run_flask_app():
     """Запуск Flask приложения в отдельном потоке"""
@@ -1023,10 +1083,16 @@ async def post_init(application: Application) -> None:
     logger.info(f"📱 Telegram webhook: {WEBHOOK_URL}/bot{BOT_TOKEN}")
     logger.info(f"💰 Payment webhook: {WEBHOOK_URL}/webhook/payment")
     logger.info(f"🔍 Health check: {WEBHOOK_URL}/health")
+    
+    # Выводим информацию о базе данных
+    db_info = db.get_database_info()
+    logger.info(f"📊 База данных готова: {db_info}")
 
 def main():
     """Главная функция запуска бота"""
     global bot_application, bot_instance
+    
+    logger.info("🚀 Запуск Telegram бота для Render с Disk...")
     
     # Создаём Telegram приложение
     application = Application.builder().token(BOT_TOKEN).build()
@@ -1060,18 +1126,16 @@ def main():
         first=20  # первый запуск через 20 секунд
     )
     
-    logger.info("🚀 Запуск интегрированного сервера с ПОЛНОЙ функциональностью на Render...")
+    logger.info("🌐 Запуск в режиме WEBHOOK для продакшена на Render...")
     
     if USE_WEBHOOK and WEBHOOK_URL:
-        logger.info("🌐 Режим: WEBHOOK для продакшена на Render")
-        
         # Запускаем Flask в отдельном потоке
         flask_thread = threading.Thread(target=run_flask_app, daemon=True)
         flask_thread.start()
         
         # Даем Flask время запуститься
         import time
-        time.sleep(2)
+        time.sleep(3)
         
         # Настраиваем Telegram webhook
         webhook_path = f"/bot{BOT_TOKEN}"
@@ -1080,10 +1144,9 @@ def main():
         logger.info(f"📡 Настройка Telegram webhook: {webhook_url}")
         
         # Запускаем Telegram application в режиме webhook
-        # Но НЕ слушаем внешние соединения - это делает Flask
         application.run_webhook(
             listen="127.0.0.1",  # Слушаем только локально
-            port=TELEGRAM_INTERNAL_PORT,  # Внутренний порт
+            port=8443,  # Внутренний порт для telegram
             webhook_url=webhook_url,
             url_path=webhook_path,
             drop_pending_updates=True,
