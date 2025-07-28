@@ -8,6 +8,7 @@ from telegram.error import Forbidden, BadRequest
 from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
+from webhook_server import create_webhook_server
 from datetime import datetime
 
 # Настройка логирования
@@ -25,6 +26,10 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '0'))
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
+# НОВЫЕ переменные окружения для webhook
+WEBHOOK_PORT = int(os.environ.get('WEBHOOK_PORT', '8080'))
+WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '0.0.0.0')
+
 # Проверка наличия обязательных переменных
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN не установлен!")
@@ -39,6 +44,7 @@ if not CHANNEL_ID:
     raise ValueError("CHANNEL_ID не установлен в переменных окружения")
 
 logger.info(f"Бот запускается с ADMIN_CHAT_ID: {ADMIN_CHAT_ID}, CHANNEL_ID: {CHANNEL_ID}")
+logger.info(f"Webhook сервер будет запущен на {WEBHOOK_HOST}:{WEBHOOK_PORT}")
 
 # Создаем директорию для данных если её нет
 os.makedirs('/data', exist_ok=True)
@@ -47,6 +53,9 @@ os.makedirs('/data', exist_ok=True)
 db = Database('/data/bot_database.db')
 admin_panel = AdminPanel(db, ADMIN_CHAT_ID)
 scheduler = MessageScheduler(db)
+
+# НОВОЕ: Создаем webhook сервер
+webhook_server = create_webhook_server(db, WEBHOOK_HOST, WEBHOOK_PORT)
 
 # Константы для callback данных (для совместимости с админ-панелью)
 CALLBACK_USER_CONSENT = "user_consent"
@@ -673,6 +682,9 @@ async def handle_bot_info_button(update: Update, context: ContextTypes.DEFAULT_T
         "🛡️ <b>Конфиденциальность:</b>\n"
         "• Мы не передаем ваши данные третьим лицам\n"
         "• Вы можете отписаться в любое время\n\n"
+        "🔗 <b>Отслеживание:</b>\n"
+        "• Все ссылки содержат UTM метки для анализа эффективности\n"
+        "• Это помогает нам улучшать контент\n\n"
         "❓ Готовы начать получать полезные материалы?"
     )
     
@@ -720,7 +732,8 @@ async def handle_what_will_receive_button(update: Update, context: ContextTypes.
         "• Полезные инструкции\n"
         "• Эксклюзивные материалы\n"
         "• Ответы на частые вопросы\n\n"
-        "🔔 <b>Все сообщения бесплатны!</b>\n\n"
+        "🔔 <b>Все сообщения бесплатны!</b>\n"
+        "🔗 <b>Все ссылки отслеживаются для улучшения качества</b>\n\n"
         "Готовы начать обучение?"
     )
     
@@ -767,7 +780,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application) -> None:
     """Инициализация после запуска"""
-    logger.info("🚀 Бот с улучшенной админ-панелью и автоматическим приветственным сообщением успешно запущен!")
+    logger.info("🚀 Бот с системой отслеживания конверсий успешно запущен!")
+    
+    # НОВОЕ: Устанавливаем экземпляр бота для webhook сервера
+    if webhook_server:
+        webhook_server.set_bot(application.bot)
+        logger.info("✅ Bot установлен для webhook сервера")
 
 def main():
     """Главная функция запуска бота"""
@@ -776,6 +794,21 @@ def main():
     
     # Добавляем обработчик инициализации
     application.post_init = post_init
+    
+    # НОВОЕ: Запускаем webhook сервер
+    try:
+        webhook_server.start_server()
+        logger.info(f"✅ Webhook сервер запущен на http://{WEBHOOK_HOST}:{WEBHOOK_PORT}")
+        logger.info(f"📡 Endpoint для платежей: http://{WEBHOOK_HOST}:{WEBHOOK_PORT}/webhook/payment")
+        
+        # Выводим информацию о настройке webhook
+        logger.info("🔧 Настройте ваш платежный сервис для отправки webhook на указанный endpoint")
+        logger.info("📋 Формат JSON для webhook:")
+        logger.info('   {"user_id": "123456", "payment_status": "success", "amount": "1000"}')
+        
+    except Exception as e:
+        logger.error(f"❌ Не удалось запустить webhook сервер: {e}")
+        logger.warning("⚠️ Бот будет работать без функции приема платежей")
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
@@ -801,7 +834,7 @@ def main():
         first=20  # первый запуск через 20 секунд
     )
     
-    logger.info("🚀 Запуск бота с улучшенной админ-панелью...")
+    logger.info("🚀 Запуск бота с системой отслеживания конверсий и автоматизации продаж...")
     
     # Запускаем бота
     application.run_polling(
