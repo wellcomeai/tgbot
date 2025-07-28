@@ -3,24 +3,32 @@ import json
 import os
 import csv
 import io
+from pathlib import Path
 from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
 
 class Database:
-    def __init__(self, db_path='/data/bot_database.db'):
+    def __init__(self, db_path=None):
         """Инициализация базы данных"""
-        self.db_path = db_path
+        if db_path is None:
+            # Используем папку data в директории проекта
+            project_dir = Path(__file__).parent
+            data_dir = project_dir / 'data'
+            data_dir.mkdir(exist_ok=True)
+            db_path = data_dir / 'bot_database.db'
+        
+        self.db_path = str(db_path)
         
         # Создаем директорию если её нет
-        db_dir = os.path.dirname(db_path)
-        if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
+        db_dir = Path(self.db_path).parent
+        if not db_dir.exists():
+            db_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"Создана директория для БД: {db_dir}")
         
         self.init_db()
-        logger.info(f"База данных инициализирована: {db_path}")
+        logger.info(f"База данных инициализирована: {self.db_path}")
     
     def init_db(self):
         """Создание таблиц в базе данных"""
