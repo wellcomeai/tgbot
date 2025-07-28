@@ -857,10 +857,22 @@ class AdminPanel:
                 logger.error(f"Ошибка при отправке CSV: {e}")
             await update.callback_query.answer("Ошибка при создании файла!", show_alert=True)
     
+    # ===== ИСПРАВЛЕННЫЙ МЕТОД request_text_input =====
+    
     async def request_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, input_type, **kwargs):
         """Запросить ввод текста от админа"""
         user_id = update.callback_query.from_user.id
-        self.waiting_for[user_id] = {"type": input_type, "created_at": datetime.now(), **kwargs}
+        
+        # ✅ ИСПРАВЛЕНИЕ: Добавляем правильную инициализацию для кнопок
+        if input_type == "add_button":
+            self.waiting_for[user_id] = {
+                "type": input_type, 
+                "created_at": datetime.now(), 
+                "step": "text",  # ✅ ДОБАВЛЕНО: устанавливаем начальный шаг
+                **kwargs
+            }
+        else:
+            self.waiting_for[user_id] = {"type": input_type, "created_at": datetime.now(), **kwargs}
         
         texts = {
             "welcome": "✏️ Отправьте новое приветственное сообщение:",
@@ -875,7 +887,8 @@ class AdminPanel:
             "edit_button_url": "🔗 Отправьте новый URL для кнопки:",
             "broadcast_timer": "⏰ Отправьте количество часов, через которое возобновить рассылку:",
             "add_message": "✏️ Отправьте текст нового сообщения:",
-            "add_button": f"✏️ Отправьте текст для новой кнопки сообщения {kwargs.get('message_number')}:",
+            # ✅ ИСПРАВЛЕНО: Правильный текст для кнопок
+            "add_button": f"✏️ Отправьте текст для новой кнопки сообщения {kwargs.get('message_number')}:\n\n💡 После этого мы попросим URL для кнопки.",
             # Новые типы для массовой рассылки
             "mass_text": "✏️ Отправьте текст для массовой рассылки:",
             "mass_photo": "🖼 Отправьте фото для массовой рассылки или ссылку на фото:",
@@ -2253,6 +2266,7 @@ class AdminPanel:
             if len(existing_buttons) >= 3:
                 await query.answer("❌ Максимум 3 кнопки на сообщение!", show_alert=True)
                 return False
+            # ✅ ИСПРАВЛЕНО: правильный вызов с message_number
             await self.request_text_input(update, context, "add_button", message_number=message_number)
         elif data.startswith("delete_msg_"):
             message_number = int(data.split("_")[2])
@@ -2273,7 +2287,19 @@ class AdminPanel:
             self.db.delete_broadcast_message(message_number)
             await self.show_broadcast_menu(update, context)
         elif data == "add_message":
-            await self.request_text_input(update, context, "add_message")
+            # ✅ ИСПРАВЛЕНО: правильная инициализация для добавления сообщения
+            user_id = update.callback_query.from_user.id
+            self.waiting_for[user_id] = {
+                "type": "add_message", 
+                "created_at": datetime.now(), 
+                "step": "text"  # ✅ ДОБАВЛЕНО: устанавливаем начальный шаг
+            }
+            
+            await self.safe_edit_or_send_message(
+                update, context,
+                "✏️ Отправьте текст нового сообщения:\n\n💡 После этого мы попросим задержку для отправки.",
+                InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_broadcast")]])
+            )
         else:
             return False  # Не обработано
         
@@ -2288,7 +2314,9 @@ class AdminPanel:
             await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
             return
         
-        if waiting_data.get("step") == "text":
+        current_step = waiting_data.get("step", "text")
+        
+        if current_step == "text":
             # Сохраняем текст и запрашиваем задержку
             self.waiting_for[user_id]["text"] = text
             self.waiting_for[user_id]["step"] = "delay"
@@ -2301,7 +2329,7 @@ class AdminPanel:
                 "• <code>0.05</code> - для 3 минут",
                 parse_mode='HTML'
             )
-        elif waiting_data.get("step") == "delay":
+        elif current_step == "delay":
             # Парсим задержку
             delay_hours, delay_display = self.parse_delay_input(text)
             
@@ -2323,27 +2351,46 @@ class AdminPanel:
                     parse_mode='HTML'
                 )
         else:
-            # Новое сообщение - сначала текст
-            self.waiting_for[user_id]["step"] = "text"
-            await self.handle_add_message(update, context, text)  # Повторная обработка
+            # Неожиданное состояние - сбрасываем
+            logger.error(f"❌ Неожиданное состояние step='{current_step}' для пользователя {user_id}")
+            await update.message.reply_text(
+                "❌ Произошла ошибка. Попробуйте добавить сообщение заново."
+            )
+            
+            # Очищаем состояние
+            if user_id in self.waiting_for:
+                del self.waiting_for[user_id]
+    
+    # ===== ИСПРАВЛЕННЫЙ МЕТОД handle_add_button =====
     
     async def handle_add_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
         """Обработка добавления кнопки к сообщению"""
         user_id = update.effective_user.id
         waiting_data = self.waiting_for[user_id]
         
-        if waiting_data.get("step") == "text":
-            # Проверяем длину текста кнопки
+        # ✅ ИСПРАВЛЕНИЕ: Упрощенная и правильная логика
+        current_step = waiting_data.get("step", "text")
+        
+        if current_step == "text":
+            # Шаг 1: Получаем текст кнопки
             if len(text) > 64:
                 await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 64 символа.")
                 return
             
-            # Сохраняем текст и запрашиваем URL
+            # Сохраняем текст и переходим к URL
             self.waiting_for[user_id]["button_text"] = text
             self.waiting_for[user_id]["step"] = "url"
-            await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
-        elif waiting_data.get("step") == "url":
-            # Проверяем URL
+            
+            await update.message.reply_text(
+                f"✅ Текст кнопки сохранен: <b>{text}</b>\n\n"
+                f"🔗 Теперь отправьте URL для кнопки:\n\n"
+                f"💡 Пример: https://example.com\n"
+                f"🎯 UTM метки будут добавлены автоматически!",
+                parse_mode='HTML'
+            )
+            
+        elif current_step == "url":
+            # Шаг 2: Получаем URL кнопки
             if not (text.startswith("http://") or text.startswith("https://")):
                 await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
                 return
@@ -2352,7 +2399,7 @@ class AdminPanel:
                 await update.message.reply_text("❌ URL слишком длинный.")
                 return
             
-            # Добавляем кнопку
+            # Добавляем кнопку в базу данных
             message_number = waiting_data["message_number"]
             button_text = waiting_data["button_text"]
             
@@ -2360,15 +2407,33 @@ class AdminPanel:
             existing_buttons = self.db.get_message_buttons(message_number)
             position = len(existing_buttons) + 1
             
+            # Сохраняем кнопку в БД
             self.db.add_message_button(message_number, button_text, text, position)
             
-            await update.message.reply_text("✅ Кнопка добавлена!")
+            await update.message.reply_text(
+                f"✅ Кнопка успешно добавлена!\n\n"
+                f"📝 <b>Текст:</b> {button_text}\n"
+                f"🔗 <b>URL:</b> {text}\n\n"
+                f"🎯 <b>UTM метки будут добавлены автоматически при отправке!</b>",
+                parse_mode='HTML'
+            )
+            
+            # Очищаем состояние ожидания
             del self.waiting_for[user_id]
+            
+            # Возвращаемся к меню управления кнопками
             await self.show_message_buttons_from_context(update, context, message_number)
+            
         else:
-            # Новая кнопка - сначала текст
-            self.waiting_for[user_id]["step"] = "text"
-            await self.handle_add_button(update, context, text)  # Повторная обработка
+            # Неожиданное состояние - сбрасываем
+            logger.error(f"❌ Неожиданное состояние step='{current_step}' для пользователя {user_id}")
+            await update.message.reply_text(
+                "❌ Произошла ошибка. Попробуйте добавить кнопку заново."
+            )
+            
+            # Очищаем состояние
+            if user_id in self.waiting_for:
+                del self.waiting_for[user_id]
     
     def validate_waiting_state(self, waiting_data: dict) -> bool:
         """Проверить, что состояние ожидания валидно"""
