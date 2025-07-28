@@ -39,16 +39,41 @@ class Database:
                     first_name TEXT,
                     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     is_active INTEGER DEFAULT 1,
-                    bot_started INTEGER DEFAULT 0
+                    bot_started INTEGER DEFAULT 0,
+                    has_paid INTEGER DEFAULT 0,
+                    paid_at TIMESTAMP DEFAULT NULL
                 )
             ''')
             
-            # Добавляем колонку bot_started если её нет (для существующих БД)
+            # Добавляем новые колонки для платежей если их нет
             cursor.execute("PRAGMA table_info(users)")
             columns = [column[1] for column in cursor.fetchall()]
+            
             if 'bot_started' not in columns:
                 cursor.execute('ALTER TABLE users ADD COLUMN bot_started INTEGER DEFAULT 0')
                 logger.info("Добавлена колонка bot_started в users")
+            
+            if 'has_paid' not in columns:
+                cursor.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
+                logger.info("Добавлена колонка has_paid в users")
+            
+            if 'paid_at' not in columns:
+                cursor.execute('ALTER TABLE users ADD COLUMN paid_at TIMESTAMP DEFAULT NULL')
+                logger.info("Добавлена колонка paid_at в users")
+            
+            # Новая таблица платежей
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    amount TEXT,
+                    payment_status TEXT,
+                    utm_source TEXT,
+                    utm_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
             
             # Обновляем таблицу сообщений рассылки - добавляем поле для фото
             cursor.execute('''
@@ -227,6 +252,21 @@ class Database:
                 VALUES ('goodbye_photo_url', '')
             ''')
             
+            # НОВЫЕ настройки для сообщений после оплаты
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value) 
+                VALUES ('payment_success_message', ?)
+            ''', ("🎉 <b>Спасибо за покупку!</b>\n\n"
+                 "💰 Ваш платеж успешно обработан!\n\n"
+                 "✅ Вы получили полный доступ ко всем материалам.\n\n"
+                 "📚 Если у вас есть вопросы - обращайтесь к нашей поддержке.\n\n"
+                 "🙏 Благодарим за доверие!",))
+            
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value) 
+                VALUES ('payment_success_photo_url', '')
+            ''')
+            
             # Инициализация сообщений рассылки по умолчанию
             default_messages = [
                 ("Сообщение 1: Основы работы с нашим сервисом 📚", 0.05, None),    # 3 минуты
@@ -267,6 +307,214 @@ class Database:
                 else:
                     raise
     
+    # ===== НОВЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ПЛАТЕЖАМИ =====
+    
+    def mark_user_paid(self, user_id, amount, payment_status):
+        """Отметить пользователя как оплатившего"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                UPDATE users 
+                SET has_paid = 1, paid_at = CURRENT_TIMESTAMP 
+                WHERE user_id = ?
+            ''', (user_id,))
+            
+            if cursor.rowcount == 0:
+                logger.error(f"❌ Пользователь {user_id} не найден при отметке оплаты")
+                return False
+            
+            conn.commit()
+            logger.info(f"✅ Пользователь {user_id} отмечен как оплативший ({amount})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отметке пользователя {user_id} как оплатившего: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return False
+        finally:
+            if conn:
+                conn.close()
+    
+    def log_payment(self, user_id, amount, payment_status, utm_source=None, utm_id=None):
+        """Логирование платежа"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO payments (user_id, amount, payment_status, utm_source, utm_id)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, amount, payment_status, utm_source, utm_id))
+            
+            conn.commit()
+            logger.info(f"💰 Зафиксирован платеж: пользователь {user_id}, {amount}, статус {payment_status}")
+            return cursor.lastrowid
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при логировании платежа: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return None
+        finally:
+            if conn:
+                conn.close()
+    
+    def get_payment_success_message(self):
+        """Получение сообщения об успешной оплате"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('SELECT value FROM settings WHERE key = "payment_success_message"')
+            message = cursor.fetchone()
+            
+            cursor.execute('SELECT value FROM settings WHERE key = "payment_success_photo_url"')
+            photo = cursor.fetchone()
+            
+            return {
+                'text': message[0] if message else None,
+                'photo_url': photo[0] if photo and photo[0] else None
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении сообщения об оплате: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+    
+    def set_payment_success_message(self, text, photo_url=None):
+        """Установка сообщения об успешной оплате"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO settings (key, value) 
+                VALUES ('payment_success_message', ?)
+            ''', (text,))
+            
+            if photo_url is not None:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO settings (key, value) 
+                    VALUES ('payment_success_photo_url', ?)
+                ''', (photo_url,))
+            
+            conn.commit()
+            logger.info("✅ Сообщение об успешной оплате обновлено")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при установке сообщения об оплате: {e}")
+        finally:
+            if conn:
+                conn.close()
+    
+    def get_payment_statistics(self):
+        """Получение статистики платежей"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Общее количество платежей
+            cursor.execute('SELECT COUNT(*) FROM payments WHERE payment_status = "success"')
+            total_payments = cursor.fetchone()[0]
+            
+            # Общее количество пользователей, начавших разговор с ботом
+            cursor.execute('SELECT COUNT(*) FROM users WHERE bot_started = 1 AND is_active = 1')
+            total_users = cursor.fetchone()[0]
+            
+            # Количество оплативших
+            cursor.execute('SELECT COUNT(*) FROM users WHERE has_paid = 1')
+            paid_users = cursor.fetchone()[0]
+            
+            # Конверсия
+            conversion_rate = (paid_users / total_users * 100) if total_users > 0 else 0
+            
+            # Средний чек
+            cursor.execute('SELECT AVG(CAST(amount AS REAL)) FROM payments WHERE payment_status = "success" AND amount != ""')
+            avg_amount_result = cursor.fetchone()
+            avg_amount = avg_amount_result[0] if avg_amount_result[0] is not None else 0
+            
+            # Последние платежи
+            cursor.execute('''
+                SELECT p.user_id, u.first_name, u.username, p.amount, p.created_at
+                FROM payments p
+                JOIN users u ON p.user_id = u.user_id
+                WHERE p.payment_status = "success"
+                ORDER BY p.created_at DESC
+                LIMIT 10
+            ''')
+            recent_payments = cursor.fetchall()
+            
+            # Платежи по UTM источникам
+            cursor.execute('''
+                SELECT utm_source, COUNT(*) as count
+                FROM payments 
+                WHERE payment_status = "success" AND utm_source IS NOT NULL 
+                GROUP BY utm_source
+            ''')
+            utm_sources = cursor.fetchall()
+            
+            return {
+                'total_payments': total_payments,
+                'total_users': total_users,
+                'paid_users': paid_users,
+                'conversion_rate': round(conversion_rate, 2),
+                'avg_amount': round(avg_amount, 2) if avg_amount else 0,
+                'recent_payments': recent_payments,
+                'utm_sources': utm_sources
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении статистики платежей: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+    
+    def cancel_remaining_messages(self, user_id):
+        """Отмена оставшихся запланированных сообщений для оплатившего пользователя"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Считаем количество отменяемых сообщений
+            cursor.execute('''
+                SELECT COUNT(*) FROM scheduled_messages 
+                WHERE user_id = ? AND is_sent = 0
+            ''', (user_id,))
+            count = cursor.fetchone()[0]
+            
+            # Удаляем неотправленные сообщения
+            cursor.execute('''
+                DELETE FROM scheduled_messages 
+                WHERE user_id = ? AND is_sent = 0
+            ''', (user_id,))
+            
+            conn.commit()
+            logger.info(f"🚫 Отменено {count} запланированных сообщений для оплатившего пользователя {user_id}")
+            return count
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отмене сообщений для пользователя {user_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return 0
+        finally:
+            if conn:
+                conn.close()
+    
+    # ===== ОСТАЛЬНЫЕ МЕТОДЫ (без изменений, но добавлены проверки на has_paid) =====
+    
     def add_user(self, user_id, username, first_name):
         """Добавление нового пользователя"""
         conn = self._get_connection()
@@ -274,8 +522,8 @@ class Database:
         
         try:
             cursor.execute('''
-                INSERT OR REPLACE INTO users (user_id, username, first_name, is_active, bot_started)
-                VALUES (?, ?, ?, 1, 0)
+                INSERT OR REPLACE INTO users (user_id, username, first_name, is_active, bot_started, has_paid)
+                VALUES (?, ?, ?, 1, 0, 0)
             ''', (user_id, username, first_name))
             
             conn.commit()
@@ -300,14 +548,14 @@ class Database:
         
         try:
             # Сначала проверяем, существует ли пользователь
-            cursor.execute('SELECT user_id, bot_started, is_active FROM users WHERE user_id = ?', (user_id,))
+            cursor.execute('SELECT user_id, bot_started, is_active, has_paid FROM users WHERE user_id = ?', (user_id,))
             user_data = cursor.fetchone()
             
             if not user_data:
                 logger.error(f"❌ Попытка пометить несуществующего пользователя {user_id} как начавшего разговор с ботом")
                 return False
             
-            user_id_db, current_bot_started, is_active = user_data
+            user_id_db, current_bot_started, is_active, has_paid = user_data
             
             # Если пользователь неактивен, активируем его
             if not is_active:
@@ -351,13 +599,13 @@ class Database:
         
         try:
             cursor.execute('''
-                SELECT user_id, username, first_name, joined_at, is_active, bot_started 
+                SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at 
                 FROM users WHERE user_id = ?
             ''', (user_id,))
             user = cursor.fetchone()
             
             if user:
-                logger.debug(f"🔍 Пользователь {user_id}: active={user[4]}, bot_started={user[5]}")
+                logger.debug(f"🔍 Пользователь {user_id}: active={user[4]}, bot_started={user[5]}, has_paid={user[6]}")
             else:
                 logger.debug(f"🔍 Пользователь {user_id} не найден в базе")
             
@@ -383,8 +631,8 @@ class Database:
             if not user_data:
                 # Если пользователя нет, создаем его
                 cursor.execute('''
-                    INSERT INTO users (user_id, username, first_name, is_active, bot_started)
-                    VALUES (?, ?, ?, 1, 0)
+                    INSERT INTO users (user_id, username, first_name, is_active, bot_started, has_paid)
+                    VALUES (?, ?, ?, 1, 0, 0)
                 ''', (user_id, username or '', first_name or ''))
                 logger.info(f"✅ Создан новый пользователь {user_id}")
             else:
@@ -412,7 +660,10 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('SELECT user_id, username, first_name, joined_at, is_active, bot_started FROM users WHERE is_active = 1 AND bot_started = 1')
+        cursor.execute('''
+            SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at 
+            FROM users WHERE is_active = 1 AND bot_started = 1
+        ''')
         users = cursor.fetchall()
         
         conn.close()
@@ -436,7 +687,10 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('SELECT user_id, username, first_name, joined_at, is_active, bot_started FROM users WHERE user_id = ?', (user_id,))
+        cursor.execute('''
+            SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at 
+            FROM users WHERE user_id = ?
+        ''', (user_id,))
         user = cursor.fetchone()
         
         conn.close()
@@ -447,7 +701,10 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('SELECT user_id, username, first_name, joined_at, is_active, bot_started FROM users WHERE is_active = 1')
+        cursor.execute('''
+            SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at 
+            FROM users WHERE is_active = 1
+        ''')
         users = cursor.fetchall()
         
         conn.close()
@@ -459,7 +716,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT user_id, username, first_name, joined_at, is_active, bot_started 
+            SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at 
             FROM users 
             WHERE is_active = 1 
             ORDER BY joined_at DESC 
@@ -476,7 +733,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT user_id, username, first_name, joined_at, is_active, bot_started 
+            SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at 
             FROM users 
             ORDER BY joined_at DESC
         ''')
@@ -487,14 +744,16 @@ class Database:
         writer = csv.writer(output)
         
         # Заголовки
-        writer.writerow(['ID', 'Username', 'Имя', 'Дата регистрации', 'Статус', 'Разговор с ботом'])
+        writer.writerow(['ID', 'Username', 'Имя', 'Дата регистрации', 'Статус', 'Разговор с ботом', 'Оплатил', 'Дата оплаты'])
         
         # Данные
         for user in users:
-            user_id, username, first_name, joined_at, is_active, bot_started = user
+            user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at = user
             status = 'Активен' if is_active else 'Отписался'
             bot_status = 'Да' if bot_started else 'Нет'
-            writer.writerow([user_id, username or '', first_name or '', joined_at, status, bot_status])
+            paid_status = 'Да' if has_paid else 'Нет'
+            paid_date = paid_at if paid_at else ''
+            writer.writerow([user_id, username or '', first_name or '', joined_at, status, bot_status, paid_status, paid_date])
         
         conn.close()
         
@@ -1128,7 +1387,7 @@ class Database:
         try:
             # Проверяем, существует ли пользователь и активен ли он
             cursor.execute('''
-                SELECT user_id, is_active, bot_started 
+                SELECT user_id, is_active, bot_started, has_paid 
                 FROM users 
                 WHERE user_id = ?
             ''', (user_id,))
@@ -1138,7 +1397,7 @@ class Database:
                 logger.error(f"❌ Попытка запланировать сообщение для несуществующего пользователя {user_id}")
                 return False
             
-            user_id_db, is_active, bot_started = user_data
+            user_id_db, is_active, bot_started, has_paid = user_data
             
             if not is_active:
                 logger.error(f"❌ Попытка запланировать сообщение для неактивного пользователя {user_id}")
@@ -1147,6 +1406,11 @@ class Database:
             if not bot_started:
                 logger.error(f"❌ Попытка запланировать сообщение для пользователя {user_id}, который не дал согласие")
                 return False
+            
+            # НОВАЯ ПРОВЕРКА: Если пользователь уже оплатил, не планируем сообщения
+            if has_paid:
+                logger.info(f"ℹ️ Пользователь {user_id} уже оплатил, пропускаем планирование сообщения {message_number}")
+                return True  # Возвращаем True, так как это не ошибка
             
             # Проверяем, существует ли сообщение рассылки
             cursor.execute('''
@@ -1210,7 +1474,7 @@ class Database:
         return messages
     
     def get_pending_messages_for_active_users(self):
-        """Получение сообщений для активных пользователей, которые дали согласие"""
+        """Получение сообщений для активных пользователей, которые дали согласие и НЕ ОПЛАТИЛИ"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
@@ -1223,21 +1487,21 @@ class Database:
         cursor.execute('''
             SELECT COUNT(*) FROM scheduled_messages sm
             JOIN users u ON sm.user_id = u.user_id
-            WHERE sm.is_sent = 0 AND u.is_active = 1 AND u.bot_started = 1
+            WHERE sm.is_sent = 0 AND u.is_active = 1 AND u.bot_started = 1 AND u.has_paid = 0
         ''')
         active_scheduled = cursor.fetchone()[0]
         
         cursor.execute('''
             SELECT COUNT(*) FROM scheduled_messages sm
             JOIN users u ON sm.user_id = u.user_id
-            WHERE sm.is_sent = 0 AND sm.scheduled_time <= ? AND u.is_active = 1 AND u.bot_started = 1
+            WHERE sm.is_sent = 0 AND sm.scheduled_time <= ? AND u.is_active = 1 AND u.bot_started = 1 AND u.has_paid = 0
         ''', (current_time,))
         ready_to_send = cursor.fetchone()[0]
         
         if total_scheduled > 0:
-            logger.debug(f"📊 Статистика сообщений: всего запланировано {total_scheduled}, для активных пользователей {active_scheduled}, готово к отправке {ready_to_send}")
+            logger.debug(f"📊 Статистика сообщений: всего запланировано {total_scheduled}, для активных неоплативших {active_scheduled}, готово к отправке {ready_to_send}")
         
-        # Получаем сообщения готовые к отправке
+        # Получаем сообщения готовые к отправке (ТОЛЬКО ДЛЯ НЕОПЛАТИВШИХ)
         cursor.execute('''
             SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url, sm.scheduled_time
             FROM scheduled_messages sm
@@ -1247,6 +1511,7 @@ class Database:
             AND sm.scheduled_time <= ?
             AND u.is_active = 1
             AND u.bot_started = 1
+            AND u.has_paid = 0
             ORDER BY sm.scheduled_time ASC
         ''', (current_time,))
         
@@ -1335,7 +1600,7 @@ class Database:
             
             # Информация о пользователе
             cursor.execute('''
-                SELECT user_id, username, first_name, joined_at, is_active, bot_started 
+                SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at 
                 FROM users WHERE user_id = ?
             ''', (user_id,))
             user_data = cursor.fetchone()
@@ -1350,7 +1615,9 @@ class Database:
                 'first_name': user_data[2],
                 'joined_at': user_data[3],
                 'is_active': bool(user_data[4]),
-                'bot_started': bool(user_data[5])
+                'bot_started': bool(user_data[5]),
+                'has_paid': bool(user_data[6]),
+                'paid_at': user_data[7]
             }
             
             # Запланированные сообщения
@@ -1410,11 +1677,17 @@ class Database:
             cursor.execute('SELECT COUNT(*) FROM users WHERE bot_started = 1')
             health_info['bot_started_users'] = cursor.fetchone()[0]
             
+            cursor.execute('SELECT COUNT(*) FROM users WHERE has_paid = 1')
+            health_info['paid_users'] = cursor.fetchone()[0]
+            
             cursor.execute('SELECT COUNT(*) FROM scheduled_messages WHERE is_sent = 0')
             health_info['pending_messages'] = cursor.fetchone()[0]
             
             cursor.execute('SELECT COUNT(*) FROM scheduled_messages WHERE is_sent = 1')
             health_info['sent_messages'] = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(*) FROM payments')
+            health_info['total_payments'] = cursor.fetchone()[0]
             
             # Проверка на потерянные сообщения (запланированные для неактивных пользователей)
             cursor.execute('''
@@ -1502,11 +1775,16 @@ class Database:
         cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 0')
         unsubscribed = cursor.fetchone()[0]
         
+        # НОВАЯ СТАТИСТИКА: Оплатившие пользователи
+        cursor.execute('SELECT COUNT(*) FROM users WHERE has_paid = 1')
+        paid_users = cursor.fetchone()[0]
+        
         conn.close()
         return {
             'total_users': total_users,
             'bot_started_users': bot_started_users,
             'new_users_24h': new_users_24h,
             'sent_messages': sent_messages,
-            'unsubscribed': unsubscribed
+            'unsubscribed': unsubscribed,
+            'paid_users': paid_users
         }
