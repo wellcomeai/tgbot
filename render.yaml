@@ -19,12 +19,12 @@ services:
       - key: CHANNEL_ID
         sync: false  # Нужно установить в dashboard
       - key: RENDER_DISK_PATH
-        value: /opt/render/project/data  # Путь к диску
+        value: /data  # ИСПРАВЛЕНО: правильный путь к диску
     
     # ВАЖНО: Подключение Render Disk для persistent storage
     disk:
       name: bot-database-disk
-      mountPath: /opt/render/project/data
+      mountPath: /data  # ИСПРАВЛЕНО: правильный путь
       sizeGB: 1  # Минимальный размер 1GB, можно увеличить
 
     # Настройки автоматического деплоя
