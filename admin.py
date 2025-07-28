@@ -2425,4 +2425,4 @@ class AdminPanel:
         
         message_text = (
             f"📝 <b>Сообщение {message_number}</b>\n\n"
-            f"<b>Текущий текст:</b>\n{text
+            f"<b>Текущий текст:</b>\n{text}
