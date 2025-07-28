@@ -799,7 +799,7 @@ def main():
     # Добавляем обработчик инициализации
     application.post_init = post_init
     
-    # НОВОЕ: Запускаем webhook сервер
+    # НОВОЕ: Запускаем webhook сервер для платежей
     try:
         webhook_server.start_server()
         logger.info(f"✅ Webhook сервер запущен на http://{WEBHOOK_HOST}:{WEBHOOK_PORT}")
@@ -838,13 +838,38 @@ def main():
         first=20  # первый запуск через 20 секунд
     )
     
+    # 🚀 РЕШЕНИЕ ПРОБЛЕМЫ КОНФЛИКТА - ПЕРЕКЛЮЧЕНИЕ НА WEBHOOK
+    WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+    USE_WEBHOOK = os.environ.get('USE_WEBHOOK', 'false').lower() == 'true'
+    
     logger.info("🚀 Запуск бота с системой отслеживания конверсий и автоматизации продаж...")
     
-    # Запускаем бота
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
-    )
+    if USE_WEBHOOK and WEBHOOK_URL:
+        # Режим webhook для продакшена - НЕТ КОНФЛИКТОВ!
+        logger.info("🌐 Запуск в режиме WEBHOOK (решает проблему конфликта)")
+        
+        webhook_path = f"/bot{BOT_TOKEN}"
+        webhook_url = f"{WEBHOOK_URL}{webhook_path}"
+        
+        logger.info(f"📡 Telegram Webhook URL: {webhook_url}")
+        
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=WEBHOOK_PORT,
+            webhook_url=webhook_url,
+            url_path=webhook_path,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
+    else:
+        # Режим polling - МОЖЕТ КОНФЛИКТОВАТЬ
+        logger.info("🔄 Запуск в режиме POLLING")
+        logger.warning("⚠️ Убедитесь, что другие боты с этим токеном остановлены!")
+        
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
 
 if __name__ == '__main__':
     main()
