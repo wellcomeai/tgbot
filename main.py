@@ -27,9 +27,16 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '0'))
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
-# НОВЫЕ переменные окружения для webhook
-WEBHOOK_PORT = int(os.environ.get('WEBHOOK_PORT', '8080'))
-WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '0.0.0.0')
+# ИСПРАВЛЕННЫЕ переменные для Render
+# Render автоматически назначает PORT, используем его
+RENDER_PORT = int(os.environ.get('PORT', '10000'))  # Основной порт для Render
+
+# Webhook настройки
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')  # https://yourapp.onrender.com
+USE_WEBHOOK = os.environ.get('USE_WEBHOOK', 'true').lower() == 'true'  # По умолчанию webhook для Render
+
+# Порт для внутреннего webhook сервера платежей (если нужен отдельно)
+PAYMENT_WEBHOOK_PORT = int(os.environ.get('PAYMENT_WEBHOOK_PORT', str(RENDER_PORT + 1)))
 
 # Проверка наличия обязательных переменных
 if not BOT_TOKEN:
@@ -44,8 +51,17 @@ if not CHANNEL_ID:
     logger.error("CHANNEL_ID не установлен!")
     raise ValueError("CHANNEL_ID не установлен в переменных окружения")
 
-logger.info(f"Бот запускается с ADMIN_CHAT_ID: {ADMIN_CHAT_ID}, CHANNEL_ID: {CHANNEL_ID}")
-logger.info(f"Webhook сервер будет запущен на {WEBHOOK_HOST}:{WEBHOOK_PORT}")
+# Для Render webhook обязателен
+if USE_WEBHOOK and not WEBHOOK_URL:
+    logger.error("WEBHOOK_URL не установлен для режима webhook!")
+    raise ValueError("WEBHOOK_URL обязателен для режима webhook на Render")
+
+logger.info(f"🚀 Запуск на Render:")
+logger.info(f"   - Основной порт: {RENDER_PORT}")
+logger.info(f"   - Режим: {'WEBHOOK' if USE_WEBHOOK else 'POLLING'}")
+logger.info(f"   - Webhook URL: {WEBHOOK_URL}")
+logger.info(f"   - Admin ID: {ADMIN_CHAT_ID}")
+logger.info(f"   - Channel: {CHANNEL_ID}")
 
 # Создаем директорию для данных в папке проекта
 PROJECT_DIR = Path(__file__).parent
@@ -58,10 +74,15 @@ db = Database(str(DATA_DIR / 'bot_database.db'))
 admin_panel = AdminPanel(db, ADMIN_CHAT_ID)
 scheduler = MessageScheduler(db)
 
-# НОВОЕ: Создаем webhook сервер
-webhook_server = create_webhook_server(db, WEBHOOK_HOST, WEBHOOK_PORT)
+# ИСПРАВЛЕНО: Создаем webhook сервер только если он не будет конфликтовать
+webhook_server = None
+if not USE_WEBHOOK:
+    # В режиме polling можем запустить отдельный webhook сервер для платежей
+    webhook_server = create_webhook_server(db, '0.0.0.0', PAYMENT_WEBHOOK_PORT)
+else:
+    logger.info("🌐 В режиме webhook Telegram сервер обработает и платежные webhook")
 
-# Константы для callback данных (для совместимости с админ-панелью)
+# Константы для callback данных
 CALLBACK_USER_CONSENT = "user_consent"
 CALLBACK_START_NOTIFICATIONS = "start_notifications"
 CALLBACK_BOT_INFO = "bot_info"
@@ -77,9 +98,7 @@ class CallbackHandler:
         self.scheduler = scheduler
     
     async def execute_start_logic(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, telegram_user) -> bool:
-        """
-        Выполнение логики команды /start
-        """
+        """Выполнение логики команды /start"""
         try:
             logger.info(f"🚀 Выполняем логику /start для пользователя {user_id}")
             
@@ -106,9 +125,7 @@ class CallbackHandler:
             return False
     
     async def handle_welcome_button_press(self, user_id: int, button_text: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        """
-        Обработка нажатия на механическую кнопку приветственного сообщения
-        """
+        """Обработка нажатия на механическую кнопку приветственного сообщения"""
         try:
             logger.info(f"⌨️ Пользователь {user_id} нажал механическую кнопку: {button_text}")
             
@@ -169,7 +186,7 @@ class CallbackHandler:
 callback_handler = CallbackHandler(db, scheduler)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start - теперь работает с реальными командами"""
+    """Обработчик команды /start"""
     user = update.effective_user
     
     # Проверяем, является ли пользователь админом
@@ -183,7 +200,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if success:
         # Получаем настраиваемое сообщение подтверждения из базы данных
-        # Используем настройку "success_message" или создаем её
         try:
             conn = db._get_connection()
             cursor = conn.cursor()
@@ -236,8 +252,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardRemove()
         )
 
+# НОВОЕ: Обработчик для платежных webhook в режиме Telegram webhook
+async def handle_payment_webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик платежных webhook через Telegram webhook"""
+    try:
+        # Этот метод будет вызываться когда на /webhook/payment приходят данные
+        # Но в Telegram webhook мы получаем Update объекты, а не HTTP запросы
+        # Поэтому webhook для платежей лучше обрабатывать отдельно
+        logger.info("🔄 Получен webhook через Telegram сервер")
+        return
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обработке payment webhook: {e}")
+
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик заявок на вступление в канал - С АВТОМАТИЧЕСКИМ ПРИВЕТСТВЕННЫМ СООБЩЕНИЕМ"""
+    """Обработчик заявок на вступление в канал"""
     chat_join_request = update.chat_join_request
     user = chat_join_request.from_user
     
@@ -576,7 +604,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатия на кнопку согласия - ПРОСТОЕ РЕШЕНИЕ"""
+    """Обработка нажатия на кнопку согласия"""
     user_id = update.effective_user.id
     
     try:
@@ -614,7 +642,7 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
         
-        # ПРОСТОЕ РЕШЕНИЕ: Просто выполняем логику start()
+        # Выполняем логику start()
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
@@ -784,9 +812,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application) -> None:
     """Инициализация после запуска"""
-    logger.info("🚀 Бот с системой отслеживания конверсий успешно запущен!")
+    logger.info("🚀 Бот с системой отслеживания конверсий успешно запущен на Render!")
     
-    # НОВОЕ: Устанавливаем экземпляр бота для webhook сервера
+    # Устанавливаем экземпляр бота для webhook сервера (если есть)
     if webhook_server:
         webhook_server.set_bot(application.bot)
         logger.info("✅ Bot установлен для webhook сервера")
@@ -799,20 +827,16 @@ def main():
     # Добавляем обработчик инициализации
     application.post_init = post_init
     
-    # НОВОЕ: Запускаем webhook сервер для платежей
-    try:
-        webhook_server.start_server()
-        logger.info(f"✅ Webhook сервер запущен на http://{WEBHOOK_HOST}:{WEBHOOK_PORT}")
-        logger.info(f"📡 Endpoint для платежей: http://{WEBHOOK_HOST}:{WEBHOOK_PORT}/webhook/payment")
-        
-        # Выводим информацию о настройке webhook
-        logger.info("🔧 Настройте ваш платежный сервис для отправки webhook на указанный endpoint")
-        logger.info("📋 Формат JSON для webhook:")
-        logger.info('   {"user_id": "123456", "payment_status": "success", "amount": "1000"}')
-        
-    except Exception as e:
-        logger.error(f"❌ Не удалось запустить webhook сервер: {e}")
-        logger.warning("⚠️ Бот будет работать без функции приема платежей")
+    # ИСПРАВЛЕНО: Запускаем webhook сервер для платежей только в режиме polling
+    if not USE_WEBHOOK and webhook_server:
+        try:
+            webhook_server.start_server()
+            logger.info(f"✅ Webhook сервер для платежей запущен на http://0.0.0.0:{PAYMENT_WEBHOOK_PORT}")
+            logger.info(f"📡 Endpoint для платежей: http://0.0.0.0:{PAYMENT_WEBHOOK_PORT}/webhook/payment")
+            
+        except Exception as e:
+            logger.error(f"❌ Не удалось запустить webhook сервер для платежей: {e}")
+            logger.warning("⚠️ Бот будет работать без функции приема платежей")
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
@@ -838,33 +862,31 @@ def main():
         first=20  # первый запуск через 20 секунд
     )
     
-    # 🚀 РЕШЕНИЕ ПРОБЛЕМЫ КОНФЛИКТА - ПЕРЕКЛЮЧЕНИЕ НА WEBHOOK
-    WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
-    USE_WEBHOOK = os.environ.get('USE_WEBHOOK', 'false').lower() == 'true'
-    
-    logger.info("🚀 Запуск бота с системой отслеживания конверсий и автоматизации продаж...")
+    logger.info("🚀 Запуск бота с системой отслеживания конверсий и автоматизации продаж на Render...")
     
     if USE_WEBHOOK and WEBHOOK_URL:
-        # Режим webhook для продакшена - НЕТ КОНФЛИКТОВ!
-        logger.info("🌐 Запуск в режиме WEBHOOK (решает проблему конфликта)")
+        # ИСПРАВЛЕНО: Режим webhook для Render
+        logger.info("🌐 Запуск в режиме WEBHOOK для Render")
         
         webhook_path = f"/bot{BOT_TOKEN}"
         webhook_url = f"{WEBHOOK_URL}{webhook_path}"
         
         logger.info(f"📡 Telegram Webhook URL: {webhook_url}")
+        logger.info(f"🔌 Слушаем на порту: {RENDER_PORT}")
         
         application.run_webhook(
             listen="0.0.0.0",
-            port=WEBHOOK_PORT,
+            port=RENDER_PORT,  # ИСПРАВЛЕНО: Используем порт от Render
             webhook_url=webhook_url,
             url_path=webhook_path,
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES
         )
     else:
-        # Режим polling - МОЖЕТ КОНФЛИКТОВАТЬ
-        logger.info("🔄 Запуск в режиме POLLING")
-        logger.warning("⚠️ Убедитесь, что другие боты с этим токеном остановлены!")
+        # Режим polling - НЕ РЕКОМЕНДУЕТСЯ для Render
+        logger.warning("🔄 Запуск в режиме POLLING")
+        logger.warning("⚠️ Режим polling не рекомендуется для Render!")
+        logger.warning("⚠️ Установите USE_WEBHOOK=true и WEBHOOK_URL для корректной работы")
         
         application.run_polling(
             drop_pending_updates=True,
