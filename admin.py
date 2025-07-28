@@ -140,6 +140,8 @@ class AdminPanel:
             [InlineKeyboardButton("👋 Приветственное сообщение", callback_data="admin_welcome")],
             [InlineKeyboardButton("😢 Прощальное сообщение", callback_data="admin_goodbye")],
             [InlineKeyboardButton("✅ Сообщение подтверждения", callback_data="admin_success_message")],
+            [InlineKeyboardButton("💰 Сообщение после оплаты", callback_data="admin_payment_message")],
+            [InlineKeyboardButton("📊 Статистика платежей", callback_data="admin_payment_stats")],
             [InlineKeyboardButton("📢 Отправить всем сообщение", callback_data="admin_send_all")],
             [InlineKeyboardButton("⏰ Запланированные рассылки", callback_data="admin_scheduled_broadcasts")],
             [InlineKeyboardButton("👥 Список пользователей", callback_data="admin_users")]
@@ -152,9 +154,193 @@ class AdminPanel:
         sent_message = await self.safe_edit_or_send_message(update, context, text, reply_markup)
         return sent_message
     
+    # ===== НОВЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ПЛАТЕЖАМИ =====
+    
+    async def show_payment_message_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования сообщения после оплаты"""
+        user_id = update.effective_user.id
+        
+        # Получаем текущее сообщение об оплате
+        payment_message_data = self.db.get_payment_success_message()
+        
+        if payment_message_data and payment_message_data['text']:
+            current_message = payment_message_data['text']
+            current_photo = payment_message_data['photo_url']
+        else:
+            current_message = (
+                "🎉 <b>Спасибо за покупку!</b>\n\n"
+                "💰 Ваш платеж успешно обработан!\n\n"
+                "✅ Вы получили полный доступ ко всем материалам.\n\n"
+                "📚 Если у вас есть вопросы - обращайтесь к нашей поддержке.\n\n"
+                "🙏 Благодарим за доверие!"
+            )
+            current_photo = None
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_payment_message_text")],
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_payment_message_photo")]
+        ]
+        
+        if current_photo:
+            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_payment_message_photo")])
+        
+        keyboard.append([InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_payment_message")])
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message_text = (
+            "💰 <b>Сообщение после оплаты</b>\n\n"
+            "Это сообщение отправляется пользователям после успешной оплаты.\n\n"
+            f"<b>Текущий текст:</b>\n{current_message}\n\n"
+            f"<b>Фото:</b> {'Есть' if current_photo else 'Нет'}\n\n"
+            "💡 <i>В тексте можно использовать переменную {amount} - она будет заменена на сумму платежа.</i>"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
+    
+    async def show_payment_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать статистику платежей"""
+        stats = self.db.get_payment_statistics()
+        
+        if not stats:
+            text = "❌ <b>Ошибка при получении статистики платежей</b>"
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_back")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='HTML')
+            return
+        
+        text = (
+            "📊 <b>Статистика платежей</b>\n\n"
+            f"💰 <b>Общие показатели:</b>\n"
+            f"• Всего платежей: {stats['total_payments']}\n"
+            f"• Всего пользователей: {stats['total_users']}\n"
+            f"• Оплатило: {stats['paid_users']}\n"
+            f"• Конверсия: {stats['conversion_rate']}%\n"
+            f"• Средний чек: {stats['avg_amount']} руб.\n\n"
+        )
+        
+        # UTM источники
+        if stats['utm_sources']:
+            text += "🔗 <b>По источникам:</b>\n"
+            for utm_source, count in stats['utm_sources']:
+                text += f"• {utm_source}: {count} платежей\n"
+            text += "\n"
+        
+        # Последние платежи
+        if stats['recent_payments']:
+            text += "📋 <b>Последние платежи:</b>\n"
+            for user_id, first_name, username, amount, created_at in stats['recent_payments'][:5]:
+                username_str = f"@{username}" if username else "без username"
+                date_str = datetime.fromisoformat(created_at).strftime("%d.%m %H:%M")
+                text += f"• {first_name} ({username_str}): {amount} руб. - {date_str}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Обновить", callback_data="admin_payment_stats")],
+            [InlineKeyboardButton("« Назад", callback_data="admin_back")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    async def handle_payment_message_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, input_type: str):
+        """Обработка ввода для сообщения после оплаты"""
+        user_id = update.effective_user.id
+        
+        if input_type == "payment_message_text":
+            if len(text) > 4096:
+                await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
+                return
+            
+            # Получаем текущее фото
+            current_data = self.db.get_payment_success_message()
+            current_photo = current_data['photo_url'] if current_data else None
+            
+            # Сохраняем новый текст
+            self.db.set_payment_success_message(text, current_photo)
+            
+            await update.message.reply_text("✅ Сообщение после оплаты обновлено!")
+            del self.waiting_for[user_id]
+            await self.show_payment_message_edit_from_context(update, context)
+            
+        elif input_type == "payment_message_photo":
+            if not (text.startswith("http://") or text.startswith("https://")):
+                await update.message.reply_text("❌ Отправьте фото или ссылку на фото (начинающуюся с http:// или https://)")
+                return
+            
+            # Получаем текущий текст
+            current_data = self.db.get_payment_success_message()
+            current_text = current_data['text'] if current_data else None
+            
+            if not current_text:
+                current_text = (
+                    "🎉 <b>Спасибо за покупку!</b>\n\n"
+                    "💰 Ваш платеж успешно обработан!\n\n"
+                    "✅ Вы получили полный доступ ко всем материалам.\n\n"
+                    "📚 Если у вас есть вопросы - обращайтесь к нашей поддержке.\n\n"
+                    "🙏 Благодарим за доверие!"
+                )
+            
+            # Сохраняем новое фото
+            self.db.set_payment_success_message(current_text, text)
+            
+            await update.message.reply_text("✅ Фото для сообщения после оплаты обновлено!")
+            del self.waiting_for[user_id]
+            await self.show_payment_message_edit_from_context(update, context)
+    
+    async def show_payment_message_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """ИСПРАВЛЕННАЯ версия - отправляем НОВОЕ сообщение"""
+        user_id = update.effective_user.id
+        
+        # Получаем текущее сообщение об оплате
+        payment_message_data = self.db.get_payment_success_message()
+        
+        if payment_message_data and payment_message_data['text']:
+            current_message = payment_message_data['text']
+            current_photo = payment_message_data['photo_url']
+        else:
+            current_message = (
+                "🎉 <b>Спасибо за покупку!</b>\n\n"
+                "💰 Ваш платеж успешно обработан!\n\n"
+                "✅ Вы получили полный доступ ко всем материалам.\n\n"
+                "📚 Если у вас есть вопросы - обращайтесь к нашей поддержке.\n\n"
+                "🙏 Благодарим за доверие!"
+            )
+            current_photo = None
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_payment_message_text")],
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_payment_message_photo")]
+        ]
+        
+        if current_photo:
+            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_payment_message_photo")])
+        
+        keyboard.append([InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_payment_message")])
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message_text = (
+            "💰 <b>Сообщение после оплаты</b>\n\n"
+            "Это сообщение отправляется пользователям после успешной оплаты.\n\n"
+            f"<b>Текущий текст:</b>\n{current_message}\n\n"
+            f"<b>Фото:</b> {'Есть' if current_photo else 'Нет'}\n\n"
+            "💡 <i>В тексте можно использовать переменную {amount} - она будет заменена на сумму платежа.</i>"
+        )
+        
+        await self.send_new_menu_message(context, user_id, message_text, reply_markup)
+    
+    # ===== ОБНОВЛЕННЫЕ МЕТОДЫ СТАТИСТИКИ =====
+    
     async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать статистику"""
+        """Показать расширенную статистику"""
         stats = self.db.get_user_statistics()
+        payment_stats = self.db.get_payment_statistics()
         
         text = (
             "📊 <b>Статистика бота</b>\n\n"
@@ -162,11 +348,25 @@ class AdminPanel:
             f"💬 Начали разговор с ботом: {stats['bot_started_users']}\n"
             f"🆕 Новых за 24 часа: {stats['new_users_24h']}\n"
             f"✉️ Отправлено сообщений: {stats['sent_messages']}\n"
-            f"🚪 Отписалось пользователей: {stats['unsubscribed']}\n\n"
-            f"💡 <b>Массовая рассылка:</b> доступна для {stats['bot_started_users']} пользователей"
+            f"🚪 Отписалось пользователей: {stats['unsubscribed']}\n"
+            f"💰 Оплатило пользователей: {stats['paid_users']}\n\n"
         )
         
-        keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_back")]]
+        if payment_stats:
+            conversion_rate = payment_stats['conversion_rate']
+            avg_amount = payment_stats['avg_amount']
+            text += (
+                f"💸 <b>Платежи:</b>\n"
+                f"• Конверсия: {conversion_rate}%\n"
+                f"• Средний чек: {avg_amount} руб.\n\n"
+            )
+        
+        text += f"💡 <b>Массовая рассылка:</b> доступна для {stats['bot_started_users']} пользователей"
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Детали платежей", callback_data="admin_payment_stats")],
+            [InlineKeyboardButton("« Назад", callback_data="admin_back")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         sent_message = await update.callback_query.edit_message_text(
@@ -233,7 +433,8 @@ class AdminPanel:
             "Выберите сообщение для редактирования.\n"
             "В скобках указана задержка после регистрации.\n"
             "🖼 - сообщение содержит фото\n"
-            "🔘N - количество кнопок в сообщении"
+            "🔘N - количество кнопок в сообщении\n\n"
+            "💡 <i>Все ссылки в сообщениях автоматически получают UTM метки для отслеживания конверсий.</i>"
         )
         
         sent_message = await update.callback_query.edit_message_text(
@@ -295,6 +496,7 @@ class AdminPanel:
         # Получаем количество пользователей
         users_count = len(self.db.get_users_with_bot_started())
         text += f"\n👥 <b>Получателей:</b> {users_count} пользователей\n"
+        text += "\n💡 <i>Все ссылки автоматически получат UTM метки для отслеживания.</i>\n"
         
         text += "\n<b>Выберите действие:</b>"
         
@@ -374,6 +576,7 @@ class AdminPanel:
                 preview_text += f"{i}. {button['text']} → {button['url']}\n"
             preview_text += "\n"
         
+        preview_text += "🔗 <i>Все ссылки получат UTM метки для отслеживания конверсий.</i>\n\n"
         preview_text += "✅ Подтвердите отправку:"
         
         keyboard = [
@@ -443,7 +646,8 @@ class AdminPanel:
                     f"⏰ <b>Рассылка запланирована!</b>\n\n"
                     f"📅 <b>Время отправки:</b> {scheduled_time.strftime('%d.%m.%Y %H:%M')}\n"
                     f"⌛ <b>Через:</b> {draft['scheduled_hours']} час(ов)\n"
-                    f"📨 <b>ID рассылки:</b> #{broadcast_id}"
+                    f"📨 <b>ID рассылки:</b> #{broadcast_id}\n\n"
+                    f"🔗 <i>Все ссылки получат UTM метки для отслеживания.</i>"
                 )
                 
             else:
@@ -482,20 +686,34 @@ class AdminPanel:
                     try:
                         await asyncio.sleep(0.1)  # Небольшая задержка
                         
+                        # ВАЖНО: Импортируем utm_utils для обработки ссылок
+                        import utm_utils
+                        
+                        # Обрабатываем текст и кнопки с UTM метками
+                        processed_text = utm_utils.process_text_links(draft["message_text"], user_id_to_send)
+                        
+                        processed_reply_markup = reply_markup
+                        if draft["buttons"]:
+                            keyboard = []
+                            for button in draft["buttons"]:
+                                processed_url = utm_utils.add_utm_to_url(button["url"], user_id_to_send)
+                                keyboard.append([InlineKeyboardButton(button["text"], url=processed_url)])
+                            processed_reply_markup = InlineKeyboardMarkup(keyboard)
+                        
                         if draft["photo_data"]:
                             await context.bot.send_photo(
                                 chat_id=user_id_to_send,
                                 photo=draft["photo_data"],
-                                caption=draft["message_text"],
+                                caption=processed_text,
                                 parse_mode='HTML',
-                                reply_markup=reply_markup
+                                reply_markup=processed_reply_markup
                             )
                         else:
                             await context.bot.send_message(
                                 chat_id=user_id_to_send,
-                                text=draft["message_text"],
+                                text=processed_text,
                                 parse_mode='HTML',
-                                reply_markup=reply_markup
+                                reply_markup=processed_reply_markup
                             )
                         sent_count += 1
                         
@@ -519,7 +737,8 @@ class AdminPanel:
                 result_text = (
                     f"✅ <b>Рассылка завершена!</b>\n\n"
                     f"📤 <b>Успешно отправлено:</b> {sent_count}\n"
-                    f"❌ <b>Ошибок:</b> {failed_count}"
+                    f"❌ <b>Ошибок:</b> {failed_count}\n\n"
+                    f"🔗 <i>Все ссылки содержат UTM метки для отслеживания конверсий.</i>"
                 )
             
             # Очищаем черновик
@@ -555,6 +774,8 @@ class AdminPanel:
             [InlineKeyboardButton("👋 Приветственное сообщение", callback_data="admin_welcome")],
             [InlineKeyboardButton("😢 Прощальное сообщение", callback_data="admin_goodbye")],
             [InlineKeyboardButton("✅ Сообщение подтверждения", callback_data="admin_success_message")],
+            [InlineKeyboardButton("💰 Сообщение после оплаты", callback_data="admin_payment_message")],
+            [InlineKeyboardButton("📊 Статистика платежей", callback_data="admin_payment_stats")],
             [InlineKeyboardButton("📢 Отправить всем сообщение", callback_data="admin_send_all")],
             [InlineKeyboardButton("⏰ Запланированные рассылки", callback_data="admin_scheduled_broadcasts")],
             [InlineKeyboardButton("👥 Список пользователей", callback_data="admin_users")]
@@ -581,13 +802,19 @@ class AdminPanel:
         else:
             text = "👥 <b>Список пользователей</b>\n\n<b>Последние 10 регистраций:</b>\n\n"
             for user in users:
-                user_id_db, username, first_name, joined_at, is_active, bot_started = user
+                if len(user) >= 8:  # Новый формат с полями has_paid и paid_at
+                    user_id_db, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at = user
+                    paid_icon = "💰" if has_paid else ""
+                else:  # Старый формат
+                    user_id_db, username, first_name, joined_at, is_active, bot_started = user
+                    paid_icon = ""
+                
                 username_str = f"@{username}" if username else "без username"
                 join_date = datetime.fromisoformat(joined_at).strftime("%d.%m.%Y %H:%M")
                 bot_status = "💬" if bot_started else "❌"
-                text += f"• {first_name} ({username_str}) {bot_status}\n  ID: {user_id_db}, {join_date}\n\n"
+                text += f"• {first_name} ({username_str}) {bot_status}{paid_icon}\n  ID: {user_id_db}, {join_date}\n\n"
             
-            text += "\n💬 - может получать рассылки\n❌ - нужно написать боту /start"
+            text += "\n💬 - может получать рассылки\n❌ - нужно написать боту /start\n💰 - оплатил"
         
         keyboard = [
             [InlineKeyboardButton("📊 Скачать CSV", callback_data="download_csv")],
@@ -648,6 +875,9 @@ class AdminPanel:
             "mass_time": "⏰ Через сколько часов отправить рассылку?\n\nПримеры: 1, 2.5, 24\n\nОставьте пустым для отправки сейчас:",
             "mass_button_text": "✏️ Отправьте текст для кнопки:",
             "mass_button_url": "🔗 Отправьте URL для кнопки:",
+            # Новые типы для платежей
+            "payment_message_text": "✏️ Отправьте новый текст сообщения после оплаты:\n\n💡 Можно использовать переменную {amount} - она будет заменена на сумму платежа.",
+            "payment_message_photo": "🖼 Отправьте фото для сообщения после оплаты или ссылку на фото:",
         }
         
         text = texts.get(input_type, "Отправьте необходимые данные:")
@@ -736,6 +966,7 @@ class AdminPanel:
         # Получаем количество пользователей
         users_count = len(self.db.get_users_with_bot_started())
         text += f"\n👥 <b>Получателей:</b> {users_count} пользователей\n"
+        text += "\n💡 <i>Все ссылки автоматически получат UTM метки для отслеживания.</i>\n"
         
         text += "\n<b>Выберите действие:</b>"
         
@@ -916,7 +1147,8 @@ class AdminPanel:
             f"<b>Текущий текст:</b>\n{text}\n\n"
             f"<b>Задержка:</b> {delay_str} после регистрации\n"
             f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
-            f"{buttons_info}"
+            f"{buttons_info}\n\n"
+            f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
         )
         
         await self.send_new_menu_message(context, user_id, message_text, reply_markup)
@@ -954,6 +1186,7 @@ class AdminPanel:
             f"🔘 <b>Редактирование кнопки</b>\n\n"
             f"<b>Текст:</b> {button_text}\n"
             f"<b>URL:</b> {button_url}\n\n"
+            f"💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
             "Выберите действие:"
         )
         
@@ -988,7 +1221,8 @@ class AdminPanel:
             "Выберите сообщение для редактирования.\n"
             "В скобках указана задержка после регистрации.\n"
             "🖼 - сообщение содержит фото\n"
-            "🔘N - количество кнопок в сообщении"
+            "🔘N - количество кнопок в сообщении\n\n"
+            "💡 <i>Все ссылки в сообщениях автоматически получают UTM метки для отслеживания конверсий.</i>"
         )
         
         await self.send_new_menu_message(context, user_id, message_text, reply_markup)
@@ -1013,6 +1247,7 @@ class AdminPanel:
         message_text = (
             f"🔘 <b>Кнопки сообщения {message_number}</b>\n\n"
             f"Текущие кнопки: {len(buttons)}/3\n\n"
+            "💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
             "Выберите кнопку для редактирования или добавьте новую:"
         )
         
@@ -1060,6 +1295,40 @@ class AdminPanel:
                 await self.show_broadcast_status(update, context)
             elif data == "set_broadcast_timer":
                 await self.request_text_input(update, context, "broadcast_timer")
+            
+            # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПЛАТЕЖЕЙ =====
+            elif data == "admin_payment_message":
+                await self.show_payment_message_edit(update, context)
+            elif data == "admin_payment_stats":
+                await self.show_payment_statistics(update, context)
+            elif data == "edit_payment_message_text":
+                await self.request_text_input(update, context, "payment_message_text")
+            elif data == "edit_payment_message_photo":
+                await self.request_text_input(update, context, "payment_message_photo")
+            elif data == "remove_payment_message_photo":
+                # Получаем текущий текст и удаляем фото
+                current_data = self.db.get_payment_success_message()
+                current_text = current_data['text'] if current_data else None
+                if not current_text:
+                    current_text = (
+                        "🎉 <b>Спасибо за покупку!</b>\n\n"
+                        "💰 Ваш платеж успешно обработан!\n\n"
+                        "✅ Вы получили полный доступ ко всем материалам.\n\n"
+                        "📚 Если у вас есть вопросы - обращайтесь к нашей поддержке.\n\n"
+                        "🙏 Благодарим за доверие!"
+                    )
+                self.db.set_payment_success_message(current_text, "")
+                await self.show_payment_message_edit(update, context)
+            elif data == "reset_payment_message":
+                default_payment_message = (
+                    "🎉 <b>Спасибо за покупку!</b>\n\n"
+                    "💰 Ваш платеж на сумму {amount} успешно обработан!\n\n"
+                    "✅ Вы получили полный доступ ко всем материалам.\n\n"
+                    "📚 Если у вас есть вопросы - обращайтесь к нашей поддержке.\n\n"
+                    "🙏 Благодарим за доверие!"
+                )
+                self.db.set_payment_success_message(default_payment_message, "")
+                await self.show_payment_message_edit(update, context)
             
             # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ МАССОВОЙ РАССЫЛКИ =====
             elif data == "mass_edit_text":
@@ -1218,8 +1487,14 @@ class AdminPanel:
                 await self.show_error_message(update, context, "❌ Пустое сообщение. Попробуйте еще раз.")
                 return
             
+            # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПЛАТЕЖЕЙ =====
+            if input_type == "payment_message_text":
+                await self.handle_payment_message_input(update, context, text, "payment_message_text")
+            elif input_type == "payment_message_photo":
+                await self.handle_payment_message_input(update, context, text, "payment_message_photo")
+            
             # ===== ОБРАБОТКА НОВЫХ ТИПОВ ДЛЯ МАССОВОЙ РАССЫЛКИ =====
-            if input_type == "mass_text":
+            elif input_type == "mass_text":
                 await self.handle_mass_text_input(update, context, text)
             elif input_type == "mass_photo":
                 await self.handle_mass_photo_input(update, context, text)
@@ -1302,7 +1577,7 @@ class AdminPanel:
                     )
             
             # Обработка URL-ссылок на фото
-            elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo"]:
+            elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo", "payment_message_photo"]:
                 if text.startswith("http://") or text.startswith("https://"):
                     await self.handle_photo_url_input(update, context, text, input_type, **waiting_data)
                 else:
@@ -1504,6 +1779,28 @@ class AdminPanel:
             
             await self.show_send_all_menu_from_context(update, context)
         
+        elif input_type == "payment_message_photo":
+            # Фото для сообщения об оплате
+            photo_file_id = update.message.photo[-1].file_id
+            
+            # Получаем текущий текст
+            current_data = self.db.get_payment_success_message()
+            current_text = current_data['text'] if current_data else None
+            
+            if not current_text:
+                current_text = (
+                    "🎉 <b>Спасибо за покупку!</b>\n\n"
+                    "💰 Ваш платеж успешно обработан!\n\n"
+                    "✅ Вы получили полный доступ ко всем материалам.\n\n"
+                    "📚 Если у вас есть вопросы - обращайтесь к нашей поддержке.\n\n"
+                    "🙏 Благодарим за доверие!"
+                )
+            
+            self.db.set_payment_success_message(current_text, photo_file_id)
+            await update.message.reply_text("✅ Фото для сообщения после оплаты обновлено!")
+            del self.waiting_for[user_id]
+            await self.show_payment_message_edit_from_context(update, context)
+        
         elif input_type == "broadcast_photo":
             # Фото для базового сообщения рассылки
             message_number = waiting_data["message_number"]
@@ -1582,6 +1879,25 @@ class AdminPanel:
             await update.message.reply_text("✅ Ссылка на фото для прощального сообщения сохранена!")
             del self.waiting_for[user_id]
             await self.show_goodbye_edit_from_context(update, context)
+        
+        elif input_type == "payment_message_photo":
+            # Получаем текущий текст
+            current_data = self.db.get_payment_success_message()
+            current_text = current_data['text'] if current_data else None
+            
+            if not current_text:
+                current_text = (
+                    "🎉 <b>Спасибо за покупку!</b>\n\n"
+                    "💰 Ваш платеж успешно обработан!\n\n"
+                    "✅ Вы получили полный доступ ко всем материалам.\n\n"
+                    "📚 Если у вас есть вопросы - обращайтесь к нашей поддержке.\n\n"
+                    "🙏 Благодарим за доверие!"
+                )
+            
+            self.db.set_payment_success_message(current_text, url)
+            await update.message.reply_text("✅ Ссылка на фото для сообщения после оплаты сохранена!")
+            del self.waiting_for[user_id]
+            await self.show_payment_message_edit_from_context(update, context)
     
     # ===== МЕТОДЫ ДЛЯ ОБРАБОТКИ ОСТАЛЬНЫХ CALLBACK =====
     
@@ -1762,23 +2078,17 @@ class AdminPanel:
         if photo_url:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data=f"remove_photo_{message_number}")])
         
-        # Кнопки для управления кнопками сообщения
         keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data=f"manage_buttons_{message_number}")])
-        
-        # Кнопка удаления сообщения
         keyboard.append([InlineKeyboardButton("🗑 Удалить сообщение", callback_data=f"delete_msg_{message_number}")])
-        
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_broadcast")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Формируем текст с информацией о кнопках
         buttons_info = ""
         if buttons:
             buttons_info = f"\n<b>Кнопки ({len(buttons)}):</b>\n"
             for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
                 buttons_info += f"{i}. {button_text} → {button_url}\n"
         
-        # Форматируем отображение задержки
         if delay_hours < 1:
             delay_str = f"{int(delay_hours * 60)} минут"
         else:
@@ -1789,7 +2099,8 @@ class AdminPanel:
             f"<b>Текущий текст:</b>\n{text}\n\n"
             f"<b>Задержка:</b> {delay_str} после регистрации\n"
             f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
-            f"{buttons_info}"
+            f"{buttons_info}\n\n"
+            f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
         )
         
         await update.callback_query.edit_message_text(
@@ -1816,6 +2127,7 @@ class AdminPanel:
         text = (
             f"🔘 <b>Кнопки сообщения {message_number}</b>\n\n"
             f"Текущие кнопки: {len(buttons)}/3\n\n"
+            "💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
             "Выберите кнопку для редактирования или добавьте новую:"
         )
         
@@ -1856,6 +2168,7 @@ class AdminPanel:
             f"🔘 <b>Редактирование кнопки</b>\n\n"
             f"<b>Текст:</b> {button_text}\n"
             f"<b>URL:</b> {button_url}\n\n"
+            f"💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
             "Выберите действие:"
         )
         
@@ -2041,6 +2354,7 @@ class AdminPanel:
             f"Активных рассылок: {len(broadcasts)}\n\n"
             "🖼 - сообщение с фото\n"
             "🔘N - количество кнопок\n\n"
+            "💡 <i>Все ссылки получат UTM метки для отслеживания.</i>\n\n"
             "Выберите рассылку для редактирования:"
         )
         
