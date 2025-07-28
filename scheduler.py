@@ -4,6 +4,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Forbidden, BadRequest
 import logging
 import asyncio
+import utm_utils
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class MessageScheduler:
                 logger.error(f"❌ Пользователь {user_id} не найден в базе данных")
                 return False
                 
-            user_id_db, username, first_name, joined_at, is_active, bot_started = user_info
+            user_id_db, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at = user_info
             
             # Проверяем, что пользователь активен
             if not is_active:
@@ -33,6 +34,11 @@ class MessageScheduler:
             if not bot_started:
                 logger.warning(f"⚠️ Пользователь {user_id} не дал согласие на получение сообщений (bot_started = {bot_started})")
                 return False
+            
+            # НОВАЯ ПРОВЕРКА: Если пользователь уже оплатил, не планируем сообщения
+            if has_paid:
+                logger.info(f"💰 Пользователь {user_id} уже оплатил, планирование сообщений пропущено")
+                return True
             
             # Проверяем, есть ли уже запланированные сообщения
             existing_messages = self.db.get_user_scheduled_messages(user_id)
@@ -112,6 +118,22 @@ class MessageScheduler:
             logger.error(f"❌ Ошибка при проверке/планировании сообщений для пользователя {user_id}: {e}")
             return False
     
+    def process_message_content(self, text, buttons, user_id):
+        """Обработка контента сообщения с добавлением UTM меток"""
+        try:
+            # Обрабатываем ссылки в тексте
+            processed_text = utm_utils.process_text_links(text, user_id)
+            
+            # Обрабатываем кнопки
+            processed_buttons = utm_utils.process_message_buttons(buttons, user_id)
+            
+            return processed_text, processed_buttons
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке контента сообщения для пользователя {user_id}: {e}")
+            # Возвращаем оригинальный контент в случае ошибки
+            return text, buttons
+    
     async def send_scheduled_messages(self, context: ContextTypes.DEFAULT_TYPE):
         """Отправить все запланированные сообщения, время которых настало"""
         try:
@@ -136,7 +158,7 @@ class MessageScheduler:
                     logger.debug("❌ Рассылка отключена без таймера")
                     return
             
-            # Получаем сообщения, готовые к отправке (только для пользователей с bot_started = 1)
+            # Получаем сообщения, готовые к отправке (только для пользователей с bot_started = 1 и has_paid = 0)
             pending_messages = self.db.get_pending_messages_for_active_users()
             
             if not pending_messages:
@@ -152,21 +174,31 @@ class MessageScheduler:
                 try:
                     logger.debug(f"📤 Отправляем сообщение {message_number} пользователю {user_id}")
                     
+                    # НОВАЯ ПРОВЕРКА: Убеждаемся, что пользователь не оплатил за время ожидания
+                    user_info = self.db.get_user(user_id)
+                    if user_info and user_info[6]:  # has_paid = True
+                        logger.info(f"💰 Пользователь {user_id} оплатил, пропускаем сообщение {message_number}")
+                        self.db.mark_message_sent(message_id)
+                        continue
+                    
                     # Небольшая задержка между отправками для избежания лимитов
                     await asyncio.sleep(0.1)
                     
                     # Получаем кнопки для этого сообщения
                     buttons = self.db.get_message_buttons(message_number)
-                    reply_markup = None
                     
-                    if buttons:
-                        # Создаем клавиатуру с кнопками
+                    # НОВОЕ: Обрабатываем контент с UTM метками
+                    processed_text, processed_buttons = self.process_message_content(text, buttons, user_id)
+                    
+                    reply_markup = None
+                    if processed_buttons:
+                        # Создаем клавиатуру с обработанными кнопками
                         keyboard = []
-                        for button_id, button_text, button_url, position in buttons:
+                        for button_id, button_text, button_url, position in processed_buttons:
                             keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
-                        logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(buttons)} кнопок")
+                        logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(processed_buttons)} кнопок с UTM метками")
                     
                     # Отправляем сообщение
                     if photo_url:
@@ -174,7 +206,7 @@ class MessageScheduler:
                         await context.bot.send_photo(
                             chat_id=user_id,
                             photo=photo_url,
-                            caption=text,
+                            caption=processed_text,
                             parse_mode='HTML',
                             reply_markup=reply_markup
                         )
@@ -183,7 +215,7 @@ class MessageScheduler:
                         # Отправляем только текст
                         await context.bot.send_message(
                             chat_id=user_id,
-                            text=text,
+                            text=processed_text,
                             parse_mode='HTML',
                             disable_web_page_preview=True,
                             reply_markup=reply_markup
@@ -194,7 +226,7 @@ class MessageScheduler:
                     self.db.mark_message_sent(message_id)
                     sent_count += 1
                     
-                    logger.info(f"✅ Отправлено сообщение {message_number} пользователю {user_id}")
+                    logger.info(f"✅ Отправлено сообщение {message_number} пользователю {user_id} с UTM метками")
                     
                 except Forbidden as e:
                     # Пользователь заблокировал бота
@@ -252,7 +284,7 @@ class MessageScheduler:
             
             logger.info(f"📡 Найдено {len(pending_broadcasts)} запланированных рассылок для отправки")
             
-            # Получаем пользователей, которые могут получать рассылки
+            # Получаем пользователей, которые могут получать рассылки (активные, с bot_started=1)
             users_with_bot = self.db.get_users_with_bot_started()
             
             if not users_with_bot:
@@ -270,16 +302,6 @@ class MessageScheduler:
                     
                     # Получаем кнопки для этой рассылки
                     buttons = self.db.get_scheduled_broadcast_buttons(broadcast_id)
-                    reply_markup = None
-                    
-                    if buttons:
-                        # Создаем клавиатуру с кнопками
-                        keyboard = []
-                        for button_id, button_text, button_url, position in buttons:
-                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
-                        
-                        reply_markup = InlineKeyboardMarkup(keyboard)
-                        logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id}: {len(buttons)} кнопок")
                     
                     sent_count = 0
                     failed_count = 0
@@ -287,16 +309,31 @@ class MessageScheduler:
                     # Отправляем всем пользователям
                     for user in users_with_bot:
                         user_id = user[0]
+                        has_paid = user[6] if len(user) > 6 else False
+                        
                         try:
                             # Небольшая задержка между отправками
                             await asyncio.sleep(0.1)
+                            
+                            # НОВОЕ: Обрабатываем контент с UTM метками для каждого пользователя
+                            processed_text, processed_buttons = self.process_message_content(message_text, buttons, user_id)
+                            
+                            reply_markup = None
+                            if processed_buttons:
+                                # Создаем клавиатуру с обработанными кнопками
+                                keyboard = []
+                                for button_id, button_text, button_url, position in processed_buttons:
+                                    keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                
+                                reply_markup = InlineKeyboardMarkup(keyboard)
+                                logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок с UTM метками")
                             
                             if photo_url:
                                 # Отправляем с фото
                                 await context.bot.send_photo(
                                     chat_id=user_id,
                                     photo=photo_url,
-                                    caption=message_text,
+                                    caption=processed_text,
                                     parse_mode='HTML',
                                     reply_markup=reply_markup
                                 )
@@ -304,7 +341,7 @@ class MessageScheduler:
                                 # Отправляем только текст
                                 await context.bot.send_message(
                                     chat_id=user_id,
-                                    text=message_text,
+                                    text=processed_text,
                                     parse_mode='HTML',
                                     disable_web_page_preview=True,
                                     reply_markup=reply_markup
@@ -331,7 +368,7 @@ class MessageScheduler:
                     # Отмечаем рассылку как отправленную
                     self.db.mark_broadcast_sent(broadcast_id)
                     
-                    logger.info(f"✅ Рассылка #{broadcast_id} завершена: отправлено {sent_count}, ошибок {failed_count}")
+                    logger.info(f"✅ Рассылка #{broadcast_id} завершена с UTM метками: отправлено {sent_count}, ошибок {failed_count}")
                     
                     # Пауза между разными рассылками
                     if len(pending_broadcasts) > 1:
@@ -353,3 +390,13 @@ class MessageScheduler:
         # и хочет применить их ко всем будущим сообщениям
         # TODO: Реализовать при необходимости
         pass
+    
+    async def cancel_user_remaining_messages(self, user_id):
+        """Отмена оставшихся сообщений для оплатившего пользователя"""
+        try:
+            cancelled_count = self.db.cancel_remaining_messages(user_id)
+            logger.info(f"🚫 Отменено {cancelled_count} запланированных сообщений для оплатившего пользователя {user_id}")
+            return cancelled_count
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отмене сообщений для пользователя {user_id}: {e}")
+            return 0
