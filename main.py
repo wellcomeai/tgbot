@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import asyncio
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated, Message, Chat, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler, MessageHandler, filters, ChatMemberHandler
 from telegram.error import Forbidden, BadRequest
@@ -46,11 +47,14 @@ if not CHANNEL_ID:
 logger.info(f"Бот запускается с ADMIN_CHAT_ID: {ADMIN_CHAT_ID}, CHANNEL_ID: {CHANNEL_ID}")
 logger.info(f"Webhook сервер будет запущен на {WEBHOOK_HOST}:{WEBHOOK_PORT}")
 
-# Создаем директорию для данных если её нет
-os.makedirs('/data', exist_ok=True)
+# Создаем директорию для данных в папке проекта
+PROJECT_DIR = Path(__file__).parent
+DATA_DIR = PROJECT_DIR / 'data'
+DATA_DIR.mkdir(exist_ok=True)
+logger.info(f"Директория данных: {DATA_DIR}")
 
 # Инициализация компонентов
-db = Database('/data/bot_database.db')
+db = Database(str(DATA_DIR / 'bot_database.db'))
 admin_panel = AdminPanel(db, ADMIN_CHAT_ID)
 scheduler = MessageScheduler(db)
 
