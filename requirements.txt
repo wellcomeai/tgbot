@@ -1,12 +1,11 @@
-# Telegram Bot API
-python-telegram-bot==21.6
+# Telegram Bot API (обновлено для Python 3.13)
+python-telegram-bot>=22.0
 
 # Асинхронные утилиты (требуется для job queue)
-python-telegram-bot[job-queue]==21.6
+python-telegram-bot[job-queue]>=22.0
 
 # НОВЫЕ зависимости для webhook сервера
-flask==2.3.3
-aiohttp>=3.12.0  # Обновлено для совместимости с Python 3.13
+flask>=3.0.0
 
 # Дополнительные зависимости для стабильности
 # Эти версии проверены и работают корректно
