@@ -40,8 +40,8 @@ RENDER_PORT = int(os.environ.get('PORT', '10000'))
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 USE_WEBHOOK = os.environ.get('USE_WEBHOOK', 'true').lower() == 'true'
 
-# НОВОЕ: Настройка для Render Disk
-RENDER_DISK_PATH = os.environ.get('RENDER_DISK_PATH')
+# ИСПРАВЛЕНО: Настройка для Render Disk - правильный путь
+RENDER_DISK_PATH = os.environ.get('RENDER_DISK_PATH', '/data')
 
 # Проверка обязательных переменных
 if not BOT_TOKEN:
@@ -64,7 +64,7 @@ if USE_WEBHOOK and not WEBHOOK_URL:
 logger.info(f"🚀 Конфигурация для Render:")
 logger.info(f"   🌐 Flask порт: {RENDER_PORT}")
 logger.info(f"   📱 Webhook URL: {WEBHOOK_URL}")
-logger.info(f"   💾 Render Disk: {RENDER_DISK_PATH or 'НЕ НАСТРОЕН'}")
+logger.info(f"   💾 Render Disk: {RENDER_DISK_PATH}")
 logger.info(f"   👤 Admin ID: {ADMIN_CHAT_ID}")
 logger.info(f"   📢 Channel: {CHANNEL_ID}")
 
@@ -73,7 +73,8 @@ logger.info(f"   📢 Channel: {CHANNEL_ID}")
 try:
     if RENDER_DISK_PATH:
         logger.info(f"🗄️ Используем Render Disk для базы данных: {RENDER_DISK_PATH}")
-        db = Database()  # Используем переменную окружения внутри Database
+        os.environ['RENDER_DISK_PATH'] = RENDER_DISK_PATH  # Устанавливаем переменную для Database
+        db = Database()
     else:
         logger.warning("⚠️ RENDER_DISK_PATH не настроен, используем локальное хранилище")
         db = Database()
@@ -97,9 +98,12 @@ bot_instance = None
 # ===== FLASK ПРИЛОЖЕНИЕ ДЛЯ WEBHOOK'ОВ =====
 flask_app = Flask(__name__)
 
+# НОВОЕ: Глобальный executor для изоляции асинхронных задач
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
 @flask_app.route(f'/bot{BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
-    """Обработка Telegram webhook через Flask - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """ИСПРАВЛЕННАЯ обработка Telegram webhook через Flask"""
     try:
         # Получаем данные от Telegram
         update_data = request.get_json()
@@ -110,40 +114,46 @@ def telegram_webhook():
         
         logger.debug(f"📱 Получен Telegram update: {update_data.get('update_id')}")
         
-        # ИСПРАВЛЕНИЕ: Обрабатываем webhook в отдельном thread pool
-        def process_update():
+        # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor с изолированным event loop
+        def process_update_safe():
+            """Безопасная обработка update в отдельном потоке с новым event loop"""
             try:
-                # Создаем Update объект
-                update = Update.de_json(update_data, bot_instance)
-                
-                # Создаем новый event loop для этого thread
+                # КРИТИЧЕСКИ ВАЖНО: Создаем новый event loop для каждого потока
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 
-                # Обрабатываем update
-                if bot_application:
-                    loop.run_until_complete(bot_application.process_update(update))
-                
-                # Закрываем loop
-                loop.close()
+                try:
+                    # Создаем Update объект
+                    update = Update.de_json(update_data, bot_instance)
+                    
+                    # Обрабатываем update
+                    if bot_application:
+                        loop.run_until_complete(bot_application.process_update(update))
+                    
+                    logger.debug(f"✅ Update {update_data.get('update_id')} обработан успешно")
+                    
+                finally:
+                    # ВАЖНО: Правильно закрываем loop
+                    try:
+                        loop.close()
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка при закрытии event loop: {e}")
                 
             except Exception as e:
-                logger.error(f"❌ Ошибка в thread обработки update: {e}")
+                logger.error(f"❌ Ошибка в безопасной обработке update: {e}", exc_info=True)
         
-        # Запускаем обработку в отдельном потоке
-        import threading
-        thread = threading.Thread(target=process_update)
-        thread.start()
+        # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor для лучшего управления потоками
+        executor.submit(process_update_safe)
         
         return jsonify({'ok': True})
         
     except Exception as e:
-        logger.error(f"❌ Ошибка в Telegram webhook: {e}", exc_info=True)
+        logger.error(f"❌ Критическая ошибка в Telegram webhook: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @flask_app.route('/webhook/payment', methods=['POST'])
 def payment_webhook():
-    """Обработка Payment webhook - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """ИСПРАВЛЕННАЯ обработка Payment webhook"""
     try:
         # Получаем платежные данные
         payment_data = request.get_json()
@@ -182,44 +192,48 @@ def payment_webhook():
             logger.error(f"❌ Пользователь {user_id} не найден")
             return jsonify({'error': 'User not found'}), 404
         
-        # ИСПРАВЛЕНИЕ: Обрабатываем в отдельном потоке
-        def process_payment():
+        # ИСПРАВЛЕНИЕ: Безопасная обработка в отдельном потоке
+        def process_payment_safe():
+            """Безопасная обработка платежа в отдельном потоке"""
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 
-                success = loop.run_until_complete(handle_successful_payment(user_id, amount, payment_data))
-                
-                loop.close()
-                return success
-                
+                try:
+                    success = loop.run_until_complete(handle_successful_payment(user_id, amount, payment_data))
+                    return success
+                finally:
+                    try:
+                        loop.close()
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка при закрытии event loop в payment: {e}")
+                        
             except Exception as e:
-                logger.error(f"❌ Ошибка в thread обработки платежа: {e}")
+                logger.error(f"❌ Ошибка в безопасной обработке платежа: {e}")
                 return False
         
         # Обрабатываем только успешные платежи
         if payment_status == 'success':
-            # Запускаем в отдельном потоке
-            import threading
-            result_container = {'success': False}
+            # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor с таймаутом
+            future = executor.submit(process_payment_safe)
             
-            def payment_thread():
-                result_container['success'] = process_payment()
-            
-            thread = threading.Thread(target=payment_thread)
-            thread.start()
-            thread.join(timeout=30)  # Ждём максимум 30 секунд
-            
-            if result_container['success']:
-                logger.info(f"✅ Успешно обработан платеж для пользователя {user_id}")
-                return jsonify({
-                    'status': 'success',
-                    'message': 'Payment processed successfully',
-                    'user_id': user_id
-                }), 200
-            else:
-                logger.error(f"❌ Ошибка при обработке платежа для пользователя {user_id}")
-                return jsonify({'error': 'Payment processing failed'}), 500
+            try:
+                success = future.result(timeout=30)  # Ждём максимум 30 секунд
+                
+                if success:
+                    logger.info(f"✅ Успешно обработан платеж для пользователя {user_id}")
+                    return jsonify({
+                        'status': 'success',
+                        'message': 'Payment processed successfully',
+                        'user_id': user_id
+                    }), 200
+                else:
+                    logger.error(f"❌ Ошибка при обработке платежа для пользователя {user_id}")
+                    return jsonify({'error': 'Payment processing failed'}), 500
+                    
+            except concurrent.futures.TimeoutError:
+                logger.error(f"❌ Таймаут при обработке платежа для пользователя {user_id}")
+                return jsonify({'error': 'Payment processing timeout'}), 500
         else:
             # Логируем неуспешные платежи
             db.log_payment(user_id, amount, payment_status, payment_data.get('utm_source'), payment_data.get('utm_id'))
@@ -250,7 +264,9 @@ def health_check():
             'flask_port': RENDER_PORT,
             'database': db_info,
             'render_disk_configured': RENDER_DISK_PATH is not None,
-            'webhook_url': WEBHOOK_URL
+            'render_disk_path': RENDER_DISK_PATH,
+            'webhook_url': WEBHOOK_URL,
+            'executor_threads': len(executor._threads) if hasattr(executor, '_threads') else 'N/A'
         }
         
         return jsonify(health_data)
@@ -1055,8 +1071,16 @@ async def handle_back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок"""
+    """ИСПРАВЛЕННЫЙ обработчик ошибок"""
     logger.error(f"❌ Exception while handling an update: {context.error}")
+    
+    # НОВОЕ: Предотвращаем накопление проблемных event loop'ов
+    try:
+        if hasattr(context, 'error') and 'Event loop is closed' in str(context.error):
+            logger.warning("⚠️ Обнаружена ошибка закрытого event loop, игнорируем")
+            return
+    except Exception:
+        pass
 
 def run_flask_app():
     """Запуск Flask приложения в отдельном потоке"""
@@ -1089,7 +1113,7 @@ async def post_init(application: Application) -> None:
     logger.info(f"📊 База данных готова: {db_info}")
 
 def main():
-    """Главная функция запуска бота"""
+    """ИСПРАВЛЕННАЯ главная функция запуска бота"""
     global bot_application, bot_instance
     
     logger.info("🚀 Запуск Telegram бота для Render с Disk...")
@@ -1143,15 +1167,28 @@ def main():
         
         logger.info(f"📡 Настройка Telegram webhook: {webhook_url}")
         
-        # Запускаем Telegram application в режиме webhook
-        application.run_webhook(
-            listen="127.0.0.1",  # Слушаем только локально
-            port=8443,  # Внутренний порт для telegram
-            webhook_url=webhook_url,
-            url_path=webhook_path,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        # ИСПРАВЛЕНИЕ: Улучшенные настройки webhook
+        try:
+            application.run_webhook(
+                listen="127.0.0.1",  # Слушаем только локально
+                port=8443,  # Внутренний порт для telegram
+                webhook_url=webhook_url,
+                url_path=webhook_path,
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES,
+                # НОВОЕ: Добавляем обработку таймаутов
+                read_timeout=30,
+                write_timeout=30,
+                connect_timeout=30,
+                pool_timeout=30
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка при запуске webhook: {e}")
+            logger.info("🔄 Переключение на polling mode...")
+            application.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
     else:
         logger.warning("🔄 Запуск в режиме POLLING (не рекомендуется для Render)")
         logger.warning("⚠️ Убедитесь, что установлены USE_WEBHOOK=true и WEBHOOK_URL")
@@ -1162,4 +1199,19 @@ def main():
         )
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("🛑 Получен сигнал остановки")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка при запуске: {e}", exc_info=True)
+    finally:
+        # НОВОЕ: Корректное завершение работы
+        try:
+            if executor:
+                executor.shutdown(wait=True, timeout=10)
+                logger.info("✅ ThreadPoolExecutor корректно завершен")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при завершении executor: {e}")
+        
+        logger.info("👋 Бот завершен")
