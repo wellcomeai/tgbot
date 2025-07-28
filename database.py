@@ -14,9 +14,9 @@ class Database:
         """Инициализация базы данных для Render с Disk"""
         if db_path is None:
             # Проверяем переменную окружения для Render Disk
-            render_disk_path = os.environ.get('RENDER_DISK_PATH')
+            render_disk_path = os.environ.get('RENDER_DISK_PATH', '/data')
             
-            if render_disk_path:
+            if render_disk_path and os.path.exists(render_disk_path):
                 # Используем Render Disk для persistent storage
                 db_dir = Path(render_disk_path)
                 logger.info(f"🗄️ Используем Render Disk: {db_dir}")
@@ -383,7 +383,7 @@ class Database:
                 'db_path': self.db_path,
                 'db_size_mb': round(os.path.getsize(self.db_path) / (1024 * 1024), 2) if os.path.exists(self.db_path) else 0,
                 'disk_space_mb': self._get_disk_space(),
-                'render_disk_path': os.environ.get('RENDER_DISK_PATH'),
+                'render_disk_path': os.environ.get('RENDER_DISK_PATH', '/data'),
                 'wal_files': self._check_wal_files()
             }
             
