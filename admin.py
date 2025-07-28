@@ -17,7 +17,7 @@ class AdminPanel:
         self.broadcast_drafts = {}  # Словарь для хранения черновиков массовых рассылок
     
     async def safe_edit_or_send_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup=None, parse_mode='HTML'):
-        """Безопасное редактирование или отправка сообщения с обработкой ошибок"""
+        """ИСПРАВЛЕННАЯ безопасная отправка/редактирование сообщения"""
         try:
             if update.callback_query:
                 try:
@@ -47,7 +47,17 @@ class AdminPanel:
             return sent_message
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке/редактировании сообщения: {e}")
+            # ИСПРАВЛЕНО: Более точная обработка ошибок event loop
+            error_msg = str(e)
+            if 'Event loop is closed' in error_msg:
+                logger.warning(f"⚠️ Event loop закрыт при отправке сообщения админу: {error_msg}")
+                return None
+            elif 'RuntimeError' in error_msg and 'closed' in error_msg:
+                logger.warning(f"⚠️ Runtime ошибка с закрытым ресурсом: {error_msg}")
+                return None
+            else:
+                logger.error(f"❌ Ошибка при отправке/редактировании сообщения: {e}")
+                
             # Попытка отправить новое сообщение в случае ошибки
             try:
                 sent_message = await context.bot.send_message(
@@ -58,7 +68,8 @@ class AdminPanel:
                 )
                 return sent_message
             except Exception as e2:
-                logger.error(f"❌ Критическая ошибка при отправке сообщения: {e2}")
+                if 'Event loop is closed' not in str(e2):
+                    logger.error(f"❌ Критическая ошибка при отправке сообщения: {e2}")
                 return None
     
     def parse_delay_input(self, text):
@@ -207,7 +218,7 @@ class AdminPanel:
             text = "❌ <b>Ошибка при получении статистики платежей</b>"
             keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_back")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='HTML')
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
             return
         
         text = (
@@ -241,11 +252,7 @@ class AdminPanel:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     async def handle_payment_message_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, input_type: str):
         """Обработка ввода для сообщения после оплаты"""
@@ -369,11 +376,7 @@ class AdminPanel:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        sent_message = await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     async def show_broadcast_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать статус рассылки"""
@@ -398,11 +401,7 @@ class AdminPanel:
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        sent_message = await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     async def show_broadcast_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать меню управления рассылкой"""
@@ -437,11 +436,7 @@ class AdminPanel:
             "💡 <i>Все ссылки в сообщениях автоматически получают UTM метки для отслеживания конверсий.</i>"
         )
         
-        sent_message = await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     # ===== СИСТЕМА МАССОВЫХ РАССЫЛОК =====
     
@@ -525,11 +520,7 @@ class AdminPanel:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        sent_message = await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     async def show_mass_broadcast_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать предварительный просмотр массовой рассылки"""
@@ -587,27 +578,33 @@ class AdminPanel:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         # Отправляем превью
-        sent_message = await context.bot.send_message(
-            chat_id=user_id,
-            text=preview_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-        
-        # Если есть фото, отправляем его для предпросмотра
-        if draft["photo_data"]:
-            try:
-                await context.bot.send_photo(
-                    chat_id=user_id,
-                    photo=draft["photo_data"],
-                    caption="📸 <b>Предпросмотр фото:</b>",
-                    parse_mode='HTML'
-                )
-            except Exception as e:
-                logger.error(f"❌ Ошибка при отправке предпросмотра фото: {e}")
+        try:
+            sent_message = await context.bot.send_message(
+                chat_id=user_id,
+                text=preview_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            
+            # Если есть фото, отправляем его для предпросмотра
+            if draft["photo_data"]:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=draft["photo_data"],
+                        caption="📸 <b>Предпросмотр фото:</b>",
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    if 'Event loop is closed' not in str(e):
+                        logger.error(f"❌ Ошибка при отправке предпросмотра фото: {e}")
+        except Exception as e:
+            # ИСПРАВЛЕНО: Проверяем на event loop ошибки
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"❌ Ошибка при отправке предпросмотра: {e}")
     
     async def execute_mass_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Выполнить массовую рассылку"""
+        """ИСПРАВЛЕННАЯ версия выполнения массовой рассылки"""
         user_id = update.effective_user.id
         
         if user_id not in self.broadcast_drafts:
@@ -672,14 +669,17 @@ class AdminPanel:
                 await update.callback_query.answer("🚀 Начинаем рассылку...")
                 
                 # Отправляем прогресс для больших рассылок
+                progress_message = None
                 if len(users_with_bot) > 50:
-                    progress_message = await context.bot.send_message(
-                        chat_id=user_id,
-                        text="🚀 <b>Рассылка начата...</b>\n\n📊 Прогресс: 0%",
-                        parse_mode='HTML'
-                    )
-                else:
-                    progress_message = None
+                    try:
+                        progress_message = await context.bot.send_message(
+                            chat_id=user_id,
+                            text="🚀 <b>Рассылка начата...</b>\n\n📊 Прогресс: 0%",
+                            parse_mode='HTML'
+                        )
+                    except Exception as e:
+                        if 'Event loop is closed' not in str(e):
+                            logger.error(f"❌ Ошибка при отправке сообщения прогресса: {e}")
                 
                 for i, user in enumerate(users_with_bot):
                     user_id_to_send = user[0]
@@ -727,12 +727,15 @@ class AdminPanel:
                                     f"✅ Отправлено: {sent_count}/{len(users_with_bot)}",
                                     parse_mode='HTML'
                                 )
-                            except:
-                                pass
+                            except Exception as e:
+                                # ИСПРАВЛЕНО: Игнорируем ошибки event loop при обновлении прогресса
+                                if 'Event loop is closed' not in str(e):
+                                    logger.warning(f"⚠️ Ошибка при обновлении прогресса: {e}")
                         
                     except Exception as e:
                         failed_count += 1
-                        logger.error(f"❌ Не удалось отправить рассылку пользователю {user_id_to_send}: {e}")
+                        if 'Event loop is closed' not in str(e):
+                            logger.error(f"❌ Не удалось отправить рассылку пользователю {user_id_to_send}: {e}")
                 
                 result_text = (
                     f"✅ <b>Рассылка завершена!</b>\n\n"
@@ -746,18 +749,23 @@ class AdminPanel:
                 del self.broadcast_drafts[user_id]
             
             # Отправляем результат
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=result_text,
-                parse_mode='HTML'
-            )
-            
-            # Возвращаемся в главное меню через 3 секунды
-            await asyncio.sleep(3)
-            await self.show_main_menu_safe(update, context)
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=result_text,
+                    parse_mode='HTML'
+                )
+                
+                # Возвращаемся в главное меню через 3 секунды
+                await asyncio.sleep(3)
+                await self.show_main_menu_safe(update, context)
+            except Exception as e:
+                if 'Event loop is closed' not in str(e):
+                    logger.error(f"❌ Ошибка при отправке результата рассылки: {e}")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при выполнении рассылки: {e}")
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"❌ Ошибка при выполнении рассылки: {e}")
             await update.callback_query.answer("❌ Ошибка при отправке рассылки!", show_alert=True)
     
     async def show_main_menu_safe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -784,12 +792,16 @@ class AdminPanel:
         
         text = "🔧 <b>Админ-панель</b>\n\nВыберите действие:"
         
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"❌ Ошибка при отправке безопасного меню: {e}")
     
     # ===== ОСТАЛЬНЫЕ МЕТОДЫ =====
     
@@ -822,11 +834,7 @@ class AdminPanel:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     async def send_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отправить CSV файл с пользователями"""
@@ -847,7 +855,8 @@ class AdminPanel:
             await update.callback_query.answer("CSV файл отправлен!")
             
         except Exception as e:
-            logger.error(f"Ошибка при отправке CSV: {e}")
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"Ошибка при отправке CSV: {e}")
             await update.callback_query.answer("Ошибка при создании файла!", show_alert=True)
     
     async def request_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, input_type, **kwargs):
@@ -885,11 +894,7 @@ class AdminPanel:
         keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="admin_send_all")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     def _get_delay_text(self, message_number):
         """Получить текст для ввода задержки"""
@@ -916,7 +921,8 @@ class AdminPanel:
             )
             return sent_message
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке нового сообщения меню: {e}")
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"❌ Ошибка при отправке нового сообщения меню: {e}")
             return None
     
     async def show_send_all_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1151,6 +1157,310 @@ class AdminPanel:
             f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
         )
         
+        await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
+    
+    async def show_message_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
+        """Показать меню управления кнопками сообщения"""
+        buttons = self.db.get_message_buttons(message_number)
+        
+        keyboard = []
+        
+        for button_id, button_text, button_url, position in buttons:
+            keyboard.append([InlineKeyboardButton(f"📝 {button_text}", callback_data=f"edit_button_{button_id}")])
+        
+        if len(buttons) < 3:  # Максимум 3 кнопки
+            keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data=f"add_button_{message_number}")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"edit_msg_{message_number}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"🔘 <b>Кнопки сообщения {message_number}</b>\n\n"
+            f"Текущие кнопки: {len(buttons)}/3\n\n"
+            "💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
+            "Выберите кнопку для редактирования или добавьте новую:"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_button_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
+        """Показать меню редактирования кнопки"""
+        # Получаем информацию о кнопке
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT message_number, button_text, button_url 
+            FROM message_buttons 
+            WHERE id = ?
+        ''', (button_id,))
+        button_data = cursor.fetchone()
+        conn.close()
+        
+        if not button_data:
+            await update.callback_query.answer("Кнопка не найдена!", show_alert=True)
+            return
+        
+        message_number, button_text, button_url = button_data
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
+            [InlineKeyboardButton("🔗 Изменить URL", callback_data=f"edit_button_url_{button_id}")],
+            [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
+            [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"🔘 <b>Редактирование кнопки</b>\n\n"
+            f"<b>Текст:</b> {button_text}\n"
+            f"<b>URL:</b> {button_url}\n\n"
+            f"💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
+            "Выберите действие:"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_welcome_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования приветственного сообщения"""
+        welcome_data = self.db.get_welcome_message()
+        welcome_buttons = self.db.get_welcome_buttons()
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_welcome_text")],
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_welcome_photo")]
+        ]
+        
+        if welcome_data['photo']:
+            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_welcome_photo")])
+        
+        # Управление кнопками
+        keyboard.append([InlineKeyboardButton("⌨️ Управление кнопками", callback_data="manage_welcome_buttons")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Добавляем информацию о кнопках
+        buttons_info = ""
+        if welcome_buttons:
+            buttons_info = f"\n\n<b>⌨️ Кнопки ({len(welcome_buttons)}):</b>\n"
+            for i, (button_id, button_text, position) in enumerate(welcome_buttons, 1):
+                buttons_info += f"{i}. {button_text}\n"
+        
+        message_text = (
+            "👋 <b>Приветственное сообщение</b>\n\n"
+            f"<b>Текущий текст:</b>\n{welcome_data['text']}\n\n"
+            f"<b>Фото:</b> {'Есть' if welcome_data['photo'] else 'Нет'}"
+            f"{buttons_info}"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
+    
+    async def show_welcome_buttons_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню управления кнопками приветственного сообщения"""
+        welcome_buttons = self.db.get_welcome_buttons()
+        
+        keyboard = []
+        
+        for button_id, button_text, position in welcome_buttons:
+            keyboard.append([InlineKeyboardButton(f"⌨️ {button_text}", callback_data=f"edit_welcome_button_{button_id}")])
+        
+        if len(welcome_buttons) < 5:  # Максимум 5 кнопок
+            keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data="add_welcome_button")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_welcome")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"⌨️ <b>Кнопки приветствия</b>\n\n"
+            f"Текущие кнопки: {len(welcome_buttons)}/5\n\n"
+            "Выберите кнопку для редактирования или добавьте новую:"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_goodbye_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования прощального сообщения"""
+        goodbye_data = self.db.get_goodbye_message()
+        goodbye_buttons = self.db.get_goodbye_buttons()
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_goodbye_text")],
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_goodbye_photo")]
+        ]
+        
+        if goodbye_data['photo']:
+            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_goodbye_photo")])
+        
+        # Управление кнопками
+        keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data="manage_goodbye_buttons")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Добавляем информацию о кнопках
+        buttons_info = ""
+        if goodbye_buttons:
+            buttons_info = f"\n<b>Кнопки ({len(goodbye_buttons)}):</b>\n"
+            for i, (button_id, button_text, button_url, position) in enumerate(goodbye_buttons, 1):
+                buttons_info += f"{i}. {button_text} → {button_url}\n"
+        
+        message_text = (
+            "😢 <b>Прощальное сообщение</b>\n\n"
+            f"<b>Текущий текст:</b>\n{goodbye_data['text']}\n\n"
+            f"<b>Фото:</b> {'Есть' if goodbye_data['photo'] else 'Нет'}"
+            f"{buttons_info}"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
+    
+    async def show_success_message_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню редактирования сообщения подтверждения"""
+        # Получаем текущее сообщение подтверждения
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM settings WHERE key = "success_message"')
+        success_msg = cursor.fetchone()
+        conn.close()
+        
+        if success_msg:
+            current_message = success_msg[0]
+        else:
+            current_message = (
+                "👋 <b>Добро пожаловать!</b>\n\n"
+                "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
+                "📚 <b>Вы получите доступ к:</b>\n"
+                "• Эксклюзивным материалам\n"
+                "• Полезным советам и инструкциям\n"
+                "• Актуальным новостям\n"
+                "• Поддержке сообщества\n\n"
+                "🙏 <b>Спасибо, что подписались!</b>\n\n"
+                "💬 Если у вас есть вопросы - не стесняйтесь писать!"
+            )
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_success_message_text")],
+            [InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_success_message")],
+            [InlineKeyboardButton("« Назад", callback_data="admin_back")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message_text = (
+            "✅ <b>Сообщение подтверждения</b>\n\n"
+            "Это сообщение отправляется пользователям после успешной подписки.\n\n"
+            f"<b>Текущий текст:</b>\n{current_message}"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
+    
+    async def show_scheduled_broadcasts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать запланированные рассылки"""
+        broadcasts = self.db.get_scheduled_broadcasts(include_sent=False)
+        
+        keyboard = []
+        
+        if broadcasts:
+            for broadcast_id, message_text, photo_url, scheduled_time, is_sent, created_at in broadcasts:
+                scheduled_dt = datetime.fromisoformat(scheduled_time)
+                time_str = scheduled_dt.strftime("%d.%m %H:%M")
+                
+                # Получаем количество кнопок
+                buttons = self.db.get_scheduled_broadcast_buttons(broadcast_id)
+                button_icon = f"🔘{len(buttons)}" if buttons else ""
+                photo_icon = "🖼" if photo_url else ""
+                
+                short_text = message_text[:20] + "..." if len(message_text) > 20 else message_text
+                button_display = f"{photo_icon}{button_icon} {time_str}: {short_text}"
+                keyboard.append([InlineKeyboardButton(button_display, callback_data=f"edit_scheduled_broadcast_{broadcast_id}")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            "⏰ <b>Запланированные рассылки</b>\n\n"
+            f"Активных рассылок: {len(broadcasts)}\n\n"
+            "🖼 - сообщение с фото\n"
+            "🔘N - количество кнопок\n\n"
+            "💡 <i>Все ссылки получат UTM метки для отслеживания.</i>\n\n"
+            "Выберите рассылку для редактирования:"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    # ===== МЕТОДЫ ДЛЯ УПРАВЛЕНИЯ КНОПКАМИ ПРОЩАНИЯ =====
+    
+    async def show_goodbye_buttons_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню управления кнопками прощального сообщения"""
+        goodbye_buttons = self.db.get_goodbye_buttons()
+        
+        keyboard = []
+        
+        for button_id, button_text, button_url, position in goodbye_buttons:
+            keyboard.append([InlineKeyboardButton(f"🔘 {button_text}", callback_data=f"edit_goodbye_button_{button_id}")])
+        
+        if len(goodbye_buttons) < 5:  # Максимум 5 кнопок
+            keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data="add_goodbye_button")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_goodbye")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"🔘 <b>Кнопки прощания</b>\n\n"
+            f"Текущие кнопки: {len(goodbye_buttons)}/5\n\n"
+            "💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
+            "Выберите кнопку для редактирования или добавьте новую:"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    # ===== ИНИЦИАЛИЗАЦИЯ =====
+    
+    async def initialize_admin_panel(self):
+        """Инициализация админ-панели"""
+        logger.info("🔧 Инициализация админ-панели...")
+        
+        # Проверяем статус рассылки
+        broadcast_status = self.db.get_broadcast_status()
+        if broadcast_status['auto_resume_time']:
+            resume_time = datetime.fromisoformat(broadcast_status['auto_resume_time'])
+            if datetime.now() >= resume_time:
+                self.db.set_broadcast_status(True, None)
+                logger.info("✅ Рассылка автоматически возобновлена")
+        
+        logger.info("✅ Админ-панель инициализирована")
+    
+    def get_admin_stats(self) -> dict:
+        """Получить статистику админ-панели"""
+        return {
+            "waiting_states": len(self.waiting_for),
+            "broadcast_drafts": len(self.broadcast_drafts),
+            "broadcast_enabled": self.db.get_broadcast_status()['enabled'],
+            "total_users": len(self.db.get_users_with_bot_started()),
+            "total_broadcast_messages": len(self.db.get_all_broadcast_messages()),
+            "scheduled_broadcasts": len(self.db.get_scheduled_broadcasts())
+        }
+    
+    def __del__(self):
+        """Деструктор для очистки ресурсов"""
+        try:
+            # Очищаем все состояния ожидания
+            if hasattr(self, 'waiting_for'):
+                self.waiting_for.clear()
+            
+            # Очищаем черновики рассылок
+            if hasattr(self, 'broadcast_drafts'):
+                self.broadcast_drafts.clear()
+                
+            logger.debug("🧹 Админ-панель очищена")
+        except Exception as e:
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"❌ Ошибка при очистке админ-панели: {e}")
+}\n\n"
+            f"<b>Задержка:</b> {delay_str} после регистрации\n"
+            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
+            f"{buttons_info}\n\n"
+            f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
+        )
+        
         await self.send_new_menu_message(context, user_id, message_text, reply_markup)
     
     async def show_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
@@ -1256,12 +1566,16 @@ class AdminPanel:
     # ===== ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ =====
     
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик всех callback запросов админ-панели"""
+        """ИСПРАВЛЕННАЯ обработка всех callback запросов админ-панели"""
         query = update.callback_query
         data = query.data
         user_id = query.from_user.id
         
-        await query.answer()
+        try:
+            await query.answer()
+        except Exception as e:
+            if 'Event loop is closed' not in str(e):
+                logger.warning(f"⚠️ Ошибка при ответе на callback: {e}")
         
         try:
             # Основные команды
@@ -1438,7 +1752,8 @@ class AdminPanel:
                 await self.show_error_message(update, context, "❌ Неизвестная команда.")
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка при обработке callback {data}: {e}")
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"❌ Ошибка при обработке callback {data}: {e}")
             await self.show_error_message(update, context, "❌ Произошла ошибка. Попробуйте еще раз.")
     
     async def show_error_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, error_text: str):
@@ -1450,18 +1765,22 @@ class AdminPanel:
             del self.waiting_for[user_id]
         
         # Отправляем сообщение об ошибке
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=error_text,
-            parse_mode='HTML'
-        )
-        
-        # Показываем главное меню через 2 секунды
-        await asyncio.sleep(2)
-        await self.show_main_menu_safe(update, context)
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=error_text,
+                parse_mode='HTML'
+            )
+            
+            # Показываем главное меню через 2 секунды
+            await asyncio.sleep(2)
+            await self.show_main_menu_safe(update, context)
+        except Exception as e:
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"❌ Ошибка при отправке сообщения об ошибке: {e}")
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик текстовых сообщений и фото от админа"""
+        """ИСПРАВЛЕННАЯ обработка текстовых сообщений и фото от админа"""
         user_id = update.effective_user.id
         
         if user_id not in self.waiting_for:
@@ -1613,7 +1932,8 @@ class AdminPanel:
                 await self.show_error_message(update, context, "❌ Неизвестный тип ввода.")
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка при обработке сообщения от админа {user_id}: {e}")
+            if 'Event loop is closed' not in str(e):
+                logger.error(f"❌ Ошибка при обработке сообщения от админа {user_id}: {e}")
             await self.show_error_message(update, context, "❌ Произошла ошибка при обработке вашего сообщения.")
     
     # ===== ОБРАБОТЧИКИ ДЛЯ МАССОВОЙ РАССЫЛКИ =====
@@ -1898,6 +2218,21 @@ class AdminPanel:
             await update.message.reply_text("✅ Ссылка на фото для сообщения после оплаты сохранена!")
             del self.waiting_for[user_id]
             await self.show_payment_message_edit_from_context(update, context)
+        
+        elif input_type == "mass_photo":
+            if user_id not in self.broadcast_drafts:
+                self.broadcast_drafts[user_id] = {
+                    "message_text": "",
+                    "photo_data": None,
+                    "buttons": [],
+                    "scheduled_hours": None,
+                    "created_at": datetime.now()
+                }
+            
+            self.broadcast_drafts[user_id]["photo_data"] = url
+            await update.message.reply_text("✅ Ссылка на фото сохранена!")
+            del self.waiting_for[user_id]
+            await self.show_send_all_menu_from_context(update, context)
     
     # ===== МЕТОДЫ ДЛЯ ОБРАБОТКИ ОСТАЛЬНЫХ CALLBACK =====
     
@@ -1938,10 +2273,10 @@ class AdminPanel:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await query.edit_message_text(
-                text=f"⚠️ Вы уверены, что хотите удалить сообщение {message_number}?\n\nЭто также отменит все запланированные отправки этого сообщения.",
-                reply_markup=reply_markup,
-                parse_mode='HTML'
+            await self.safe_edit_or_send_message(
+                update, context,
+                f"⚠️ Вы уверены, что хотите удалить сообщение {message_number}?\n\nЭто также отменит все запланированные отправки этого сообщения.",
+                reply_markup
             )
         elif data.startswith("confirm_delete_"):
             message_number = int(data.split("_")[2])
@@ -2096,312 +2431,4 @@ class AdminPanel:
         
         message_text = (
             f"📝 <b>Сообщение {message_number}</b>\n\n"
-            f"<b>Текущий текст:</b>\n{text}\n\n"
-            f"<b>Задержка:</b> {delay_str} после регистрации\n"
-            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
-            f"{buttons_info}\n\n"
-            f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
-        )
-        
-        await update.callback_query.edit_message_text(
-            text=message_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
-    async def show_message_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
-        """Показать меню управления кнопками сообщения"""
-        buttons = self.db.get_message_buttons(message_number)
-        
-        keyboard = []
-        
-        for button_id, button_text, button_url, position in buttons:
-            keyboard.append([InlineKeyboardButton(f"📝 {button_text}", callback_data=f"edit_button_{button_id}")])
-        
-        if len(buttons) < 3:  # Максимум 3 кнопки
-            keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data=f"add_button_{message_number}")])
-        
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"edit_msg_{message_number}")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        text = (
-            f"🔘 <b>Кнопки сообщения {message_number}</b>\n\n"
-            f"Текущие кнопки: {len(buttons)}/3\n\n"
-            "💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
-            "Выберите кнопку для редактирования или добавьте новую:"
-        )
-        
-        await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
-    async def show_button_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
-        """Показать меню редактирования кнопки"""
-        # Получаем информацию о кнопке
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT message_number, button_text, button_url 
-            FROM message_buttons 
-            WHERE id = ?
-        ''', (button_id,))
-        button_data = cursor.fetchone()
-        conn.close()
-        
-        if not button_data:
-            await update.callback_query.answer("Кнопка не найдена!", show_alert=True)
-            return
-        
-        message_number, button_text, button_url = button_data
-        
-        keyboard = [
-            [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
-            [InlineKeyboardButton("🔗 Изменить URL", callback_data=f"edit_button_url_{button_id}")],
-            [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
-            [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        text = (
-            f"🔘 <b>Редактирование кнопки</b>\n\n"
-            f"<b>Текст:</b> {button_text}\n"
-            f"<b>URL:</b> {button_url}\n\n"
-            f"💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
-            "Выберите действие:"
-        )
-        
-        await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
-    async def show_welcome_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню редактирования приветственного сообщения"""
-        welcome_data = self.db.get_welcome_message()
-        welcome_buttons = self.db.get_welcome_buttons()
-        
-        keyboard = [
-            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_welcome_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_welcome_photo")]
-        ]
-        
-        if welcome_data['photo']:
-            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_welcome_photo")])
-        
-        # Управление кнопками
-        keyboard.append([InlineKeyboardButton("⌨️ Управление кнопками", callback_data="manage_welcome_buttons")])
-        
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Добавляем информацию о кнопках
-        buttons_info = ""
-        if welcome_buttons:
-            buttons_info = f"\n\n<b>⌨️ Кнопки ({len(welcome_buttons)}):</b>\n"
-            for i, (button_id, button_text, position) in enumerate(welcome_buttons, 1):
-                buttons_info += f"{i}. {button_text}\n"
-        
-        message_text = (
-            "👋 <b>Приветственное сообщение</b>\n\n"
-            f"<b>Текущий текст:</b>\n{welcome_data['text']}\n\n"
-            f"<b>Фото:</b> {'Есть' if welcome_data['photo'] else 'Нет'}"
-            f"{buttons_info}"
-        )
-        
-        await update.callback_query.edit_message_text(
-            text=message_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
-    async def show_welcome_buttons_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню управления кнопками приветственного сообщения"""
-        welcome_buttons = self.db.get_welcome_buttons()
-        
-        keyboard = []
-        
-        for button_id, button_text, position in welcome_buttons:
-            keyboard.append([InlineKeyboardButton(f"⌨️ {button_text}", callback_data=f"edit_welcome_button_{button_id}")])
-        
-        if len(welcome_buttons) < 5:  # Максимум 5 кнопок
-            keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data="add_welcome_button")])
-        
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_welcome")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        text = (
-            f"⌨️ <b>Кнопки приветствия</b>\n\n"
-            f"Текущие кнопки: {len(welcome_buttons)}/5\n\n"
-            "Выберите кнопку для редактирования или добавьте новую:"
-        )
-        
-        await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
-    async def show_goodbye_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню редактирования прощального сообщения"""
-        goodbye_data = self.db.get_goodbye_message()
-        goodbye_buttons = self.db.get_goodbye_buttons()
-        
-        keyboard = [
-            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_goodbye_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_goodbye_photo")]
-        ]
-        
-        if goodbye_data['photo']:
-            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_goodbye_photo")])
-        
-        # Управление кнопками
-        keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data="manage_goodbye_buttons")])
-        
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Добавляем информацию о кнопках
-        buttons_info = ""
-        if goodbye_buttons:
-            buttons_info = f"\n<b>Кнопки ({len(goodbye_buttons)}):</b>\n"
-            for i, (button_id, button_text, button_url, position) in enumerate(goodbye_buttons, 1):
-                buttons_info += f"{i}. {button_text} → {button_url}\n"
-        
-        message_text = (
-            "😢 <b>Прощальное сообщение</b>\n\n"
-            f"<b>Текущий текст:</b>\n{goodbye_data['text']}\n\n"
-            f"<b>Фото:</b> {'Есть' if goodbye_data['photo'] else 'Нет'}"
-            f"{buttons_info}"
-        )
-        
-        await update.callback_query.edit_message_text(
-            text=message_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
-    async def show_success_message_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню редактирования сообщения подтверждения"""
-        # Получаем текущее сообщение подтверждения
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT value FROM settings WHERE key = "success_message"')
-        success_msg = cursor.fetchone()
-        conn.close()
-        
-        if success_msg:
-            current_message = success_msg[0]
-        else:
-            current_message = (
-                "👋 <b>Добро пожаловать!</b>\n\n"
-                "🚀 Теперь вы полноценный участник нашего сообщества!\n\n"
-                "📚 <b>Вы получите доступ к:</b>\n"
-                "• Эксклюзивным материалам\n"
-                "• Полезным советам и инструкциям\n"
-                "• Актуальным новостям\n"
-                "• Поддержке сообщества\n\n"
-                "🙏 <b>Спасибо, что подписались!</b>\n\n"
-                "💬 Если у вас есть вопросы - не стесняйтесь писать!"
-            )
-        
-        keyboard = [
-            [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_success_message_text")],
-            [InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_success_message")],
-            [InlineKeyboardButton("« Назад", callback_data="admin_back")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        message_text = (
-            "✅ <b>Сообщение подтверждения</b>\n\n"
-            "Это сообщение отправляется пользователям после успешной подписки.\n\n"
-            f"<b>Текущий текст:</b>\n{current_message}"
-        )
-        
-        await update.callback_query.edit_message_text(
-            text=message_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
-    async def show_scheduled_broadcasts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать запланированные рассылки"""
-        broadcasts = self.db.get_scheduled_broadcasts(include_sent=False)
-        
-        keyboard = []
-        
-        if broadcasts:
-            for broadcast_id, message_text, photo_url, scheduled_time, is_sent, created_at in broadcasts:
-                scheduled_dt = datetime.fromisoformat(scheduled_time)
-                time_str = scheduled_dt.strftime("%d.%m %H:%M")
-                
-                # Получаем количество кнопок
-                buttons = self.db.get_scheduled_broadcast_buttons(broadcast_id)
-                button_icon = f"🔘{len(buttons)}" if buttons else ""
-                photo_icon = "🖼" if photo_url else ""
-                
-                short_text = message_text[:20] + "..." if len(message_text) > 20 else message_text
-                button_display = f"{photo_icon}{button_icon} {time_str}: {short_text}"
-                keyboard.append([InlineKeyboardButton(button_display, callback_data=f"edit_scheduled_broadcast_{broadcast_id}")])
-        
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        text = (
-            "⏰ <b>Запланированные рассылки</b>\n\n"
-            f"Активных рассылок: {len(broadcasts)}\n\n"
-            "🖼 - сообщение с фото\n"
-            "🔘N - количество кнопок\n\n"
-            "💡 <i>Все ссылки получат UTM метки для отслеживания.</i>\n\n"
-            "Выберите рассылку для редактирования:"
-        )
-        
-        await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
-    # ===== ИНИЦИАЛИЗАЦИЯ =====
-    
-    async def initialize_admin_panel(self):
-        """Инициализация админ-панели"""
-        logger.info("🔧 Инициализация админ-панели...")
-        
-        # Проверяем статус рассылки
-        broadcast_status = self.db.get_broadcast_status()
-        if broadcast_status['auto_resume_time']:
-            resume_time = datetime.fromisoformat(broadcast_status['auto_resume_time'])
-            if datetime.now() >= resume_time:
-                self.db.set_broadcast_status(True, None)
-                logger.info("✅ Рассылка автоматически возобновлена")
-        
-        logger.info("✅ Админ-панель инициализирована")
-    
-    def get_admin_stats(self) -> dict:
-        """Получить статистику админ-панели"""
-        return {
-            "waiting_states": len(self.waiting_for),
-            "broadcast_drafts": len(self.broadcast_drafts),
-            "broadcast_enabled": self.db.get_broadcast_status()['enabled'],
-            "total_users": len(self.db.get_users_with_bot_started()),
-            "total_broadcast_messages": len(self.db.get_all_broadcast_messages()),
-            "scheduled_broadcasts": len(self.db.get_scheduled_broadcasts())
-        }
-    
-    def __del__(self):
-        """Деструктор для очистки ресурсов"""
-        try:
-            # Очищаем все состояния ожидания
-            if hasattr(self, 'waiting_for'):
-                self.waiting_for.clear()
-            
-            # Очищаем черновики рассылок
-            if hasattr(self, 'broadcast_drafts'):
-                self.broadcast_drafts.clear()
-                
-            logger.debug("🧹 Админ-панель очищена")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при очистке админ-панели: {e}")
+            f"<b>Текущий текст:</b>\n{text
