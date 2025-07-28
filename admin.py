@@ -6,6 +6,7 @@ import logging
 import io
 import re
 import asyncio
+import utm_utils
 
 logger = logging.getLogger(__name__)
 
@@ -685,9 +686,6 @@ class AdminPanel:
                     user_id_to_send = user[0]
                     try:
                         await asyncio.sleep(0.1)  # Небольшая задержка
-                        
-                        # ВАЖНО: Импортируем utm_utils для обработки ссылок
-                        import utm_utils
                         
                         # Обрабатываем текст и кнопки с UTM метками
                         processed_text = utm_utils.process_text_links(draft["message_text"], user_id_to_send)
@@ -1454,8 +1452,6 @@ class AdminPanel:
         except Exception as e:
             if 'Event loop is closed' not in str(e):
                 logger.error(f"❌ Ошибка при очистке админ-панели: {e}")
-        
-        await self.send_new_menu_message(context, user_id, message_text, reply_markup)
     
     async def show_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
         """ИСПРАВЛЕННАЯ версия - отправляем НОВОЕ сообщение"""
@@ -2425,4 +2421,11 @@ class AdminPanel:
         
         message_text = (
             f"📝 <b>Сообщение {message_number}</b>\n\n"
-            f"<b>Текущий текст:</b>\n{text}"
+            f"<b>Текущий текст:</b>\n{text}\n\n"
+            f"<b>Задержка:</b> {delay_str} после регистрации\n"
+            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
+            f"{buttons_info}\n\n"
+            f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
