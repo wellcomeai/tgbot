@@ -1349,7 +1349,7 @@ class AdminPanel:
         text = (
             f"⚠️ <b>Подтверждение удаления</b>\n\n"
             f"Вы уверены, что хотите удалить кнопку:\n"
-            f"<b>"{button_text}"</b>?"
+            f'<b>"{button_text}"</b>?'
         )
         
         await self.safe_edit_or_send_message(update, context, text, reply_markup)
