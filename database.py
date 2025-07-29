@@ -1199,54 +1199,89 @@ class Database:
             if conn:
                 conn.close()
     
-    def add_goodbye_button(self, button_text, button_url, position=1):
-        """Добавление кнопки к прощальному сообщению"""
+    def add_goodbye_button(self, button_text, button_url):
+        """Добавить инлайн кнопку прощания с URL"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         try:
+            # Получаем максимальную позицию
+            cursor.execute('SELECT MAX(position) FROM goodbye_buttons')
+            max_pos = cursor.fetchone()[0]
+            position = (max_pos or 0) + 1
+            
             cursor.execute('''
                 INSERT INTO goodbye_buttons (button_text, button_url, position)
                 VALUES (?, ?, ?)
             ''', (button_text, button_url, position))
             
+            button_id = cursor.lastrowid
             conn.commit()
-            logger.info(f"Добавлена кнопка прощания: {button_text}")
+            logger.info(f"Добавлена инлайн кнопка прощания: {button_text} -> {button_url}")
+            return button_id
         finally:
             if conn:
                 conn.close()
     
     def update_goodbye_button(self, button_id, button_text=None, button_url=None):
-        """Обновление кнопки прощального сообщения"""
+        """Обновление инлайн кнопки прощального сообщения"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         try:
-            if button_text is not None:
+            # Обновляем оба поля одновременно если переданы оба значения
+            if button_text is not None and button_url is not None:
                 cursor.execute('''
-                    UPDATE goodbye_buttons SET button_text = ? WHERE id = ?
+                    UPDATE goodbye_buttons 
+                    SET button_text = ?, button_url = ?
+                    WHERE id = ?
+                ''', (button_text, button_url, button_id))
+            # Обновляем только текст
+            elif button_text is not None:
+                cursor.execute('''
+                    UPDATE goodbye_buttons 
+                    SET button_text = ?
+                    WHERE id = ?
                 ''', (button_text, button_id))
-            
-            if button_url is not None:
+            # Обновляем только URL
+            elif button_url is not None:
                 cursor.execute('''
-                    UPDATE goodbye_buttons SET button_url = ? WHERE id = ?
+                    UPDATE goodbye_buttons 
+                    SET button_url = ?
+                    WHERE id = ?
                 ''', (button_url, button_id))
             
             conn.commit()
-            logger.info(f"Обновлена кнопка прощания #{button_id}")
+            logger.info(f"Обновлена инлайн кнопка прощания #{button_id}")
         finally:
             if conn:
                 conn.close()
     
     def delete_goodbye_button(self, button_id):
-        """Удаление кнопки прощального сообщения"""
+        """Удаление инлайн кнопки прощального сообщения"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         try:
-            cursor.execute('DELETE FROM goodbye_buttons WHERE id = ?', (button_id,))
-            conn.commit()
-            logger.info(f"Удалена кнопка прощания #{button_id}")
+            # Получаем позицию удаляемой кнопки
+            cursor.execute('SELECT position FROM goodbye_buttons WHERE id = ?', (button_id,))
+            result = cursor.fetchone()
+            
+            if result:
+                position = result[0]
+                
+                # Удаляем кнопку
+                cursor.execute('DELETE FROM goodbye_buttons WHERE id = ?', (button_id,))
+                
+                # Обновляем позиции оставшихся кнопок
+                cursor.execute('''
+                    UPDATE goodbye_buttons 
+                    SET position = position - 1 
+                    WHERE position > ?
+                ''', (position,))
+                
+                conn.commit()
+                logger.info(f"Удалена инлайн кнопка прощания #{button_id}")
         finally:
             if conn:
                 conn.close()
