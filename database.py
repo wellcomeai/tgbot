@@ -1182,6 +1182,23 @@ class Database:
             if conn:
                 conn.close()
     
+    def get_goodbye_button_by_text(self, button_text):
+        """Получить кнопку прощания по тексту"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT id, button_text, button_url, position 
+                FROM goodbye_buttons 
+                WHERE button_text = ?
+            ''', (button_text,))
+            button = cursor.fetchone()
+            return button
+        finally:
+            if conn:
+                conn.close()
+    
     def add_goodbye_button(self, button_text, button_url, position=1):
         """Добавление кнопки к прощальному сообщению"""
         conn = self._get_connection()
