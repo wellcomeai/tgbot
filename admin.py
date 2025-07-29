@@ -901,6 +901,9 @@ class AdminPanel:
             # НОВЫЕ ТИПЫ ДЛЯ КНОПОК ПРИВЕТСТВИЯ
             "add_welcome_button": "⌨️ Отправьте текст для новой кнопки приветствия:",
             "edit_welcome_button_text": "📝 Отправьте новый текст для кнопки:",
+            # НОВЫЕ ТИПЫ ДЛЯ КНОПОК ПРОЩАНИЯ
+            "add_goodbye_button": "🔘 Отправьте текст для новой кнопки прощания:",
+            "edit_goodbye_button_text": "📝 Отправьте новый текст для кнопки:",
         }
         
         text = texts.get(input_type, "Отправьте необходимые данные:")
@@ -1071,9 +1074,9 @@ class AdminPanel:
         
         buttons_info = ""
         if goodbye_buttons:
-            buttons_info = f"\n<b>Кнопки ({len(goodbye_buttons)}):</b>\n"
-            for i, (button_id, button_text, button_url, position) in enumerate(goodbye_buttons, 1):
-                buttons_info += f"{i}. {button_text} → {button_url}\n"
+            buttons_info = f"\n\n<b>🔘 Кнопки ({len(goodbye_buttons)}):</b>\n"
+            for i, (button_id, button_text, position) in enumerate(goodbye_buttons, 1):
+                buttons_info += f"{i}. {button_text}\n"
         
         message_text = (
             "😢 <b>Прощальное сообщение</b>\n\n"
@@ -1459,6 +1462,53 @@ class AdminPanel:
         # Показываем меню редактирования кнопки
         await self.show_welcome_button_edit_from_context(update, context, button_id)
     
+    async def handle_add_goodbye_button_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка добавления новой кнопки прощания"""
+        user_id = update.effective_user.id
+        
+        if len(text) > 30:
+            await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 30 символов.")
+            return
+        
+        # Проверяем уникальность
+        existing_button = self.db.get_goodbye_button_by_text(text)
+        if existing_button:
+            await update.message.reply_text("❌ Кнопка с таким текстом уже существует!")
+            return
+        
+        # Добавляем кнопку
+        button_id = self.db.add_goodbye_button(text)
+        
+        await update.message.reply_text(f"✅ Кнопка '{text}' добавлена!")
+        del self.waiting_for[user_id]
+        
+        # Показываем обновленный список
+        await self.show_goodbye_buttons_management_from_context(update, context)
+    
+    async def handle_edit_goodbye_button_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка изменения текста кнопки прощания"""
+        user_id = update.effective_user.id
+        button_id = self.waiting_for[user_id]["button_id"]
+        
+        if len(text) > 30:
+            await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 30 символов.")
+            return
+        
+        # Проверяем уникальность (исключая текущую кнопку)
+        existing_button = self.db.get_goodbye_button_by_text(text)
+        if existing_button and existing_button[0] != button_id:
+            await update.message.reply_text("❌ Кнопка с таким текстом уже существует!")
+            return
+        
+        # Обновляем кнопку
+        self.db.update_goodbye_button(button_id, button_text=text)
+        
+        await update.message.reply_text(f"✅ Текст кнопки обновлен!")
+        del self.waiting_for[user_id]
+        
+        # Показываем меню редактирования кнопки
+        await self.show_goodbye_button_edit_from_context(update, context, button_id)
+    
     async def show_goodbye_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать меню редактирования прощального сообщения"""
         goodbye_data = self.db.get_goodbye_message()
@@ -1481,9 +1531,9 @@ class AdminPanel:
         # Добавляем информацию о кнопках
         buttons_info = ""
         if goodbye_buttons:
-            buttons_info = f"\n<b>Кнопки ({len(goodbye_buttons)}):</b>\n"
-            for i, (button_id, button_text, button_url, position) in enumerate(goodbye_buttons, 1):
-                buttons_info += f"{i}. {button_text} → {button_url}\n"
+            buttons_info = f"\n\n<b>🔘 Кнопки ({len(goodbye_buttons)}):</b>\n"
+            for i, (button_id, button_text, position) in enumerate(goodbye_buttons, 1):
+                buttons_info += f"{i}. {button_text}\n"
         
         message_text = (
             "😢 <b>Прощальное сообщение</b>\n\n"
@@ -1575,23 +1625,137 @@ class AdminPanel:
         
         keyboard = []
         
-        for button_id, button_text, button_url, position in goodbye_buttons:
-            keyboard.append([InlineKeyboardButton(f"🔘 {button_text}", callback_data=f"edit_goodbye_button_{button_id}")])
+        # Показать существующие кнопки для редактирования
+        for button_id, button_text, position in goodbye_buttons:
+            keyboard.append([InlineKeyboardButton(f"📝 {button_text}", callback_data=f"edit_goodbye_button_{button_id}")])
         
-        if len(goodbye_buttons) < 5:  # Максимум 5 кнопок
+        # Кнопка добавления (лимит 5 кнопок)
+        if len(goodbye_buttons) < 5:
             keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data="add_goodbye_button")])
         
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_goodbye")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         text = (
-            f"🔘 <b>Кнопки прощания</b>\n\n"
+            f"🔘 <b>Механические кнопки прощания</b>\n\n"
             f"Текущие кнопки: {len(goodbye_buttons)}/5\n\n"
-            "💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
             "Выберите кнопку для редактирования или добавьте новую:"
         )
         
         await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_goodbye_button_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id: int):
+        """Показать меню редактирования конкретной кнопки прощания"""
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, button_text, position FROM goodbye_buttons WHERE id = ?', (button_id,))
+        button_data = cursor.fetchone()
+        conn.close()
+        
+        if not button_data:
+            await update.callback_query.answer("❌ Кнопка не найдена!", show_alert=True)
+            return
+        
+        button_id, button_text, position = button_data
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_goodbye_button_text_{button_id}")],
+            [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_goodbye_button_{button_id}")],
+            [InlineKeyboardButton("« Назад", callback_data="manage_goodbye_buttons")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"🔘 <b>Редактирование кнопки</b>\n\n"
+            f"<b>Текст кнопки:</b> {button_text}\n\n"
+            "Выберите действие:"
+        )
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_goodbye_button_delete_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id: int):
+        """Показать подтверждение удаления кнопки прощания"""
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT button_text FROM goodbye_buttons WHERE id = ?', (button_id,))
+        button_data = cursor.fetchone()
+        conn.close()
+        
+        if not button_data:
+            await update.callback_query.answer("❌ Кнопка не найдена!", show_alert=True)
+            return
+        
+        button_text = button_data[0]
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_goodbye_button_{button_id}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data=f"edit_goodbye_button_{button_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"⚠️ <b>Подтверждение удаления</b>\n\n"
+            f"Вы уверены, что хотите удалить кнопку:\n"
+            f'<b>"{button_text}"</b>?'
+        )
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_goodbye_buttons_management_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Безопасное отображение управления кнопками прощания из контекста"""
+        user_id = update.effective_user.id
+        
+        goodbye_buttons = self.db.get_goodbye_buttons()
+        
+        keyboard = []
+        
+        for button_id, button_text, position in goodbye_buttons:
+            keyboard.append([InlineKeyboardButton(f"📝 {button_text}", callback_data=f"edit_goodbye_button_{button_id}")])
+        
+        if len(goodbye_buttons) < 5:
+            keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data="add_goodbye_button")])
+        
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_goodbye")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"🔘 <b>Механические кнопки прощания</b>\n\n"
+            f"Текущие кнопки: {len(goodbye_buttons)}/5\n\n"
+            "Выберите кнопку для редактирования или добавьте новую:"
+        )
+        
+        await self.send_new_menu_message(context, user_id, text, reply_markup)
+    
+    async def show_goodbye_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id: int):
+        """Безопасное отображение редактирования кнопки прощания из контекста"""
+        user_id = update.effective_user.id
+        
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, button_text, position FROM goodbye_buttons WHERE id = ?', (button_id,))
+        button_data = cursor.fetchone()
+        conn.close()
+        
+        if not button_data:
+            await context.bot.send_message(chat_id=user_id, text="❌ Кнопка не найдена!")
+            return
+        
+        button_id, button_text, position = button_data
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_goodbye_button_text_{button_id}")],
+            [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_goodbye_button_{button_id}")],
+            [InlineKeyboardButton("« Назад", callback_data="manage_goodbye_buttons")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = (
+            f"🔘 <b>Редактирование кнопки</b>\n\n"
+            f"<b>Текст кнопки:</b> {button_text}\n\n"
+            "Выберите действие:"
+        )
+        
+        await self.send_new_menu_message(context, user_id, text, reply_markup)
     
     # ===== ИНИЦИАЛИЗАЦИЯ =====
     
@@ -1901,6 +2065,24 @@ class AdminPanel:
                 await self.show_welcome_edit(update, context)
             
             # ===== ОБРАБОТЧИКИ ДЛЯ ПРОЩАЛЬНОГО СООБЩЕНИЯ =====
+            elif data == "manage_goodbye_buttons":
+                await self.show_goodbye_buttons_management(update, context)
+            elif data == "add_goodbye_button":
+                await self.request_text_input(update, context, "add_goodbye_button")
+            elif data.startswith("edit_goodbye_button_") and not data.startswith("edit_goodbye_button_text_"):
+                button_id = int(data.split("_")[3])
+                await self.show_goodbye_button_edit(update, context, button_id)
+            elif data.startswith("edit_goodbye_button_text_"):
+                button_id = int(data.split("_")[4])
+                await self.request_text_input(update, context, "edit_goodbye_button_text", button_id=button_id)
+            elif data.startswith("delete_goodbye_button_"):
+                button_id = int(data.split("_")[3])
+                await self.show_goodbye_button_delete_confirm(update, context, button_id)
+            elif data.startswith("confirm_delete_goodbye_button_"):
+                button_id = int(data.split("_")[4])
+                self.db.delete_goodbye_button(button_id)
+                await query.answer("✅ Кнопка удалена!")
+                await self.show_goodbye_buttons_management(update, context)
             elif data == "edit_goodbye_text":
                 await self.request_text_input(update, context, "goodbye")
             elif data == "edit_goodbye_photo":
@@ -2000,6 +2182,12 @@ class AdminPanel:
                 await self.handle_add_welcome_button_input(update, context, text)
             elif input_type == "edit_welcome_button_text":
                 await self.handle_edit_welcome_button_text_input(update, context, text)
+            
+            # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ КНОПОК ПРОЩАНИЯ =====
+            elif input_type == "add_goodbye_button":
+                await self.handle_add_goodbye_button_input(update, context, text)
+            elif input_type == "edit_goodbye_button_text":
+                await self.handle_edit_goodbye_button_text_input(update, context, text)
                 
             # ===== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПЛАТЕЖЕЙ =====
             elif input_type == "payment_message_text":
@@ -2492,9 +2680,6 @@ class AdminPanel:
                 "✏️ Отправьте текст нового сообщения:\n\n💡 После этого мы попросим задержку для отправки.",
                 InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_broadcast")]])
             )
-        # Управление кнопками прощания
-        elif data == "manage_goodbye_buttons":
-            await self.show_goodbye_buttons_management(update, context)
         else:
             return False  # Не обработано
         
