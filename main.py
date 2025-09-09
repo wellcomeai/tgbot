@@ -3,6 +3,9 @@ import os
 import sys
 import asyncio
 import json
+import threading
+import queue
+import time
 from pathlib import Path
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated, Message, Chat, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Bot
@@ -13,8 +16,8 @@ from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
 from flask import Flask, request, jsonify
-import threading
 import concurrent.futures
+import utm_utils
 
 # Настройка логирования для Render
 logging.basicConfig(
@@ -40,8 +43,6 @@ CHANNEL_ID = os.environ.get('CHANNEL_ID')
 RENDER_PORT = int(os.environ.get('PORT', '10000'))
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 USE_WEBHOOK = os.environ.get('USE_WEBHOOK', 'true').lower() == 'true'
-
-# ИСПРАВЛЕНО: Настройка для Render Disk - правильный путь
 RENDER_DISK_PATH = os.environ.get('RENDER_DISK_PATH', '/data')
 
 # Проверка обязательных переменных
@@ -70,17 +71,15 @@ logger.info(f"   👤 Admin ID: {ADMIN_CHAT_ID}")
 logger.info(f"   📢 Channel: {CHANNEL_ID}")
 
 # ===== ИНИЦИАЛИЗАЦИЯ КОМПОНЕНТОВ =====
-# Создаём базу данных с учётом Render Disk
 try:
     if RENDER_DISK_PATH:
         logger.info(f"🗄️ Используем Render Disk для базы данных: {RENDER_DISK_PATH}")
-        os.environ['RENDER_DISK_PATH'] = RENDER_DISK_PATH  # Устанавливаем переменную для Database
+        os.environ['RENDER_DISK_PATH'] = RENDER_DISK_PATH
         db = Database()
     else:
         logger.warning("⚠️ RENDER_DISK_PATH не настроен, используем локальное хранилище")
         db = Database()
     
-    # Выводим информацию о базе данных
     db_info = db.get_database_info()
     logger.info(f"📊 База данных: {db_info}")
     
@@ -96,55 +95,84 @@ scheduler = MessageScheduler(db)
 bot_application = None
 bot_instance = None
 
-# ===== FLASK ПРИЛОЖЕНИЕ ДЛЯ WEBHOOK'ОВ =====
-flask_app = Flask(__name__)
+# ===== ОПТИМИЗИРОВАННАЯ WEBHOOK ОБРАБОТКА =====
+webhook_loop = None
+webhook_thread = None
+webhook_queue = queue.Queue()
 
-# ✅ ИСПРАВЛЕНО: Глобальный executor для изоляции асинхронных задач
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+def init_webhook_processor():
+    """Инициализация обработчика webhook в отдельном потоке с долгоживущим event loop"""
+    global webhook_loop, webhook_thread
+    
+    def run_webhook_loop():
+        global webhook_loop
+        webhook_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(webhook_loop)
+        logger.info("🔄 Webhook event loop инициализирован")
+        webhook_loop.run_forever()
+    
+    webhook_thread = threading.Thread(target=run_webhook_loop, daemon=True)
+    webhook_thread.start()
+    
+    # Ждем инициализации
+    time.sleep(0.2)
+    logger.info("✅ Webhook processor готов")
+
+def process_webhook_updates():
+    """Обработчик очереди webhook updates с оптимизированной производительностью"""
+    processed_count = 0
+    
+    while True:
+        try:
+            if not webhook_queue.empty():
+                update_data = webhook_queue.get(timeout=1)
+                
+                if webhook_loop and not webhook_loop.is_closed():
+                    try:
+                        update = Update.de_json(update_data, bot_instance)
+                        
+                        # Асинхронная обработка без ожидания результата
+                        future = asyncio.run_coroutine_threadsafe(
+                            bot_application.process_update(update), 
+                            webhook_loop
+                        )
+                        
+                        processed_count += 1
+                        if processed_count % 100 == 0:
+                            logger.info(f"📊 Обработано webhook updates: {processed_count}")
+                            
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обработки update {update_data.get('update_id', 'unknown')}: {e}")
+                else:
+                    logger.error("❌ Webhook loop недоступен")
+                    time.sleep(1)
+            else:
+                time.sleep(0.1)  # Короткая пауза если очередь пуста
+                
+        except queue.Empty:
+            continue
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в process_webhook_updates: {e}")
+            time.sleep(1)
+
+# ===== FLASK ПРИЛОЖЕНИЕ С ОПТИМИЗИРОВАННЫМИ WEBHOOK'АМИ =====
+flask_app = Flask(__name__)
 
 @flask_app.route(f'/bot{BOT_TOKEN}', methods=['POST'])
 def telegram_webhook():
-    """ИСПРАВЛЕННАЯ обработка Telegram webhook через Flask"""
+    """🚀 ОПТИМИЗИРОВАННЫЙ Telegram webhook handler без создания event loop"""
     try:
-        # Получаем данные от Telegram
         update_data = request.get_json()
         
         if not update_data:
             logger.warning("⚠️ Получен пустой Telegram webhook")
             return jsonify({'ok': False}), 400
         
-        logger.debug(f"📱 Получен Telegram update: {update_data.get('update_id')}")
+        update_id = update_data.get('update_id', 'unknown')
+        logger.debug(f"📱 Получен Telegram update: {update_id}")
         
-        # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor с изолированным event loop
-        def process_update_safe():
-            """Безопасная обработка update в отдельном потоке с новым event loop"""
-            try:
-                # КРИТИЧЕСКИ ВАЖНО: Создаем новый event loop для каждого потока
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                try:
-                    # Создаем Update объект
-                    update = Update.de_json(update_data, bot_instance)
-                    
-                    # Обрабатываем update
-                    if bot_application:
-                        loop.run_until_complete(bot_application.process_update(update))
-                    
-                    logger.debug(f"✅ Update {update_data.get('update_id')} обработан успешно")
-                    
-                finally:
-                    # ВАЖНО: Правильно закрываем loop
-                    try:
-                        loop.close()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Ошибка при закрытии event loop: {e}")
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка в безопасной обработке update: {e}", exc_info=True)
-        
-        # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor для лучшего управления потоками
-        executor.submit(process_update_safe)
+        # Просто добавляем в очередь - без создания event loop
+        webhook_queue.put(update_data)
         
         return jsonify({'ok': True})
         
@@ -154,9 +182,8 @@ def telegram_webhook():
 
 @flask_app.route('/webhook/payment', methods=['POST'])
 def payment_webhook():
-    """ИСПРАВЛЕННАЯ обработка Payment webhook"""
+    """💰 УЛУЧШЕННАЯ обработка Payment webhook с validation"""
     try:
-        # Получаем платежные данные
         payment_data = request.get_json()
         
         if not payment_data:
@@ -193,48 +220,23 @@ def payment_webhook():
             logger.error(f"❌ Пользователь {user_id} не найден")
             return jsonify({'error': 'User not found'}), 404
         
-        # ИСПРАВЛЕНИЕ: Безопасная обработка в отдельном потоке
-        def process_payment_safe():
-            """Безопасная обработка платежа в отдельном потоке"""
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                try:
-                    success = loop.run_until_complete(handle_successful_payment(user_id, amount, payment_data))
-                    return success
-                finally:
-                    try:
-                        loop.close()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Ошибка при закрытии event loop в payment: {e}")
-                        
-            except Exception as e:
-                logger.error(f"❌ Ошибка в безопасной обработке платежа: {e}")
-                return False
-        
         # Обрабатываем только успешные платежи
         if payment_status == 'success':
-            # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor с таймаутом
-            future = executor.submit(process_payment_safe)
+            # Добавляем в очередь webhook для асинхронной обработки
+            payment_webhook_data = {
+                'type': 'payment_success',
+                'user_id': user_id,
+                'amount': amount,
+                'webhook_data': payment_data
+            }
+            webhook_queue.put(payment_webhook_data)
             
-            try:
-                success = future.result(timeout=30)  # Ждём максимум 30 секунд
-                
-                if success:
-                    logger.info(f"✅ Успешно обработан платеж для пользователя {user_id}")
-                    return jsonify({
-                        'status': 'success',
-                        'message': 'Payment processed successfully',
-                        'user_id': user_id
-                    }), 200
-                else:
-                    logger.error(f"❌ Ошибка при обработке платежа для пользователя {user_id}")
-                    return jsonify({'error': 'Payment processing failed'}), 500
-                    
-            except concurrent.futures.TimeoutError:
-                logger.error(f"❌ Таймаут при обработке платежа для пользователя {user_id}")
-                return jsonify({'error': 'Payment processing timeout'}), 500
+            logger.info(f"✅ Платеж добавлен в очередь обработки для пользователя {user_id}")
+            return jsonify({
+                'status': 'queued',
+                'message': 'Payment queued for processing',
+                'user_id': user_id
+            }), 200
         else:
             # Логируем неуспешные платежи
             db.log_payment(user_id, amount, payment_status, payment_data.get('utm_source'), payment_data.get('utm_id'))
@@ -250,9 +252,8 @@ def payment_webhook():
 
 @flask_app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint с подробной диагностикой"""
+    """🏥 Health check endpoint с подробной диагностикой"""
     try:
-        # Получаем информацию о базе данных
         db_info = db.get_database_info()
         
         health_data = {
@@ -267,7 +268,8 @@ def health_check():
             'render_disk_configured': RENDER_DISK_PATH is not None,
             'render_disk_path': RENDER_DISK_PATH,
             'webhook_url': WEBHOOK_URL,
-            'executor_threads': len(executor._threads) if hasattr(executor, '_threads') else 'N/A'
+            'webhook_queue_size': webhook_queue.qsize(),
+            'webhook_loop_running': webhook_loop is not None and not webhook_loop.is_closed() if webhook_loop else False
         }
         
         return jsonify(health_data)
@@ -280,12 +282,12 @@ def health_check():
             'timestamp': datetime.now().isoformat()
         }), 500
 
+# ===== ОБРАБОТКА ПЛАТЕЖЕЙ =====
 async def handle_successful_payment(user_id: int, amount: str, webhook_data: dict) -> bool:
     """Асинхронная обработка успешного платежа"""
     try:
         logger.info(f"💰 Обрабатываем успешный платеж для пользователя {user_id}")
         
-        # Получаем UTM данные
         utm_source = webhook_data.get('utm_source', '')
         utm_id = webhook_data.get('utm_id', '')
         
@@ -317,11 +319,9 @@ async def handle_successful_payment(user_id: int, amount: str, webhook_data: dic
 async def send_payment_success_notification(user_id: int, amount: str):
     """Отправка уведомления об успешной оплате"""
     try:
-        # Получаем настроенное сообщение
         message_data = db.get_payment_success_message()
         
         if not message_data or not message_data.get('text'):
-            # Сообщение по умолчанию
             message_text = (
                 "🎉 <b>Спасибо за покупку!</b>\n\n"
                 f"💰 Платеж на сумму {amount} руб. успешно обработан.\n\n"
@@ -334,7 +334,6 @@ async def send_payment_success_notification(user_id: int, amount: str):
             message_text = message_data.get('text', '').replace('{amount}', str(amount))
             photo_url = message_data.get('photo_url')
         
-        # Отправляем сообщение
         if photo_url:
             await bot_instance.send_photo(
                 chat_id=user_id,
@@ -375,16 +374,13 @@ class CallbackHandler:
         try:
             logger.info(f"🚀 Выполняем логику /start для пользователя {user_id}")
             
-            # Шаг 1: Помечаем пользователя как начавшего разговор с ботом
             mark_success = db.mark_user_started_bot(user_id)
             if not mark_success:
                 logger.error(f"❌ Не удалось пометить пользователя {user_id} как начавшего разговор")
                 return False
             
-            # Небольшая задержка для обеспечения консистентности БД
             await asyncio.sleep(0.1)
             
-            # Шаг 2: Планируем сообщения рассылки
             schedule_success = await scheduler.schedule_user_messages(context, user_id)
             if not schedule_success:
                 logger.error(f"❌ Не удалось запланировать сообщения для пользователя {user_id}")
@@ -402,29 +398,24 @@ class CallbackHandler:
         try:
             logger.info(f"⌨️ Пользователь {user_id} нажал механическую кнопку: {button_text}")
             
-            # Сначала выполняем стандартную логику /start
             start_success = await self.execute_start_logic(user_id, context, None)
             if not start_success:
                 logger.error(f"❌ Не удалось выполнить логику /start для пользователя {user_id}")
                 return False
             
-            # Находим кнопку по тексту
             button_data = self.db.get_welcome_button_by_text(button_text)
             
             if not button_data:
                 logger.warning(f"⚠️ Кнопка с текстом '{button_text}' не найдена")
-                return True  # Возвращаем True, так как основная логика /start выполнена
+                return True
             
             button_id = button_data[0]
-            
-            # Получаем последующие сообщения для этой кнопки
             follow_messages = self.db.get_welcome_follow_messages(button_id)
             
             if not follow_messages:
                 logger.info(f"ℹ️ Нет последующих сообщений для кнопки {button_id}")
                 return True
             
-            # Отправляем все последующие сообщения
             for msg_id, msg_num, text, photo_url in follow_messages:
                 try:
                     if photo_url:
@@ -442,8 +433,6 @@ class CallbackHandler:
                         )
                     
                     logger.info(f"✅ Отправлено последующее сообщение {msg_num} пользователю {user_id}")
-                    
-                    # Небольшая пауза между сообщениями
                     await asyncio.sleep(0.5)
                     
                 except Exception as e:
@@ -455,11 +444,9 @@ class CallbackHandler:
             logger.error(f"❌ Ошибка при обработке механической кнопки для пользователя {user_id}: {e}")
             return False
 
-# Создаем глобальный экземпляр callback handler
 callback_handler = CallbackHandler(db, scheduler)
 
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
-
 def is_our_channel(chat) -> bool:
     """✅ УЛУЧШЕННАЯ проверка что это наш канал с диагностикой"""
     try:
@@ -474,7 +461,7 @@ def is_our_channel(chat) -> bool:
         
         # Проверка по username (если канал публичный)
         if chat.username and CHANNEL_ID.startswith('@'):
-            expected_username = CHANNEL_ID[1:]  # убираем @
+            expected_username = CHANNEL_ID[1:]
             if chat.username == expected_username:
                 logger.debug(f"✅ Match by username: @{chat.username}")
                 return True
@@ -488,18 +475,23 @@ def is_our_channel(chat) -> bool:
         logger.error(f"❌ Error in is_our_channel: {e}")
         return False
 
+# ===== УЛУЧШЕННЫЕ ФУНКЦИИ ОТПРАВКИ СООБЩЕНИЙ =====
 async def send_welcome_message(user, context: ContextTypes.DEFAULT_TYPE):
-    """Отправка приветственного сообщения"""
+    """✅ УЛУЧШЕННАЯ отправка приветственного сообщения с диагностикой"""
     try:
+        logger.info(f"📤 Preparing welcome message for user {user.id}")
+        
         welcome_data = db.get_welcome_message()
         welcome_buttons = db.get_welcome_buttons()
         
-        # Создаем клавиатуру
+        logger.debug(f"🔍 Welcome config for user {user.id}:")
+        logger.debug(f"   Text length: {len(welcome_data.get('text', ''))}")
+        logger.debug(f"   Has photo: {bool(welcome_data.get('photo'))}")
+        logger.debug(f"   Mechanical buttons: {len(welcome_buttons) if welcome_buttons else 0}")
+        
         reply_markup = None
         
-        # Сначала проверяем, есть ли кнопки, настроенные админом
         if welcome_buttons:
-            # Используем механические кнопки (кнопки клавиатуры)
             keyboard = []
             for button_id, button_text, position in welcome_buttons:
                 keyboard.append([KeyboardButton(button_text)])
@@ -510,9 +502,8 @@ async def send_welcome_message(user, context: ContextTypes.DEFAULT_TYPE):
                 one_time_keyboard=True,
                 input_field_placeholder="Выберите действие..."
             )
-            logger.info(f"📱 Создана клавиатура с {len(welcome_buttons)} механическими кнопками")
+            logger.debug(f"⌨️ Created {len(keyboard)} mechanical buttons for user {user.id}")
         else:
-            # Используем стандартные кнопки
             keyboard = [
                 [KeyboardButton("✅ Согласиться на получение уведомлений")],
                 [KeyboardButton("📋 Что я буду получать?")],
@@ -524,11 +515,11 @@ async def send_welcome_message(user, context: ContextTypes.DEFAULT_TYPE):
                 one_time_keyboard=True,
                 input_field_placeholder="Выберите действие..."
             )
-            logger.info("📱 Создана стандартная клавиатуру")
+            logger.debug("📱 Created standard keyboard for user {user.id}")
         
         # Отправляем приветственное сообщение
-        if welcome_data['photo']:
-            await context.bot.send_photo(
+        if welcome_data.get('photo'):
+            sent_message = await context.bot.send_photo(
                 chat_id=user.id,
                 photo=welcome_data['photo'],
                 caption=welcome_data['text'],
@@ -536,67 +527,221 @@ async def send_welcome_message(user, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
         else:
-            await context.bot.send_message(
+            sent_message = await context.bot.send_message(
                 chat_id=user.id,
                 text=welcome_data['text'],
                 parse_mode='HTML',
                 reply_markup=reply_markup
             )
         
-        logger.info(f"✅ Приветственное сообщение отправлено пользователю {user.id}")
+        logger.info(f"✅ Welcome message sent to user {user.id}, message_id: {sent_message.message_id}")
         
     except Forbidden:
-        logger.warning(f"⚠️ Не удалось отправить приветственное сообщение пользователю {user.id}: пользователь не начал диалог с ботом")
+        logger.warning(f"⚠️ User {user.id} blocked bot - welcome not delivered")
+        raise
     except Exception as e:
-        logger.error(f"❌ Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
+        logger.error(f"❌ Error sending welcome to user {user.id}: {e}")
+        raise
 
 async def send_goodbye_message(user, context: ContextTypes.DEFAULT_TYPE):
-    """Отправка прощального сообщения"""
+    """✅ УЛУЧШЕННАЯ отправка прощального сообщения с диагностикой"""
     try:
+        logger.info(f"📤 Preparing goodbye message for user {user.id}")
+        
         goodbye_data = db.get_goodbye_message()
+        if not goodbye_data:
+            logger.error(f"❌ No goodbye message configured")
+            return
+            
         goodbye_buttons = db.get_goodbye_buttons()
         
+        logger.debug(f"🔍 Goodbye config for user {user.id}:")
+        logger.debug(f"   Text length: {len(goodbye_data.get('text', ''))}")
+        logger.debug(f"   Has photo: {bool(goodbye_data.get('photo'))}")  
+        logger.debug(f"   Buttons count: {len(goodbye_buttons) if goodbye_buttons else 0}")
+        
+        # Подготавливаем кнопки с UTM метками
         reply_markup = None
         if goodbye_buttons:
             keyboard = []
             for button_id, button_text, button_url, position in goodbye_buttons:
-                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                processed_url = utm_utils.add_utm_to_url(button_url, user.id)
+                keyboard.append([InlineKeyboardButton(button_text, url=processed_url)])
             reply_markup = InlineKeyboardMarkup(keyboard)
+            logger.debug(f"🔘 Prepared {len(keyboard)} goodbye buttons with UTM for user {user.id}")
         
-        if goodbye_data['photo']:
-            await context.bot.send_photo(
+        # Отправляем сообщение
+        message_text = goodbye_data.get('text', 'До свидания!')
+        photo_url = goodbye_data.get('photo')
+        
+        if photo_url:
+            logger.debug(f"🖼️ Sending goodbye with photo to user {user.id}")
+            sent_message = await context.bot.send_photo(
                 chat_id=user.id,
-                photo=goodbye_data['photo'], 
-                caption=goodbye_data['text'],
+                photo=photo_url, 
+                caption=message_text,
                 parse_mode='HTML',
                 reply_markup=reply_markup
             )
         else:
-            await context.bot.send_message(
+            logger.debug(f"📝 Sending text goodbye to user {user.id}")
+            sent_message = await context.bot.send_message(
                 chat_id=user.id,
-                text=goodbye_data['text'],
+                text=message_text,
                 parse_mode='HTML', 
                 reply_markup=reply_markup
             )
             
-        logger.info(f"✅ Прощальное сообщение отправлено пользователю {user.id}")
+        logger.info(f"✅ Goodbye message sent to user {user.id}, message_id: {sent_message.message_id}")
         
-    except Forbidden:
-        logger.warning(f"⚠️ Не удалось отправить прощальное сообщение пользователю {user.id}: пользователь заблокировал бота")
+    except Forbidden as e:
+        logger.info(f"ℹ️ User {user.id} has blocked bot - goodbye not delivered: {e}")
+        raise
+        
     except BadRequest as e:
-        logger.warning(f"⚠️ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
+        error_msg = str(e).lower()
+        if "chat not found" in error_msg:
+            logger.info(f"ℹ️ Chat with user {user.id} not found - expected after channel leave: {e}")
+        elif "user is deactivated" in error_msg:
+            logger.info(f"ℹ️ User {user.id} account is deactivated: {e}")
+        elif "message text is empty" in error_msg:
+            logger.error(f"❌ Empty goodbye message configured: {e}")
+        else:
+            logger.warning(f"⚠️ BadRequest sending goodbye to user {user.id}: {e}")
+        raise
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка при отправке прощального сообщения пользователю {user.id}: {e}")
+        logger.error(f"❌ Unexpected error sending goodbye to user {user.id}: {e}", exc_info=True)
+        raise
 
-# ===== ✅ УЛУЧШЕННЫЙ ОБРАБОТЧИК СОБЫТИЙ КАНАЛА С ДИАГНОСТИКОЙ =====
+# ===== RETRY ФУНКЦИИ =====
+async def send_welcome_with_retry(user, context: ContextTypes.DEFAULT_TYPE, max_retries=2):
+    """Отправка приветствия с retry логикой"""
+    for attempt in range(max_retries + 1):
+        try:
+            await send_welcome_message(user, context)
+            return True
+            
+        except Forbidden as e:
+            logger.warning(f"⚠️ User {user.id} blocked bot - cannot send welcome: {e}")
+            return False
+            
+        except BadRequest as e:
+            logger.warning(f"⚠️ BadRequest for welcome to user {user.id}: {e}")
+            if attempt < max_retries:
+                await asyncio.sleep(0.5)
+                continue
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Attempt {attempt + 1} failed for welcome to user {user.id}: {e}")
+            if attempt < max_retries:
+                await asyncio.sleep(1)
+                continue
+            return False
+    
+    return False
+
+async def send_goodbye_with_retry(user, context: ContextTypes.DEFAULT_TYPE, max_retries=3):
+    """Отправка прощания с расширенной retry логикой и диагностикой"""
+    logger.info(f"👋 Attempting to send goodbye to user {user.id}")
+    
+    for attempt in range(max_retries + 1):
+        try:
+            logger.debug(f"🔍 Goodbye attempt {attempt + 1} for user {user.id}")
+            
+            # Проверяем, что пользователь существует в БД и активен
+            user_info = db.get_user(user.id)
+            if not user_info:
+                logger.warning(f"⚠️ User {user.id} not found in database for goodbye")
+                return False
+                
+            is_active = user_info[4] if len(user_info) > 4 else True
+            logger.debug(f"🔍 User {user.id} active status: {is_active}")
+            
+            await send_goodbye_message(user, context)
+            
+            logger.info(f"✅ Goodbye message sent to user {user.id} on attempt {attempt + 1}")
+            return True
+            
+        except Forbidden as e:
+            logger.info(f"ℹ️ User {user.id} blocked bot (expected on channel leave): {e}")
+            return False
+            
+        except BadRequest as e:
+            error_msg = str(e).lower()
+            if "chat not found" in error_msg or "user not found" in error_msg:
+                logger.info(f"ℹ️ User {user.id} chat not accessible (expected): {e}")
+                return False
+            else:
+                logger.warning(f"⚠️ BadRequest for goodbye to user {user.id}: {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(0.5)
+                    continue
+                return False
+            
+        except Exception as e:
+            logger.error(f"❌ Attempt {attempt + 1} failed for goodbye to user {user.id}: {e}")
+            if attempt < max_retries:
+                await asyncio.sleep(1)
+                continue
+            return False
+    
+    logger.error(f"❌ All {max_retries + 1} attempts failed for goodbye to user {user.id}")
+    return False
+
+# ===== ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА =====
+async def handle_user_joined(user, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка вступления в канал"""
+    try:
+        logger.info(f"👋 PROCESSING JOIN: User {user.id} (@{user.username})")
+        
+        success = db.add_user(user.id, user.username, user.first_name)
+        if not success:
+            logger.error(f"❌ Failed to add user {user.id} to database")
+            return
+            
+        logger.info(f"✅ User {user.id} added to database")
+        
+        welcome_sent = await send_welcome_with_retry(user, context)
+        if welcome_sent:
+            logger.info(f"✅ Welcome message sent to user {user.id}")
+        else:
+            logger.warning(f"⚠️ Failed to send welcome message to user {user.id}")
+            
+    except Exception as e:
+        logger.error(f"❌ Error handling user join for {user.id}: {e}", exc_info=True)
+
+async def handle_user_left(user, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выхода из канала с улучшенной логикой"""
+    try:
+        logger.info(f"🚪 PROCESSING LEAVE: User {user.id} (@{user.username})")
+        
+        # ✅ СНАЧАЛА отправляем прощальное сообщение (пока пользователь еще не деактивирован)
+        goodbye_sent = await send_goodbye_with_retry(user, context)
+        
+        # Небольшая задержка для завершения отправки
+        await asyncio.sleep(0.5)
+        
+        # Затем деактивируем пользователя
+        db.deactivate_user(user.id)
+        logger.info(f"❌ User {user.id} deactivated in database")
+        
+        # Отменяем запланированные сообщения
+        cancelled_count = db.cancel_user_messages(user.id)
+        logger.info(f"🚫 Cancelled {cancelled_count} scheduled messages for user {user.id}")
+        
+        # Результат
+        if goodbye_sent:
+            logger.info(f"✅ User {user.id} left - goodbye message sent")
+        else:
+            logger.warning(f"⚠️ User {user.id} left - goodbye message failed")
+            
+    except Exception as e:
+        logger.error(f"❌ Error handling user leave for {user.id}: {e}", exc_info=True)
 
 async def handle_chat_member_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✅ УЛУЧШЕННЫЙ ДИАГНОСТИЧЕСКИЙ обработчик изменений участников канала"""
-    
-    # ✅ НОВОЕ: Детальная диагностика всех событий
-    logger.info(f"🔍 CHAT_MEMBER EVENT RECEIVED:")
-    logger.info(f"   Update ID: {update.update_id}")
-    logger.info(f"   Has chat_member: {bool(update.chat_member)}")
+    """✅ УЛУЧШЕННЫЙ обработчик с детальной диагностикой и retry логикой"""
     
     if not update.chat_member:
         logger.warning("❌ No chat_member in update")
@@ -609,91 +754,62 @@ async def handle_chat_member_updates(update: Update, context: ContextTypes.DEFAU
         user = chat_member_update.new_chat_member.user
         chat = chat_member_update.chat
         
-        # ✅ ДЕТАЛЬНАЯ ДИАГНОСТИКА
-        logger.info(f"🔍 DETAILED EVENT INFO:")
-        logger.info(f"   User: {user.id} (@{user.username})")
-        logger.info(f"   Status change: {old_status} → {new_status}")
+        logger.info(f"🔍 CHAT_MEMBER EVENT DETAILED:")
+        logger.info(f"   User: {user.id} (@{user.username}) {user.first_name}")
+        logger.info(f"   Status: {old_status} → {new_status}")
         logger.info(f"   Chat: {chat.id} ({chat.title})")
-        logger.info(f"   Chat type: {chat.type}")
         logger.info(f"   Is bot: {user.is_bot}")
-        logger.info(f"   Expected channel: {CHANNEL_ID}")
+        logger.info(f"   Update ID: {update.update_id}")
         
         # Пропускаем ботов
         if user.is_bot:
             logger.debug(f"⏭️ Skipping bot user: {user.id}")
             return
         
-        # ✅ УЛУЧШЕННАЯ ПРОВЕРКА КАНАЛА
-        is_our_channel_result = is_our_channel(chat)
-        logger.info(f"🏠 Is our channel check: {is_our_channel_result}")
-        
-        if not is_our_channel_result:
-            logger.warning(f"❌ Event NOT from our channel:")
-            logger.warning(f"   Received from: {chat.id} ({chat.title})")
-            logger.warning(f"   Expected: {CHANNEL_ID}")
-            logger.warning(f"   Chat username: @{chat.username if chat.username else 'None'}")
+        # Проверка нашего канала
+        if not is_our_channel(chat):
+            logger.debug(f"❌ Event not from our channel: {chat.id} vs expected {CHANNEL_ID}")
             return
         
-        # ✅ ОПРЕДЕЛЯЕМ ТИП СОБЫТИЯ
-        joined = (old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED] and 
-                 new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER])
+        # ✅ БОЛЕЕ ТОЧНОЕ ОПРЕДЕЛЕНИЕ СОБЫТИЙ
+        join_statuses = [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, 
+                        ChatMemberStatus.RESTRICTED, ChatMemberStatus.KICKED]
+        active_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, 
+                          ChatMemberStatus.OWNER, ChatMemberStatus.CREATOR]
         
-        left = (old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and 
-               new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED])
+        joined = (old_status in join_statuses and new_status in active_statuses)
+        left = (old_status in active_statuses and new_status in join_statuses)
         
-        logger.info(f"📊 EVENT CLASSIFICATION:")
-        logger.info(f"   Joined: {joined}")
-        logger.info(f"   Left: {left}")
+        # Дополнительная логика для edge cases
+        if not joined and not left:
+            if old_status in active_statuses and new_status in active_statuses:
+                logger.debug(f"ℹ️ Status change within active statuses ignored: {old_status} → {new_status}")
+                return
+            
+            logger.warning(f"⚠️ Unhandled status change: {old_status} → {new_status}")
+            return
+        
+        logger.info(f"📊 EVENT TYPE: joined={joined}, left={left}")
         
         if joined:
-            # ===== ЛОГИКА ВСТУПЛЕНИЯ =====
-            logger.info(f"👋 PROCESSING JOIN: User {user.id} (@{user.username})")
-            logger.info(f"✅ User joined our channel - sending welcome")
-            
-            # Добавляем пользователя в базу данных
-            db.add_user(user.id, user.username, user.first_name)
-            
-            # Отправляем приветствие
-            await send_welcome_message(user, context)
-            
+            await handle_user_joined(user, context)
         elif left:
-            # ===== ЛОГИКА ВЫХОДА =====
-            logger.info(f"🚪 PROCESSING LEAVE: User {user.id} (@{user.username})")
-            logger.info(f"✅ User left our channel - processing...")
-            
-            # Деактивируем пользователя
-            db.deactivate_user(user.id)
-            logger.info(f"❌ User {user.id} deactivated in database")
-            
-            # Отменяем запланированные сообщения
-            db.cancel_user_messages(user.id)
-            logger.info(f"🚫 Cancelled scheduled messages for user {user.id}")
-            
-            # Отправляем прощальное сообщение
-            await send_goodbye_message(user, context)
-            
-        else:
-            # Другие изменения статуса (например, админ <-> участник)
-            logger.debug(f"ℹ️ Status change ignored: {old_status} → {new_status}")
+            await handle_user_left(user, context)
             
     except Exception as e:
-        logger.error(f"❌ Error in chat_member_updates: {e}", exc_info=True)
+        logger.error(f"❌ Critical error in chat_member_updates: {e}", exc_info=True)
 
-# ===== ДИАГНОСТИЧЕСКИЕ КОМАНДЫ (ТОЛЬКО ДЛЯ АДМИНА) =====
-
+# ===== ДИАГНОСТИЧЕСКИЕ КОМАНДЫ =====
 async def debug_channel_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✅ НОВАЯ диагностическая команда для проверки настроек канала"""
+    """✅ Диагностическая команда для проверки настроек канала"""
     user = update.effective_user
     
     if user.id != ADMIN_CHAT_ID:
         return
     
     try:
-        # Получаем информацию о канале
         chat = await context.bot.get_chat(CHANNEL_ID)
         bot_member = await context.bot.get_chat_member(CHANNEL_ID, context.bot.id)
-        
-        # Получаем последние обновления
         updates = await context.bot.get_updates(limit=5)
         
         diagnostics = f"""🔍 <b>ДИАГНОСТИКА КАНАЛА</b>
@@ -719,10 +835,9 @@ async def debug_channel_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         diagnostics += f"""
 
-⚡ <b>Проверка событий:</b>
-Попросите кого-то зайти/выйти из канала и проверьте логи на наличие:
-- "🔍 CHAT_MEMBER EVENT RECEIVED"
-- "📊 EVENT CLASSIFICATION"
+⚡ <b>Webhook состояние:</b>
+• Queue size: {webhook_queue.qsize()}
+• Loop running: {webhook_loop is not None and not webhook_loop.is_closed() if webhook_loop else False}
 
 🔧 <b>База данных:</b>
 • Активных пользователей: {len(db.get_users_with_bot_started())}
@@ -736,7 +851,7 @@ async def debug_channel_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"❌ Ошибка в debug_channel_info: {e}")
 
 async def check_webhook_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✅ НОВАЯ проверка информации о webhook (только для админа)"""
+    """✅ Проверка информации о webhook (только для админа)"""
     user = update.effective_user
     
     if user.id != ADMIN_CHAT_ID:
@@ -747,7 +862,7 @@ async def check_webhook_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         info_text = f"""🔗 <b>WEBHOOK INFO</b>
 
-📡 <b>Текущие настройки:</b>
+📡 <b>Telegram webhook:</b>
 • URL: {webhook_info.url or 'Not set'}
 • Pending updates: {webhook_info.pending_update_count}
 • Max connections: {webhook_info.max_connections}
@@ -758,9 +873,13 @@ async def check_webhook_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
 • Expected URL: {WEBHOOK_URL}/bot{BOT_TOKEN}
 • Configured port: {RENDER_PORT}
 
-🔧 <b>Flask endpoints:</b>
+🔧 <b>Наша обработка:</b>
+• Queue size: {webhook_queue.qsize()}
+• Loop status: {'Running' if webhook_loop and not webhook_loop.is_closed() else 'Stopped'}
+
+📡 <b>Flask endpoints:</b>
 • Telegram: /bot{BOT_TOKEN}
-• Payment: /webhook/payment
+• Payment: /webhook/payment  
 • Health: /health
 """
         
@@ -771,22 +890,18 @@ async def check_webhook_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"❌ Ошибка в check_webhook_info: {e}")
 
 # ===== TELEGRAM BOT HANDLERS =====
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     user = update.effective_user
     
-    # Проверяем, является ли пользователь админом
     if user.id == ADMIN_CHAT_ID:
         await admin_panel.show_main_menu(update, context)
         return
     
-    # Для обычных пользователей выполняем логику подписки
     logger.info(f"📋 Обработка команды /start для пользователя {user.id}")
     success = await callback_handler.execute_start_logic(user.id, context, user)
     
     if success:
-        # Получаем настраиваемое сообщение подтверждения из базы данных
         try:
             conn = db._get_connection()
             cursor = conn.cursor()
@@ -794,7 +909,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success_msg = cursor.fetchone()
             
             if not success_msg:
-                # Создаем настройку по умолчанию
                 default_success_message = (
                     "👋 <b>Команда /start выполнена!</b>\n\n"
                     "🚀 <b>Добро пожаловать!</b>\n\n"
@@ -825,7 +939,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "💬 Если у вас есть вопросы - не стесняйтесь писать!"
             )
         
-        # Отправляем настраиваемое приветственное сообщение и убираем клавиатуру
         await update.message.reply_text(
             success_text,
             parse_mode='HTML',
@@ -845,17 +958,13 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = chat_join_request.from_user
     
     try:
-        # Одобряем заявку
         await chat_join_request.approve()
         logger.info(f"✅ Одобрена заявка от пользователя {user.id} (@{user.username})")
         
-        # Добавляем пользователя в базу данных
         db.add_user(user.id, user.username, user.first_name)
         
-        # Небольшая задержка перед отправкой приветствия
         await asyncio.sleep(0.5)
         
-        # Отправляем приветственное сообщение
         await send_welcome_message(user, context)
         
         logger.info(f"✅ Пользователь {user.id} добавлен в базу данных с автоматическим приветственным сообщением")
@@ -869,20 +978,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     user_id = query.from_user.id
     callback_data = query.data
     
-    # Проверяем, является ли пользователь админом
     if user_id == ADMIN_CHAT_ID:
         await query.answer()
         await admin_panel.handle_callback(update, context)
         return
     
-    # Для остальных callback данных (старые кнопки)
     if callback_data in [CALLBACK_USER_CONSENT, CALLBACK_START_NOTIFICATIONS]:
         await query.answer(
             "Пожалуйста, используйте кнопки клавиатуры для взаимодействия с ботом.",
             show_alert=True
         )
         
-        # Отправляем новое сообщение с обычными кнопками
         keyboard = [
             [KeyboardButton("✅ Согласиться на получение уведомлений")],
             [KeyboardButton("📋 Что я буду получать?")],
@@ -910,7 +1016,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
         
     else:
-        # Для неизвестных callback данных
         await query.answer(
             "Эта кнопка больше не активна. Используйте кнопки клавиатуры.",
             show_alert=True
@@ -921,24 +1026,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message_text = update.message.text
     
-    # Проверяем, является ли пользователь админом
     if user_id == ADMIN_CHAT_ID:
         await admin_panel.handle_message(update, context)
         return
     
-    # Сначала проверяем, является ли это кнопкой, настроенной админом
+    # Проверяем кнопки, настроенные админом
     welcome_buttons = db.get_welcome_buttons()
     admin_button_texts = [button_text for _, button_text, _ in welcome_buttons]
     
     if message_text in admin_button_texts:
-        # Обрабатываем нажатие на кнопку, настроенную админом
         try:
             success = await callback_handler.handle_welcome_button_press(
                 user_id, message_text, context
             )
             
             if success:
-                # Получаем настраиваемое сообщение подтверждения из базы данных
                 try:
                     conn = db._get_connection()
                     cursor = conn.cursor()
@@ -968,7 +1070,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "💬 Если у вас есть вопросы - не стесняйтесь писать!"
                     )
                 
-                # Убираем клавиатуру и отправляем подтверждение
                 await update.message.reply_text(
                     success_text,
                     parse_mode='HTML',
@@ -983,10 +1084,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 
         except Exception as e:
-            # ✅ ИСПРАВЛЕНО: Специальная обработка ошибки "Event loop is closed"
             if 'Event loop is closed' in str(e):
                 logger.warning(f"⚠️ Event loop closed error (ignoring): {e}")
-                # Функциональность выполнена успешно, просто игнорируем ошибку очистки
             else:
                 logger.error(f"❌ Ошибка при обработке кнопки '{message_text}' от пользователя {user_id}: {e}")
                 await update.message.reply_text(
@@ -995,7 +1094,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         return
     
-    # Затем обрабатываем стандартные кнопки
+    # Обрабатываем стандартные кнопки
     if message_text == "✅ Согласиться на получение уведомлений":
         await handle_consent_button(update, context)
         return
@@ -1017,7 +1116,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
-            # Получаем настраиваемое сообщение подтверждения
             try:
                 conn = db._get_connection()
                 cursor = conn.cursor()
@@ -1048,7 +1146,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "💬 Если у вас есть вопросы - не стесняйтесь писать!"
                 )
             
-            # Убираем клавиатуру
             await update.message.reply_text(
                 success_text,
                 parse_mode='HTML',
@@ -1062,7 +1159,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 # ===== ОБРАБОТЧИКИ КНОПОК =====
-
 async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка нажатия на кнопку согласия"""
     user_id = update.effective_user.id
@@ -1070,7 +1166,6 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         logger.info(f"🔘 Пользователь {user_id} нажал кнопку согласия")
         
-        # Убеждаемся, что пользователь существует и активен
         user_exists = db.ensure_user_exists_and_active(
             user_id, 
             update.effective_user.username, 
@@ -1085,7 +1180,6 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
         
-        # Проверяем, есть ли уже запланированные сообщения
         existing_messages = db.get_user_scheduled_messages(user_id)
         if existing_messages:
             logger.info(f"ℹ️ Пользователь {user_id} уже имеет {len(existing_messages)} запланированных сообщений")
@@ -1102,11 +1196,9 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
         
-        # Выполняем логику start()
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
-            # Получаем настраиваемое сообщение подтверждения
             try:
                 conn = db._get_connection()
                 cursor = conn.cursor()
@@ -1200,7 +1292,6 @@ async def handle_what_will_receive_button(update: Update, context: ContextTypes.
     """Обработка нажатия на кнопку о содержимом"""
     user_id = update.effective_user.id
     
-    # Получаем все сообщения рассылки для показа
     messages = db.get_all_broadcast_messages()
     
     content_message = (
@@ -1214,7 +1305,6 @@ async def handle_what_will_receive_button(update: Update, context: ContextTypes.
         else:
             delay_text = f"{int(delay_hours)} час(ов)"
         
-        # Показываем краткое описание каждого сообщения
         short_text = text[:50] + "..." if len(text) > 50 else text
         content_message += f"{i}. {short_text} (через {delay_text})\n"
     
@@ -1270,7 +1360,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """✅ УЛУЧШЕННЫЙ обработчик ошибок"""
     logger.error(f"❌ Exception while handling an update: {context.error}")
     
-    # НОВОЕ: Предотвращаем накопление проблемных event loop'ов
+    # Предотвращаем накопление проблемных event loop'ов
     try:
         if hasattr(context, 'error') and 'Event loop is closed' in str(context.error):
             logger.warning("⚠️ Обнаружена ошибка закрытого event loop, игнорируем")
@@ -1299,20 +1389,19 @@ async def post_init(application: Application) -> None:
     bot_application = application
     bot_instance = application.bot
     
-    logger.info("🚀 Бот с интегрированными webhook'ами успешно запущен!")
+    logger.info("🚀 Бот с оптимизированными webhook'ами успешно запущен!")
     logger.info(f"📱 Telegram webhook: {WEBHOOK_URL}/bot{BOT_TOKEN}")
     logger.info(f"💰 Payment webhook: {WEBHOOK_URL}/webhook/payment")
     logger.info(f"🔍 Health check: {WEBHOOK_URL}/health")
     
-    # Выводим информацию о базе данных
     db_info = db.get_database_info()
     logger.info(f"📊 База данных готова: {db_info}")
 
 def main():
-    """✅ ИСПРАВЛЕННАЯ главная функция запуска бота"""
+    """🚀 ОПТИМИЗИРОВАННАЯ главная функция запуска бота"""
     global bot_application, bot_instance
     
-    logger.info("🚀 Запуск Telegram бота для Render с Disk...")
+    logger.info("🚀 Запуск Telegram бота для Render с оптимизациями...")
     
     # Создаём Telegram приложение
     application = Application.builder().token(BOT_TOKEN).build()
@@ -1325,8 +1414,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
     
-    # ✅ ИСПРАВЛЕННЫЙ ЕДИНЫЙ ОБРАБОТЧИК СОБЫТИЙ КАНАЛА
-    # Используем правильный тип CHAT_MEMBER и фильтр по каналу
+    # ✅ ОПТИМИЗИРОВАННЫЙ ОБРАБОТЧИК СОБЫТИЙ КАНАЛА
     channel_chat_id = None
     try:
         if CHANNEL_ID.lstrip('-').isdigit():
@@ -1337,11 +1425,11 @@ def main():
     
     application.add_handler(ChatMemberHandler(
         handle_chat_member_updates,
-        ChatMemberHandler.CHAT_MEMBER,  # ✅ ВАЖНО: именно CHAT_MEMBER, а не MY_CHAT_MEMBER!
-        chat_id=[channel_chat_id] if channel_chat_id else None  # ✅ Фильтр по нашему каналу
+        ChatMemberHandler.CHAT_MEMBER,
+        chat_id=[channel_chat_id] if channel_chat_id else None
     ))
     
-    # ✅ НОВЫЕ ДИАГНОСТИЧЕСКИЕ КОМАНДЫ
+    # Диагностические команды
     application.add_handler(CommandHandler("debug_channel", debug_channel_info))
     application.add_handler(CommandHandler("webhook_info", check_webhook_info))
     
@@ -1352,29 +1440,33 @@ def main():
     application.add_error_handler(error_handler)
     
     # ===== ЗАПУСКАЕМ ФОНОВЫЕ ЗАДАЧИ =====
-    # Запускаем фоновую задачу для рассылки
     application.job_queue.run_repeating(
         scheduler.send_scheduled_messages,
-        interval=60,  # каждые 60 секунд
-        first=10  # первый запуск через 10 секунд
+        interval=60,
+        first=10
     )
     
-    # Запускаем фоновую задачу для запланированных массовых рассылок
     application.job_queue.run_repeating(
         scheduler.send_scheduled_broadcasts,
-        interval=120,  # каждые 2 минуты
-        first=20  # первый запуск через 20 секунд
+        interval=120,
+        first=20
     )
     
     logger.info("🌐 Запуск в режиме WEBHOOK для продакшена на Render...")
     
     if USE_WEBHOOK and WEBHOOK_URL:
+        # ✅ ИНИЦИАЛИЗИРУЕМ ОПТИМИЗИРОВАННЫЙ WEBHOOK PROCESSOR
+        init_webhook_processor()
+        
+        # Запускаем обработчик очереди
+        webhook_processor_thread = threading.Thread(target=process_webhook_updates, daemon=True)
+        webhook_processor_thread.start()
+        
         # Запускаем Flask в отдельном потоке
         flask_thread = threading.Thread(target=run_flask_app, daemon=True)
         flask_thread.start()
         
         # Даем Flask время запуститься
-        import time
         time.sleep(3)
         
         # Настраиваем Telegram webhook
@@ -1383,23 +1475,21 @@ def main():
         
         logger.info(f"📡 Настройка Telegram webhook: {webhook_url}")
         
-        # ✅ ИСПРАВЛЕНО: Убрали неподдерживаемые параметры timeout
         try:
             application.run_webhook(
-                listen="127.0.0.1",  # Слушаем только локально
-                port=8443,  # Внутренний порт для telegram
+                listen="127.0.0.1",
+                port=8443,
                 webhook_url=webhook_url,
                 url_path=webhook_path,
                 drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES  # ✅ КРИТИЧЕСКИ ВАЖНО!
-                # ✅ УБРАЛИ: read_timeout, write_timeout, connect_timeout, pool_timeout
+                allowed_updates=Update.ALL_TYPES
             )
         except Exception as e:
             logger.error(f"❌ Ошибка при запуске webhook: {e}")
             logger.info("🔄 Переключение на polling mode...")
             application.run_polling(
                 drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES  # ✅ КРИТИЧЕСКИ ВАЖНО!
+                allowed_updates=Update.ALL_TYPES
             )
     else:
         logger.warning("🔄 Запуск в режиме POLLING (не рекомендуется для Render)")
@@ -1407,7 +1497,7 @@ def main():
         
         application.run_polling(
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES  # ✅ КРИТИЧЕСКИ ВАЖНО!
+            allowed_updates=Update.ALL_TYPES
         )
 
 if __name__ == '__main__':
@@ -1418,12 +1508,12 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"❌ Критическая ошибка при запуске: {e}", exc_info=True)
     finally:
-        # ✅ ИСПРАВЛЕНО: Корректное завершение работы
+        # ✅ КОРРЕКТНОЕ ЗАВЕРШЕНИЕ РАБОТЫ
         try:
-            if executor:
-                executor.shutdown(wait=True)  # ✅ УБРАЛИ timeout=10
-                logger.info("✅ ThreadPoolExecutor корректно завершен")
+            if webhook_loop and not webhook_loop.is_closed():
+                webhook_loop.call_soon_threadsafe(webhook_loop.stop)
+                logger.info("✅ Webhook event loop остановлен")
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка при завершении executor: {e}")
+            logger.warning(f"⚠️ Ошибка при завершении webhook loop: {e}")
         
         logger.info("👋 Бот завершен")
