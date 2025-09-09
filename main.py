@@ -579,10 +579,10 @@ async def send_goodbye_message(user, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке прощального сообщения пользователю {user.id}: {e}")
 
-# ===== ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА =====
+# ===== ✅ ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА =====
 
 async def handle_user_joined(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✅ ОБРАБОТКА ТОЛЬКО ВСТУПЛЕНИЙ (с точным фильтром)"""
+    """✅ ОБРАБОТКА ТОЛЬКО ВСТУПЛЕНИЙ (с правильными константами)"""
     if not update.chat_member:
         return
         
@@ -593,8 +593,8 @@ async def handle_user_joined(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user = chat_member_update.new_chat_member.user
         chat = chat_member_update.chat
         
-        # ✅ ТОЧНАЯ ФИЛЬТРАЦИЯ ВСТУПЛЕНИЯ
-        if (old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.BANNED] and 
+        # ✅ ПРАВИЛЬНЫЕ КОНСТАНТЫ для вступления
+        if (old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED] and 
             new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]):
             
             if user.is_bot:
@@ -619,7 +619,7 @@ async def handle_user_joined(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"❌ Error handling user join: {e}")
 
 async def handle_user_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✅ ОБРАБОТКА ТОЛЬКО ВЫХОДОВ (с точным фильтром)"""
+    """✅ ОБРАБОТКА ТОЛЬКО ВЫХОДОВ (с правильными константами)"""
     if not update.chat_member:
         return
         
@@ -630,9 +630,9 @@ async def handle_user_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = chat_member_update.old_chat_member.user  # ✅ ВАЖНО: old_chat_member для выхода!
         chat = chat_member_update.chat
         
-        # ✅ ТОЧНАЯ ФИЛЬТРАЦИЯ ВЫХОДА
+        # ✅ ПРАВИЛЬНЫЕ КОНСТАНТЫ для выхода
         if (old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and 
-            new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.BANNED]):
+            new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED]):
             
             if user.is_bot:
                 return
@@ -1210,7 +1210,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
     
-    # ✅ ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА С ФИЛЬТРАМИ
+    # ✅ ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА С ПРАВИЛЬНЫМИ КОНСТАНТАМИ
     # Вступление в канал
     application.add_handler(ChatMemberHandler(
         handle_user_joined,
