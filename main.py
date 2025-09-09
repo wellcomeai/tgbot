@@ -8,6 +8,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatJoinRequest, ChatMemberUpdated, Message, Chat, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler, MessageHandler, filters, ChatMemberHandler
 from telegram.error import Forbidden, BadRequest
+from telegram.constants import ChatMemberStatus
 from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
@@ -457,6 +458,208 @@ class CallbackHandler:
 # Создаем глобальный экземпляр callback handler
 callback_handler = CallbackHandler(db, scheduler)
 
+# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+
+def is_our_channel(chat) -> bool:
+    """Проверка что это наш канал"""
+    try:
+        # Проверка по ID (числовому)
+        if CHANNEL_ID.lstrip('-').isdigit():
+            if str(chat.id) == str(CHANNEL_ID):
+                return True
+        
+        # Проверка по username (если канал публичный)
+        if chat.username:
+            expected_username = CHANNEL_ID.replace('@', '')
+            if chat.username == expected_username:
+                return True
+        
+        return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка при проверке канала: {e}")
+        return False
+
+async def send_welcome_message(user, context: ContextTypes.DEFAULT_TYPE):
+    """Отправка приветственного сообщения"""
+    try:
+        welcome_data = db.get_welcome_message()
+        welcome_buttons = db.get_welcome_buttons()
+        
+        # Создаем клавиатуру
+        reply_markup = None
+        
+        # Сначала проверяем, есть ли кнопки, настроенные админом
+        if welcome_buttons:
+            # Используем механические кнопки (кнопки клавиатуры)
+            keyboard = []
+            for button_id, button_text, position in welcome_buttons:
+                keyboard.append([KeyboardButton(button_text)])
+            
+            reply_markup = ReplyKeyboardMarkup(
+                keyboard, 
+                resize_keyboard=True,
+                one_time_keyboard=True,
+                input_field_placeholder="Выберите действие..."
+            )
+            logger.info(f"📱 Создана клавиатура с {len(welcome_buttons)} механическими кнопками")
+        else:
+            # Используем стандартные кнопки
+            keyboard = [
+                [KeyboardButton("✅ Согласиться на получение уведомлений")],
+                [KeyboardButton("📋 Что я буду получать?")],
+                [KeyboardButton("ℹ️ Подробнее о боте")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(
+                keyboard, 
+                resize_keyboard=True,
+                one_time_keyboard=True,
+                input_field_placeholder="Выберите действие..."
+            )
+            logger.info("📱 Создана стандартная клавиатуру")
+        
+        # Отправляем приветственное сообщение
+        if welcome_data['photo']:
+            await context.bot.send_photo(
+                chat_id=user.id,
+                photo=welcome_data['photo'],
+                caption=welcome_data['text'],
+                parse_mode='HTML',
+                reply_markup=reply_markup
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=welcome_data['text'],
+                parse_mode='HTML',
+                reply_markup=reply_markup
+            )
+        
+        logger.info(f"✅ Приветственное сообщение отправлено пользователю {user.id}")
+        
+    except Forbidden:
+        logger.warning(f"⚠️ Не удалось отправить приветственное сообщение пользователю {user.id}: пользователь не начал диалог с ботом")
+    except Exception as e:
+        logger.error(f"❌ Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
+
+async def send_goodbye_message(user, context: ContextTypes.DEFAULT_TYPE):
+    """Отправка прощального сообщения"""
+    try:
+        goodbye_data = db.get_goodbye_message()
+        goodbye_buttons = db.get_goodbye_buttons()
+        
+        reply_markup = None
+        if goodbye_buttons:
+            keyboard = []
+            for button_id, button_text, button_url, position in goodbye_buttons:
+                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if goodbye_data['photo']:
+            await context.bot.send_photo(
+                chat_id=user.id,
+                photo=goodbye_data['photo'], 
+                caption=goodbye_data['text'],
+                parse_mode='HTML',
+                reply_markup=reply_markup
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=goodbye_data['text'],
+                parse_mode='HTML', 
+                reply_markup=reply_markup
+            )
+            
+        logger.info(f"✅ Прощальное сообщение отправлено пользователю {user.id}")
+        
+    except Forbidden:
+        logger.warning(f"⚠️ Не удалось отправить прощальное сообщение пользователю {user.id}: пользователь заблокировал бота")
+    except BadRequest as e:
+        logger.warning(f"⚠️ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке прощального сообщения пользователю {user.id}: {e}")
+
+# ===== ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА =====
+
+async def handle_user_joined(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✅ ОБРАБОТКА ТОЛЬКО ВСТУПЛЕНИЙ (с точным фильтром)"""
+    if not update.chat_member:
+        return
+        
+    try:
+        chat_member_update = update.chat_member
+        old_status = chat_member_update.old_chat_member.status  
+        new_status = chat_member_update.new_chat_member.status
+        user = chat_member_update.new_chat_member.user
+        chat = chat_member_update.chat
+        
+        # ✅ ТОЧНАЯ ФИЛЬТРАЦИЯ ВСТУПЛЕНИЯ
+        if (old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.BANNED] and 
+            new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]):
+            
+            if user.is_bot:
+                return
+            
+            logger.info(f"👋 User {user.id} (@{user.username}) JOINED: {old_status} → {new_status}")
+            
+            # Проверяем что это наш канал
+            if not is_our_channel(chat):
+                logger.debug(f"❌ Event not from our channel - skipping")
+                return
+                
+            logger.info(f"✅ User joined our channel - sending welcome")
+            
+            # Добавляем пользователя в базу данных
+            db.add_user(user.id, user.username, user.first_name)
+            
+            # Отправляем приветствие
+            await send_welcome_message(user, context)
+            
+    except Exception as e:
+        logger.error(f"❌ Error handling user join: {e}")
+
+async def handle_user_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✅ ОБРАБОТКА ТОЛЬКО ВЫХОДОВ (с точным фильтром)"""
+    if not update.chat_member:
+        return
+        
+    try:
+        chat_member_update = update.chat_member
+        old_status = chat_member_update.old_chat_member.status
+        new_status = chat_member_update.new_chat_member.status
+        user = chat_member_update.old_chat_member.user  # ✅ ВАЖНО: old_chat_member для выхода!
+        chat = chat_member_update.chat
+        
+        # ✅ ТОЧНАЯ ФИЛЬТРАЦИЯ ВЫХОДА
+        if (old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and 
+            new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED, ChatMemberStatus.BANNED]):
+            
+            if user.is_bot:
+                return
+            
+            logger.info(f"🚪 User {user.id} (@{user.username}) LEFT: {old_status} → {new_status}")
+            
+            # Проверяем что это наш канал  
+            if not is_our_channel(chat):
+                logger.debug(f"❌ Event not from our channel - skipping")
+                return
+                
+            logger.info(f"✅ User left our channel - processing...")
+            
+            # Деактивируем пользователя
+            db.deactivate_user(user.id)
+            logger.info(f"❌ User {user.id} deactivated in database")
+            
+            # Отменяем запланированные сообщения
+            db.cancel_user_messages(user.id)
+            logger.info(f"🚫 Cancelled scheduled messages for user {user.id}")
+            
+            # Отправляем прощальное сообщение
+            await send_goodbye_message(user, context)
+            
+    except Exception as e:
+        logger.error(f"❌ Error handling user leave: {e}")
+
 # ===== TELEGRAM BOT HANDLERS =====
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -539,138 +742,16 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Добавляем пользователя в базу данных
         db.add_user(user.id, user.username, user.first_name)
         
-        # Получаем приветственное сообщение от админа
-        welcome_data = db.get_welcome_message()
-        welcome_buttons = db.get_welcome_buttons()
-        
-        # Создаем клавиатуру
-        reply_markup = None
-        
-        # Сначала проверяем, есть ли кнопки, настроенные админом
-        if welcome_buttons:
-            # Используем механические кнопки (кнопки клавиатуры)
-            keyboard = []
-            for button_id, button_text, position in welcome_buttons:
-                keyboard.append([KeyboardButton(button_text)])
-            
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard, 
-                resize_keyboard=True,
-                one_time_keyboard=True,
-                input_field_placeholder="Выберите действие..."
-            )
-            logger.info(f"📱 Создана клавиатура с {len(welcome_buttons)} механическими кнопками")
-        else:
-            # Используем стандартные кнопки
-            keyboard = [
-                [KeyboardButton("✅ Согласиться на получение уведомлений")],
-                [KeyboardButton("📋 Что я буду получать?")],
-                [KeyboardButton("ℹ️ Подробнее о боте")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard, 
-                resize_keyboard=True,
-                one_time_keyboard=True,
-                input_field_placeholder="Выберите действие..."
-            )
-            logger.info("📱 Создана стандартная клавиатура")
+        # Небольшая задержка перед отправкой приветствия
+        await asyncio.sleep(0.5)
         
         # Отправляем приветственное сообщение
-        try:
-            if welcome_data['photo']:
-                sent_message = await context.bot.send_photo(
-                    chat_id=user.id,
-                    photo=welcome_data['photo'],
-                    caption=welcome_data['text'],
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
-            else:
-                sent_message = await context.bot.send_message(
-                    chat_id=user.id,
-                    text=welcome_data['text'],
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
-            
-            logger.info(f"✅ Приветственное сообщение отправлено пользователю {user.id}")
-            
-        except Forbidden as e:
-            logger.warning(f"⚠️ Не удалось отправить приветственное сообщение пользователю {user.id}: пользователь не начал диалог с ботом")
-            
-        except Exception as e:
-            logger.error(f"❌ Не удалось отправить приветственное сообщение пользователю {user.id}: {e}")
+        await send_welcome_message(user, context)
         
         logger.info(f"✅ Пользователь {user.id} добавлен в базу данных с автоматическим приветственным сообщением")
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке заявки от {user.id}: {e}")
-
-async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик изменений статуса участника канала"""
-    if update.my_chat_member:
-        return
-    
-    if not update.chat_member:
-        return
-    
-    # Проверяем, что это наш канал
-    if str(update.chat_member.chat.id) != str(CHANNEL_ID) and update.chat_member.chat.username != CHANNEL_ID.replace('@', ''):
-        return
-    
-    old_status = update.chat_member.old_chat_member.status
-    new_status = update.chat_member.new_chat_member.status
-    user = update.chat_member.new_chat_member.user
-    
-    logger.info(f"Изменение статуса пользователя {user.id}: {old_status} -> {new_status}")
-    
-    # Если пользователь покинул канал
-    if old_status in ["member", "administrator", "creator"] and new_status in ["left", "kicked"]:
-        logger.info(f"Пользователь {user.id} (@{user.username}) покинул канал")
-        
-        # Деактивируем пользователя
-        db.deactivate_user(user.id)
-        
-        # Отменяем запланированные сообщения
-        db.cancel_user_messages(user.id)
-        
-        # Получаем прощальное сообщение и кнопки
-        goodbye_data = db.get_goodbye_message()
-        goodbye_buttons = db.get_goodbye_buttons()
-        
-        # Создаем инлайн-клавиатуру если есть кнопки
-        reply_markup = None
-        if goodbye_buttons:
-            keyboard = []
-            for button_id, button_text, button_url, position in goodbye_buttons:
-                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Отправляем прощальное сообщение
-        try:
-            if goodbye_data['photo']:
-                await context.bot.send_photo(
-                    chat_id=user.id,
-                    photo=goodbye_data['photo'],
-                    caption=goodbye_data['text'],
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=user.id,
-                    text=goodbye_data['text'],
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
-            
-            logger.info(f"✅ Прощальное сообщение отправлено пользователю {user.id}")
-            
-        except Forbidden as e:
-            logger.warning(f"⚠️ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
-            
-        except Exception as e:
-            logger.error(f"❌ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на инлайн-кнопки"""
@@ -1128,7 +1209,20 @@ def main():
     # ===== РЕГИСТРИРУЕМ ВСЕ ОБРАБОТЧИКИ =====
     application.add_handler(CommandHandler("start", start))
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
-    application.add_handler(ChatMemberHandler(handle_member_update, ChatMemberHandler.CHAT_MEMBER))
+    
+    # ✅ ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА С ФИЛЬТРАМИ
+    # Вступление в канал
+    application.add_handler(ChatMemberHandler(
+        handle_user_joined,
+        ChatMemberHandler.CHAT_MEMBER
+    ))
+    
+    # Выход из канала
+    application.add_handler(ChatMemberHandler(
+        handle_user_left, 
+        ChatMemberHandler.CHAT_MEMBER
+    ))
+    
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, message_handler))
     
