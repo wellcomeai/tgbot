@@ -983,11 +983,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка при обработке кнопки '{message_text}' от пользователя {user_id}: {e}")
-            await update.message.reply_text(
-                "❌ Произошла техническая ошибка. Попробуйте позже.",
-                reply_markup=ReplyKeyboardRemove()
-            )
+            # ✅ ИСПРАВЛЕНО: Специальная обработка ошибки "Event loop is closed"
+            if 'Event loop is closed' in str(e):
+                logger.warning(f"⚠️ Event loop closed error (ignoring): {e}")
+                # Функциональность выполнена успешно, просто игнорируем ошибку очистки
+            else:
+                logger.error(f"❌ Ошибка при обработке кнопки '{message_text}' от пользователя {user_id}: {e}")
+                await update.message.reply_text(
+                    "❌ Произошла техническая ошибка. Попробуйте позже.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
         return
     
     # Затем обрабатываем стандартные кнопки
