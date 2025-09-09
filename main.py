@@ -579,10 +579,10 @@ async def send_goodbye_message(user, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке прощального сообщения пользователю {user.id}: {e}")
 
-# ===== ✅ ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА =====
+# ===== ✅ ИСПРАВЛЕННЫЙ ЕДИНЫЙ ОБРАБОТЧИК СОБЫТИЙ КАНАЛА =====
 
-async def handle_user_joined(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✅ ОБРАБОТКА ТОЛЬКО ВСТУПЛЕНИЙ (с правильными константами)"""
+async def handle_chat_member_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✅ ЕДИНЫЙ НАДЕЖНЫЙ обработчик изменений участников канала"""
     if not update.chat_member:
         return
         
@@ -593,20 +593,27 @@ async def handle_user_joined(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user = chat_member_update.new_chat_member.user
         chat = chat_member_update.chat
         
-        # ✅ ПРАВИЛЬНЫЕ КОНСТАНТЫ для вступления
-        if (old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED] and 
-            new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]):
-            
-            if user.is_bot:
-                return
-            
+        # Пропускаем ботов
+        if user.is_bot:
+            return
+        
+        # Проверяем что это наш канал
+        if not is_our_channel(chat):
+            logger.debug(f"❌ Event not from our channel ({chat.id}) - skipping")
+            return
+        
+        # ✅ ОПРЕДЕЛЯЕМ ТИП СОБЫТИЯ
+        # Вступление: был не участником -> стал участником
+        joined = (old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED] and 
+                 new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER])
+        
+        # Выход: был участником -> стал не участником  
+        left = (old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and 
+               new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED])
+        
+        if joined:
+            # ===== ЛОГИКА ВСТУПЛЕНИЯ =====
             logger.info(f"👋 User {user.id} (@{user.username}) JOINED: {old_status} → {new_status}")
-            
-            # Проверяем что это наш канал
-            if not is_our_channel(chat):
-                logger.debug(f"❌ Event not from our channel - skipping")
-                return
-                
             logger.info(f"✅ User joined our channel - sending welcome")
             
             # Добавляем пользователя в базу данных
@@ -615,35 +622,9 @@ async def handle_user_joined(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Отправляем приветствие
             await send_welcome_message(user, context)
             
-    except Exception as e:
-        logger.error(f"❌ Error handling user join: {e}")
-
-async def handle_user_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✅ ОБРАБОТКА ТОЛЬКО ВЫХОДОВ (с правильными константами)"""
-    if not update.chat_member:
-        return
-        
-    try:
-        chat_member_update = update.chat_member
-        old_status = chat_member_update.old_chat_member.status
-        new_status = chat_member_update.new_chat_member.status
-        user = chat_member_update.old_chat_member.user  # ✅ ВАЖНО: old_chat_member для выхода!
-        chat = chat_member_update.chat
-        
-        # ✅ ПРАВИЛЬНЫЕ КОНСТАНТЫ для выхода
-        if (old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and 
-            new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED]):
-            
-            if user.is_bot:
-                return
-            
+        elif left:
+            # ===== ЛОГИКА ВЫХОДА =====
             logger.info(f"🚪 User {user.id} (@{user.username}) LEFT: {old_status} → {new_status}")
-            
-            # Проверяем что это наш канал  
-            if not is_our_channel(chat):
-                logger.debug(f"❌ Event not from our channel - skipping")
-                return
-                
             logger.info(f"✅ User left our channel - processing...")
             
             # Деактивируем пользователя
@@ -657,8 +638,12 @@ async def handle_user_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Отправляем прощальное сообщение
             await send_goodbye_message(user, context)
             
+        else:
+            # Другие изменения статуса (например, админ <-> участник)
+            logger.debug(f"ℹ️ Status change for user {user.id}: {old_status} → {new_status} (ignored)")
+            
     except Exception as e:
-        logger.error(f"❌ Error handling user leave: {e}")
+        logger.error(f"❌ Error in chat_member_updates: {e}", exc_info=True)
 
 # ===== TELEGRAM BOT HANDLERS =====
 
@@ -1210,17 +1195,20 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
     
-    # ✅ ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ СОБЫТИЙ КАНАЛА С ПРАВИЛЬНЫМИ КОНСТАНТАМИ
-    # Вступление в канал
-    application.add_handler(ChatMemberHandler(
-        handle_user_joined,
-        ChatMemberHandler.CHAT_MEMBER
-    ))
+    # ✅ ИСПРАВЛЕННЫЙ ЕДИНЫЙ ОБРАБОТЧИК СОБЫТИЙ КАНАЛА
+    # Используем правильный тип CHAT_MEMBER и фильтр по каналу
+    channel_chat_id = None
+    try:
+        if CHANNEL_ID.lstrip('-').isdigit():
+            channel_chat_id = int(CHANNEL_ID)
+        logger.info(f"📋 Настроен фильтр ChatMemberHandler для канала: {channel_chat_id}")
+    except:
+        logger.warning(f"⚠️ Не удалось преобразовать CHANNEL_ID в число: {CHANNEL_ID}")
     
-    # Выход из канала
     application.add_handler(ChatMemberHandler(
-        handle_user_left, 
-        ChatMemberHandler.CHAT_MEMBER
+        handle_chat_member_updates,
+        ChatMemberHandler.CHAT_MEMBER,  # ✅ ВАЖНО: именно CHAT_MEMBER, а не MY_CHAT_MEMBER!
+        chat_id=[channel_chat_id] if channel_chat_id else None  # ✅ Фильтр по нашему каналу
     ))
     
     application.add_handler(CallbackQueryHandler(callback_query_handler))
@@ -1269,7 +1257,7 @@ def main():
                 webhook_url=webhook_url,
                 url_path=webhook_path,
                 drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES,
+                allowed_updates=Update.ALL_TYPES,  # ✅ КРИТИЧЕСКИ ВАЖНО!
                 # НОВОЕ: Добавляем обработку таймаутов
                 read_timeout=30,
                 write_timeout=30,
@@ -1281,7 +1269,7 @@ def main():
             logger.info("🔄 Переключение на polling mode...")
             application.run_polling(
                 drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
+                allowed_updates=Update.ALL_TYPES  # ✅ КРИТИЧЕСКИ ВАЖНО!
             )
     else:
         logger.warning("🔄 Запуск в режиме POLLING (не рекомендуется для Render)")
@@ -1289,7 +1277,7 @@ def main():
         
         application.run_polling(
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
+            allowed_updates=Update.ALL_TYPES  # ✅ КРИТИЧЕСКИ ВАЖНО!
         )
 
 if __name__ == '__main__':
