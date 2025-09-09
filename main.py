@@ -99,7 +99,7 @@ bot_instance = None
 # ===== FLASK ПРИЛОЖЕНИЕ ДЛЯ WEBHOOK'ОВ =====
 flask_app = Flask(__name__)
 
-# НОВОЕ: Глобальный executor для изоляции асинхронных задач
+# ✅ ИСПРАВЛЕНО: Глобальный executor для изоляции асинхронных задач
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 @flask_app.route(f'/bot{BOT_TOKEN}', methods=['POST'])
@@ -461,22 +461,31 @@ callback_handler = CallbackHandler(db, scheduler)
 # ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 
 def is_our_channel(chat) -> bool:
-    """Проверка что это наш канал"""
+    """✅ УЛУЧШЕННАЯ проверка что это наш канал с диагностикой"""
     try:
+        logger.debug(f"🔍 Checking if chat {chat.id} is our channel {CHANNEL_ID}")
+        
         # Проверка по ID (числовому)
         if CHANNEL_ID.lstrip('-').isdigit():
-            if str(chat.id) == str(CHANNEL_ID):
+            channel_id_int = int(CHANNEL_ID)
+            if chat.id == channel_id_int:
+                logger.debug(f"✅ Match by ID: {chat.id} == {channel_id_int}")
                 return True
         
         # Проверка по username (если канал публичный)
-        if chat.username:
-            expected_username = CHANNEL_ID.replace('@', '')
+        if chat.username and CHANNEL_ID.startswith('@'):
+            expected_username = CHANNEL_ID[1:]  # убираем @
             if chat.username == expected_username:
+                logger.debug(f"✅ Match by username: @{chat.username}")
                 return True
+        
+        logger.debug(f"❌ No match found")
+        logger.debug(f"   Chat ID: {chat.id} vs Expected: {CHANNEL_ID}")
+        logger.debug(f"   Chat username: @{chat.username if chat.username else 'None'}")
         
         return False
     except Exception as e:
-        logger.error(f"❌ Ошибка при проверке канала: {e}")
+        logger.error(f"❌ Error in is_our_channel: {e}")
         return False
 
 async def send_welcome_message(user, context: ContextTypes.DEFAULT_TYPE):
@@ -579,11 +588,18 @@ async def send_goodbye_message(user, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке прощального сообщения пользователю {user.id}: {e}")
 
-# ===== ✅ ИСПРАВЛЕННЫЙ ЕДИНЫЙ ОБРАБОТЧИК СОБЫТИЙ КАНАЛА =====
+# ===== ✅ УЛУЧШЕННЫЙ ОБРАБОТЧИК СОБЫТИЙ КАНАЛА С ДИАГНОСТИКОЙ =====
 
 async def handle_chat_member_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✅ ЕДИНЫЙ НАДЕЖНЫЙ обработчик изменений участников канала"""
+    """✅ УЛУЧШЕННЫЙ ДИАГНОСТИЧЕСКИЙ обработчик изменений участников канала"""
+    
+    # ✅ НОВОЕ: Детальная диагностика всех событий
+    logger.info(f"🔍 CHAT_MEMBER EVENT RECEIVED:")
+    logger.info(f"   Update ID: {update.update_id}")
+    logger.info(f"   Has chat_member: {bool(update.chat_member)}")
+    
     if not update.chat_member:
+        logger.warning("❌ No chat_member in update")
         return
         
     try:
@@ -593,27 +609,45 @@ async def handle_chat_member_updates(update: Update, context: ContextTypes.DEFAU
         user = chat_member_update.new_chat_member.user
         chat = chat_member_update.chat
         
+        # ✅ ДЕТАЛЬНАЯ ДИАГНОСТИКА
+        logger.info(f"🔍 DETAILED EVENT INFO:")
+        logger.info(f"   User: {user.id} (@{user.username})")
+        logger.info(f"   Status change: {old_status} → {new_status}")
+        logger.info(f"   Chat: {chat.id} ({chat.title})")
+        logger.info(f"   Chat type: {chat.type}")
+        logger.info(f"   Is bot: {user.is_bot}")
+        logger.info(f"   Expected channel: {CHANNEL_ID}")
+        
         # Пропускаем ботов
         if user.is_bot:
+            logger.debug(f"⏭️ Skipping bot user: {user.id}")
             return
         
-        # Проверяем что это наш канал
-        if not is_our_channel(chat):
-            logger.debug(f"❌ Event not from our channel ({chat.id}) - skipping")
+        # ✅ УЛУЧШЕННАЯ ПРОВЕРКА КАНАЛА
+        is_our_channel_result = is_our_channel(chat)
+        logger.info(f"🏠 Is our channel check: {is_our_channel_result}")
+        
+        if not is_our_channel_result:
+            logger.warning(f"❌ Event NOT from our channel:")
+            logger.warning(f"   Received from: {chat.id} ({chat.title})")
+            logger.warning(f"   Expected: {CHANNEL_ID}")
+            logger.warning(f"   Chat username: @{chat.username if chat.username else 'None'}")
             return
         
         # ✅ ОПРЕДЕЛЯЕМ ТИП СОБЫТИЯ
-        # Вступление: был не участником -> стал участником
         joined = (old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED] and 
                  new_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER])
         
-        # Выход: был участником -> стал не участником  
         left = (old_status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and 
                new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED])
         
+        logger.info(f"📊 EVENT CLASSIFICATION:")
+        logger.info(f"   Joined: {joined}")
+        logger.info(f"   Left: {left}")
+        
         if joined:
             # ===== ЛОГИКА ВСТУПЛЕНИЯ =====
-            logger.info(f"👋 User {user.id} (@{user.username}) JOINED: {old_status} → {new_status}")
+            logger.info(f"👋 PROCESSING JOIN: User {user.id} (@{user.username})")
             logger.info(f"✅ User joined our channel - sending welcome")
             
             # Добавляем пользователя в базу данных
@@ -624,7 +658,7 @@ async def handle_chat_member_updates(update: Update, context: ContextTypes.DEFAU
             
         elif left:
             # ===== ЛОГИКА ВЫХОДА =====
-            logger.info(f"🚪 User {user.id} (@{user.username}) LEFT: {old_status} → {new_status}")
+            logger.info(f"🚪 PROCESSING LEAVE: User {user.id} (@{user.username})")
             logger.info(f"✅ User left our channel - processing...")
             
             # Деактивируем пользователя
@@ -640,10 +674,101 @@ async def handle_chat_member_updates(update: Update, context: ContextTypes.DEFAU
             
         else:
             # Другие изменения статуса (например, админ <-> участник)
-            logger.debug(f"ℹ️ Status change for user {user.id}: {old_status} → {new_status} (ignored)")
+            logger.debug(f"ℹ️ Status change ignored: {old_status} → {new_status}")
             
     except Exception as e:
         logger.error(f"❌ Error in chat_member_updates: {e}", exc_info=True)
+
+# ===== ДИАГНОСТИЧЕСКИЕ КОМАНДЫ (ТОЛЬКО ДЛЯ АДМИНА) =====
+
+async def debug_channel_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✅ НОВАЯ диагностическая команда для проверки настроек канала"""
+    user = update.effective_user
+    
+    if user.id != ADMIN_CHAT_ID:
+        return
+    
+    try:
+        # Получаем информацию о канале
+        chat = await context.bot.get_chat(CHANNEL_ID)
+        bot_member = await context.bot.get_chat_member(CHANNEL_ID, context.bot.id)
+        
+        # Получаем последние обновления
+        updates = await context.bot.get_updates(limit=5)
+        
+        diagnostics = f"""🔍 <b>ДИАГНОСТИКА КАНАЛА</b>
+
+📋 <b>Конфигурация:</b>
+• Channel ID: <code>{CHANNEL_ID}</code>
+• Chat ID: <code>{chat.id}</code>  
+• Chat Type: {chat.type}
+• Chat Title: {chat.title}
+• Chat Username: @{chat.username or 'None'}
+
+🤖 <b>Статус бота:</b>
+• Status: {bot_member.status}
+• Can restrict: {getattr(bot_member, 'can_restrict_members', 'N/A')}
+• Can manage chat: {getattr(bot_member, 'can_manage_chat', 'N/A')}
+
+📊 <b>Последние updates:</b>"""
+
+        for upd in updates[-3:]:
+            diagnostics += f"\n• Update {upd.update_id}: {type(upd).__name__}"
+            if hasattr(upd, 'chat_member') and upd.chat_member:
+                diagnostics += f" (chat: {upd.chat_member.chat.id})"
+
+        diagnostics += f"""
+
+⚡ <b>Проверка событий:</b>
+Попросите кого-то зайти/выйти из канала и проверьте логи на наличие:
+- "🔍 CHAT_MEMBER EVENT RECEIVED"
+- "📊 EVENT CLASSIFICATION"
+
+🔧 <b>База данных:</b>
+• Активных пользователей: {len(db.get_users_with_bot_started())}
+• Всего пользователей: {len(db.get_all_users())}
+"""
+        
+        await update.message.reply_text(diagnostics, parse_mode='HTML')
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка диагностики: {e}")
+        logger.error(f"❌ Ошибка в debug_channel_info: {e}")
+
+async def check_webhook_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✅ НОВАЯ проверка информации о webhook (только для админа)"""
+    user = update.effective_user
+    
+    if user.id != ADMIN_CHAT_ID:
+        return
+    
+    try:
+        webhook_info = await context.bot.get_webhook_info()
+        
+        info_text = f"""🔗 <b>WEBHOOK INFO</b>
+
+📡 <b>Текущие настройки:</b>
+• URL: {webhook_info.url or 'Not set'}
+• Pending updates: {webhook_info.pending_update_count}
+• Max connections: {webhook_info.max_connections}
+• Allowed updates: {webhook_info.allowed_updates or 'All'}
+• Last error: {webhook_info.last_error_message or 'None'}
+
+🌐 <b>Ожидаемые настройки:</b>
+• Expected URL: {WEBHOOK_URL}/bot{BOT_TOKEN}
+• Configured port: {RENDER_PORT}
+
+🔧 <b>Flask endpoints:</b>
+• Telegram: /bot{BOT_TOKEN}
+• Payment: /webhook/payment
+• Health: /health
+"""
+        
+        await update.message.reply_text(info_text, parse_mode='HTML')
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка получения webhook info: {e}")
+        logger.error(f"❌ Ошибка в check_webhook_info: {e}")
 
 # ===== TELEGRAM BOT HANDLERS =====
 
@@ -1137,7 +1262,7 @@ async def handle_back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """ИСПРАВЛЕННЫЙ обработчик ошибок"""
+    """✅ УЛУЧШЕННЫЙ обработчик ошибок"""
     logger.error(f"❌ Exception while handling an update: {context.error}")
     
     # НОВОЕ: Предотвращаем накопление проблемных event loop'ов
@@ -1179,7 +1304,7 @@ async def post_init(application: Application) -> None:
     logger.info(f"📊 База данных готова: {db_info}")
 
 def main():
-    """ИСПРАВЛЕННАЯ главная функция запуска бота"""
+    """✅ ИСПРАВЛЕННАЯ главная функция запуска бота"""
     global bot_application, bot_instance
     
     logger.info("🚀 Запуск Telegram бота для Render с Disk...")
@@ -1210,6 +1335,10 @@ def main():
         ChatMemberHandler.CHAT_MEMBER,  # ✅ ВАЖНО: именно CHAT_MEMBER, а не MY_CHAT_MEMBER!
         chat_id=[channel_chat_id] if channel_chat_id else None  # ✅ Фильтр по нашему каналу
     ))
+    
+    # ✅ НОВЫЕ ДИАГНОСТИЧЕСКИЕ КОМАНДЫ
+    application.add_handler(CommandHandler("debug_channel", debug_channel_info))
+    application.add_handler(CommandHandler("webhook_info", check_webhook_info))
     
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, message_handler))
@@ -1249,7 +1378,7 @@ def main():
         
         logger.info(f"📡 Настройка Telegram webhook: {webhook_url}")
         
-        # ИСПРАВЛЕНИЕ: Улучшенные настройки webhook
+        # ✅ ИСПРАВЛЕНО: Убрали неподдерживаемые параметры timeout
         try:
             application.run_webhook(
                 listen="127.0.0.1",  # Слушаем только локально
@@ -1257,12 +1386,8 @@ def main():
                 webhook_url=webhook_url,
                 url_path=webhook_path,
                 drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES,  # ✅ КРИТИЧЕСКИ ВАЖНО!
-                # НОВОЕ: Добавляем обработку таймаутов
-                read_timeout=30,
-                write_timeout=30,
-                connect_timeout=30,
-                pool_timeout=30
+                allowed_updates=Update.ALL_TYPES  # ✅ КРИТИЧЕСКИ ВАЖНО!
+                # ✅ УБРАЛИ: read_timeout, write_timeout, connect_timeout, pool_timeout
             )
         except Exception as e:
             logger.error(f"❌ Ошибка при запуске webhook: {e}")
@@ -1288,10 +1413,10 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"❌ Критическая ошибка при запуске: {e}", exc_info=True)
     finally:
-        # НОВОЕ: Корректное завершение работы
+        # ✅ ИСПРАВЛЕНО: Корректное завершение работы
         try:
             if executor:
-                executor.shutdown(wait=True, timeout=10)
+                executor.shutdown(wait=True)  # ✅ УБРАЛИ timeout=10
                 logger.info("✅ ThreadPoolExecutor корректно завершен")
         except Exception as e:
             logger.warning(f"⚠️ Ошибка при завершении executor: {e}")
