@@ -11,9 +11,8 @@ from telegram.error import Forbidden, BadRequest
 from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
-from flask import Flask, request, jsonify
+from aiohttp import web, ClientSession
 import threading
-import concurrent.futures
 
 # Настройка логирования для Render
 logging.basicConfig(
@@ -26,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Отключаем избыточные логи для чистоты
-logging.getLogger('werkzeug').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('httpcore').setLevel(logging.WARNING)
 
@@ -62,7 +61,7 @@ if USE_WEBHOOK and not WEBHOOK_URL:
 
 # Логирование конфигурации
 logger.info(f"🚀 Конфигурация для Render:")
-logger.info(f"   🌐 Flask порт: {RENDER_PORT}")
+logger.info(f"   🌐 aiohttp порт: {RENDER_PORT}")
 logger.info(f"   📱 Webhook URL: {WEBHOOK_URL}")
 logger.info(f"   💾 Render Disk: {RENDER_DISK_PATH}")
 logger.info(f"   👤 Admin ID: {ADMIN_CHAT_ID}")
@@ -95,72 +94,45 @@ scheduler = MessageScheduler(db)
 bot_application = None
 bot_instance = None
 
-# ===== FLASK ПРИЛОЖЕНИЕ ДЛЯ WEBHOOK'ОВ =====
-flask_app = Flask(__name__)
+# ===== AIOHTTP ПРИЛОЖЕНИЕ ДЛЯ WEBHOOK'ОВ =====
+app = web.Application()
 
-# НОВОЕ: Глобальный executor для изоляции асинхронных задач
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
-
-@flask_app.route(f'/bot{BOT_TOKEN}', methods=['POST'])
-def telegram_webhook():
-    """ИСПРАВЛЕННАЯ обработка Telegram webhook через Flask"""
+async def telegram_webhook(request):
+    """Обработка Telegram webhook через aiohttp"""
     try:
         # Получаем данные от Telegram
-        update_data = request.get_json()
+        update_data = await request.json()
         
         if not update_data:
             logger.warning("⚠️ Получен пустой Telegram webhook")
-            return jsonify({'ok': False}), 400
+            return web.json_response({'ok': False}, status=400)
         
         logger.debug(f"📱 Получен Telegram update: {update_data.get('update_id')}")
         
-        # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor с изолированным event loop
-        def process_update_safe():
-            """Безопасная обработка update в отдельном потоке с новым event loop"""
-            try:
-                # КРИТИЧЕСКИ ВАЖНО: Создаем новый event loop для каждого потока
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                try:
-                    # Создаем Update объект
-                    update = Update.de_json(update_data, bot_instance)
-                    
-                    # Обрабатываем update
-                    if bot_application:
-                        loop.run_until_complete(bot_application.process_update(update))
-                    
-                    logger.debug(f"✅ Update {update_data.get('update_id')} обработан успешно")
-                    
-                finally:
-                    # ВАЖНО: Правильно закрываем loop
-                    try:
-                        loop.close()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Ошибка при закрытии event loop: {e}")
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка в безопасной обработке update: {e}", exc_info=True)
+        # Создаем Update объект и обрабатываем его асинхронно
+        update = Update.de_json(update_data, bot_instance)
         
-        # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor для лучшего управления потоками
-        executor.submit(process_update_safe)
+        # Обрабатываем update напрямую в текущем event loop
+        if bot_application:
+            await bot_application.process_update(update)
         
-        return jsonify({'ok': True})
+        logger.debug(f"✅ Update {update_data.get('update_id')} обработан успешно")
+        
+        return web.json_response({'ok': True})
         
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка в Telegram webhook: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"❌ Ошибка в Telegram webhook: {e}", exc_info=True)
+        return web.json_response({'error': str(e)}, status=500)
 
-@flask_app.route('/webhook/payment', methods=['POST'])
-def payment_webhook():
-    """ИСПРАВЛЕННАЯ обработка Payment webhook"""
+async def payment_webhook(request):
+    """Обработка Payment webhook"""
     try:
         # Получаем платежные данные
-        payment_data = request.get_json()
+        payment_data = await request.json()
         
         if not payment_data:
             logger.warning("⚠️ Получен пустой payment webhook")
-            return jsonify({'error': 'Empty payload'}), 400
+            return web.json_response({'error': 'Empty payload'}, status=400)
         
         logger.info(f"💰 Получен payment webhook: {payment_data}")
         
@@ -169,7 +141,7 @@ def payment_webhook():
         for field in required_fields:
             if field not in payment_data:
                 logger.error(f"❌ Отсутствует обязательное поле: {field}")
-                return jsonify({'error': f'Missing required field: {field}'}), 400
+                return web.json_response({'error': f'Missing required field: {field}'}, status=400)
         
         user_id = payment_data.get('user_id')
         payment_status = payment_data.get('payment_status')
@@ -180,75 +152,46 @@ def payment_webhook():
             user_id = int(user_id)
         except (ValueError, TypeError):
             logger.error(f"❌ Неверный формат user_id: {user_id}")
-            return jsonify({'error': 'Invalid user_id format'}), 400
+            return web.json_response({'error': 'Invalid user_id format'}, status=400)
         
         if payment_status not in ['success', 'failed', 'pending']:
             logger.error(f"❌ Неверный payment_status: {payment_status}")
-            return jsonify({'error': 'Invalid payment_status'}), 400
+            return web.json_response({'error': 'Invalid payment_status'}, status=400)
         
         # Проверяем, существует ли пользователь
         user = db.get_user(user_id)
         if not user:
             logger.error(f"❌ Пользователь {user_id} не найден")
-            return jsonify({'error': 'User not found'}), 404
-        
-        # ИСПРАВЛЕНИЕ: Безопасная обработка в отдельном потоке
-        def process_payment_safe():
-            """Безопасная обработка платежа в отдельном потоке"""
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                try:
-                    success = loop.run_until_complete(handle_successful_payment(user_id, amount, payment_data))
-                    return success
-                finally:
-                    try:
-                        loop.close()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Ошибка при закрытии event loop в payment: {e}")
-                        
-            except Exception as e:
-                logger.error(f"❌ Ошибка в безопасной обработке платежа: {e}")
-                return False
+            return web.json_response({'error': 'User not found'}, status=404)
         
         # Обрабатываем только успешные платежи
         if payment_status == 'success':
-            # ИСПРАВЛЕНИЕ: Используем ThreadPoolExecutor с таймаутом
-            future = executor.submit(process_payment_safe)
+            success = await handle_successful_payment(user_id, amount, payment_data)
             
-            try:
-                success = future.result(timeout=30)  # Ждём максимум 30 секунд
-                
-                if success:
-                    logger.info(f"✅ Успешно обработан платеж для пользователя {user_id}")
-                    return jsonify({
-                        'status': 'success',
-                        'message': 'Payment processed successfully',
-                        'user_id': user_id
-                    }), 200
-                else:
-                    logger.error(f"❌ Ошибка при обработке платежа для пользователя {user_id}")
-                    return jsonify({'error': 'Payment processing failed'}), 500
-                    
-            except concurrent.futures.TimeoutError:
-                logger.error(f"❌ Таймаут при обработке платежа для пользователя {user_id}")
-                return jsonify({'error': 'Payment processing timeout'}), 500
+            if success:
+                logger.info(f"✅ Успешно обработан платеж для пользователя {user_id}")
+                return web.json_response({
+                    'status': 'success',
+                    'message': 'Payment processed successfully',
+                    'user_id': user_id
+                })
+            else:
+                logger.error(f"❌ Ошибка при обработке платежа для пользователя {user_id}")
+                return web.json_response({'error': 'Payment processing failed'}, status=500)
         else:
             # Логируем неуспешные платежи
             db.log_payment(user_id, amount, payment_status, payment_data.get('utm_source'), payment_data.get('utm_id'))
             logger.info(f"📝 Зафиксирован неуспешный платеж: {payment_status} для пользователя {user_id}")
-            return jsonify({
+            return web.json_response({
                 'status': 'logged',
                 'message': f'Payment status {payment_status} logged'
-            }), 200
+            })
     
     except Exception as e:
         logger.error(f"❌ Критическая ошибка в payment webhook: {e}", exc_info=True)
-        return jsonify({'error': 'Internal server error'}), 500
+        return web.json_response({'error': 'Internal server error'}, status=500)
 
-@flask_app.route('/health', methods=['GET'])
-def health_check():
+async def health_check(request):
     """Health check endpoint с подробной диагностикой"""
     try:
         # Получаем информацию о базе данных
@@ -261,23 +204,22 @@ def health_check():
             'telegram_webhook': f'/bot{BOT_TOKEN}',
             'payment_webhook': '/webhook/payment',
             'bot_running': bot_instance is not None,
-            'flask_port': RENDER_PORT,
+            'aiohttp_port': RENDER_PORT,
             'database': db_info,
             'render_disk_configured': RENDER_DISK_PATH is not None,
             'render_disk_path': RENDER_DISK_PATH,
-            'webhook_url': WEBHOOK_URL,
-            'executor_threads': len(executor._threads) if hasattr(executor, '_threads') else 'N/A'
+            'webhook_url': WEBHOOK_URL
         }
         
-        return jsonify(health_data)
+        return web.json_response(health_data)
         
     except Exception as e:
         logger.error(f"❌ Ошибка в health check: {e}")
-        return jsonify({
+        return web.json_response({
             'status': 'error',
             'error': str(e),
             'timestamp': datetime.now().isoformat()
-        }), 500
+        }, status=500)
 
 async def handle_successful_payment(user_id: int, amount: str, webhook_data: dict) -> bool:
     """Асинхронная обработка успешного платежа"""
@@ -352,6 +294,11 @@ async def send_payment_success_notification(user_id: int, amount: str):
         
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке уведомления об оплате пользователю {user_id}: {e}")
+
+# ===== НАСТРОЙКА МАРШРУТОВ =====
+app.router.add_post(f'/bot{BOT_TOKEN}', telegram_webhook)
+app.router.add_post('/webhook/payment', payment_webhook)
+app.router.add_get('/health', health_check)
 
 # ===== КОНСТАНТЫ ДЛЯ CALLBACK ДАННЫХ =====
 CALLBACK_USER_CONSENT = "user_consent"
@@ -1071,31 +1018,8 @@ async def handle_back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """ИСПРАВЛЕННЫЙ обработчик ошибок"""
+    """Обработчик ошибок"""
     logger.error(f"❌ Exception while handling an update: {context.error}")
-    
-    # НОВОЕ: Предотвращаем накопление проблемных event loop'ов
-    try:
-        if hasattr(context, 'error') and 'Event loop is closed' in str(context.error):
-            logger.warning("⚠️ Обнаружена ошибка закрытого event loop, игнорируем")
-            return
-    except Exception:
-        pass
-
-def run_flask_app():
-    """Запуск Flask приложения в отдельном потоке"""
-    logger.info(f"🌐 Запуск Flask сервера на порту {RENDER_PORT}")
-    logger.info(f"📱 Telegram webhook endpoint: /bot{BOT_TOKEN}")
-    logger.info(f"💰 Payment webhook endpoint: /webhook/payment")
-    logger.info(f"🔍 Health check endpoint: /health")
-    
-    flask_app.run(
-        host='0.0.0.0',
-        port=RENDER_PORT,
-        debug=False,
-        threaded=True,
-        use_reloader=False
-    )
 
 async def post_init(application: Application) -> None:
     """Инициализация после запуска"""
@@ -1112,8 +1036,8 @@ async def post_init(application: Application) -> None:
     db_info = db.get_database_info()
     logger.info(f"📊 База данных готова: {db_info}")
 
-def main():
-    """ИСПРАВЛЕННАЯ главная функция запуска бота"""
+async def run_telegram_bot():
+    """Запуск Telegram бота в отдельной задаче"""
     global bot_application, bot_instance
     
     logger.info("🚀 Запуск Telegram бота для Render с Disk...")
@@ -1121,6 +1045,7 @@ def main():
     # Создаём Telegram приложение
     application = Application.builder().token(BOT_TOKEN).build()
     bot_instance = application.bot
+    bot_application = application
     
     # Добавляем обработчик инициализации
     application.post_init = post_init
@@ -1150,48 +1075,66 @@ def main():
         first=20  # первый запуск через 20 секунд
     )
     
-    logger.info("🌐 Запуск в режиме WEBHOOK для продакшена на Render...")
-    
     if USE_WEBHOOK and WEBHOOK_URL:
-        # Запускаем Flask в отдельном потоке
-        flask_thread = threading.Thread(target=run_flask_app, daemon=True)
-        flask_thread.start()
-        
-        # Даем Flask время запуститься
-        import time
-        time.sleep(3)
-        
         # Настраиваем Telegram webhook
         webhook_path = f"/bot{BOT_TOKEN}"
         webhook_url = f"{WEBHOOK_URL}{webhook_path}"
         
         logger.info(f"📡 Настройка Telegram webhook: {webhook_url}")
         
-        # ИСПРАВЛЕНИЕ: Убраны проблемные параметры таймаутов
-        try:
-            application.run_webhook(
-                listen="127.0.0.1",  # Слушаем только локально
-                port=8443,  # Внутренний порт для telegram
-                webhook_url=webhook_url,
-                url_path=webhook_path,
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
-            )
-        except Exception as e:
-            logger.error(f"❌ Ошибка при запуске webhook: {e}")
-            logger.info("🔄 Переключение на polling mode...")
-            application.run_polling(
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
-            )
+        # Запускаем только инициализацию бота
+        await application.initialize()
+        await application.start()
+        
+        # Устанавливаем webhook
+        await application.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
+        
+        # Запускаем job queue
+        application.job_queue.start()
+        
+        logger.info("✅ Telegram бот инициализирован в webhook режиме")
+        
+        # Держим бота активным
+        while True:
+            await asyncio.sleep(60)
     else:
         logger.warning("🔄 Запуск в режиме POLLING (не рекомендуется для Render)")
         logger.warning("⚠️ Убедитесь, что установлены USE_WEBHOOK=true и WEBHOOK_URL")
         
-        application.run_polling(
+        await application.run_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES
         )
+
+def main():
+    """Главная функция запуска"""
+    logger.info("🌐 Запуск в режиме WEBHOOK для продакшена на Render...")
+    logger.info(f"📱 Telegram webhook endpoint: /bot{BOT_TOKEN}")
+    logger.info(f"💰 Payment webhook endpoint: /webhook/payment")
+    logger.info(f"🔍 Health check endpoint: /health")
+    
+    async def init_and_run():
+        """Инициализация и запуск всех сервисов"""
+        # Запускаем Telegram бота в фоновой задаче
+        bot_task = asyncio.create_task(run_telegram_bot())
+        
+        # Запускаем aiohttp сервер
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', RENDER_PORT)
+        await site.start()
+        
+        logger.info(f"🌐 aiohttp сервер запущен на порту {RENDER_PORT}")
+        
+        # Ожидаем завершения задач
+        await bot_task
+    
+    # Запускаем все в едином event loop
+    asyncio.run(init_and_run())
 
 if __name__ == '__main__':
     try:
@@ -1201,12 +1144,4 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f"❌ Критическая ошибка при запуске: {e}", exc_info=True)
     finally:
-        # НОВОЕ: Корректное завершение работы
-        try:
-            if executor:
-                executor.shutdown(wait=True, timeout=10)
-                logger.info("✅ ThreadPoolExecutor корректно завершен")
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка при завершении executor: {e}")
-        
         logger.info("👋 Бот завершен")
