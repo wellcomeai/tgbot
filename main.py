@@ -1167,7 +1167,7 @@ def main():
         
         logger.info(f"📡 Настройка Telegram webhook: {webhook_url}")
         
-        # ИСПРАВЛЕНИЕ: Улучшенные настройки webhook
+        # ИСПРАВЛЕНИЕ: Убраны проблемные параметры таймаутов
         try:
             application.run_webhook(
                 listen="127.0.0.1",  # Слушаем только локально
@@ -1175,12 +1175,7 @@ def main():
                 webhook_url=webhook_url,
                 url_path=webhook_path,
                 drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES,
-                # НОВОЕ: Добавляем обработку таймаутов
-                read_timeout=30,
-                write_timeout=30,
-                connect_timeout=30,
-                pool_timeout=30
+                allowed_updates=Update.ALL_TYPES
             )
         except Exception as e:
             logger.error(f"❌ Ошибка при запуске webhook: {e}")
