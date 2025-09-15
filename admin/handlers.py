@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime
 import logging
 import asyncio
+import utm_utils
 
 logger = logging.getLogger(__name__)
 
@@ -508,3 +509,67 @@ class HandlersMixin:
         await update.message.reply_text("✅ URL кнопки обновлен!")
         del self.waiting_for[user_id]
         await self.show_button_edit_from_context(update, context, button_id)
+    
+    async def handle_additional_callbacks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Дополнительные обработчики callback для рассылок"""
+        query = update.callback_query
+        data = query.data
+        
+        # Обработка для основных сообщений рассылки
+        if data.startswith("edit_text_"):
+            message_number = int(data.split("_")[2])
+            await self.request_text_input(update, context, "broadcast_text", message_number=message_number)
+        elif data.startswith("edit_delay_"):
+            message_number = int(data.split("_")[2])
+            await self.request_text_input(update, context, "broadcast_delay", message_number=message_number)
+        elif data.startswith("edit_photo_"):
+            message_number = int(data.split("_")[2])
+            await self.request_text_input(update, context, "broadcast_photo", message_number=message_number)
+        elif data.startswith("remove_photo_"):
+            message_number = int(data.split("_")[2])
+            self.db.update_broadcast_message(message_number, photo_url="")
+            await self.show_message_edit(update, context, message_number)
+        elif data.startswith("delete_msg_"):
+            message_number = int(data.split("_")[2])
+            # Подтверждение удаления
+            keyboard = [
+                [InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_{message_number}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"edit_msg_{message_number}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.safe_edit_or_send_message(
+                update, context,
+                f"⚠️ Вы уверены, что хотите удалить сообщение {message_number}?\n\nЭто также отменит все запланированные отправки этого сообщения.",
+                reply_markup
+            )
+        elif data.startswith("confirm_delete_"):
+            message_number = int(data.split("_")[2])
+            self.db.delete_broadcast_message(message_number)
+            await self.show_broadcast_menu(update, context)
+        elif data == "add_message":
+            # Инициализация для добавления сообщения
+            user_id = update.callback_query.from_user.id
+            self.waiting_for[user_id] = {
+                "type": "add_message", 
+                "created_at": datetime.now(), 
+                "step": "text"
+            }
+            
+            await self.safe_edit_or_send_message(
+                update, context,
+                "✏️ Отправьте текст нового сообщения:\n\n💡 После этого мы попросим задержку для отправки.",
+                InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_broadcast")]])
+            )
+        elif data.startswith("add_button_"):
+            message_number = int(data.split("_")[2])
+            # Проверяем лимит кнопок
+            existing_buttons = self.db.get_message_buttons(message_number)
+            if len(existing_buttons) >= 3:
+                await query.answer("❌ Максимум 3 кнопки на сообщение!", show_alert=True)
+                return False
+            await self.request_text_input(update, context, "add_button", message_number=message_number)
+        else:
+            return False  # Не обработано
+        
+        return True  # Обработано
