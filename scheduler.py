@@ -400,3 +400,310 @@ class MessageScheduler:
         except Exception as e:
             logger.error(f"❌ Ошибка при отмене сообщений для пользователя {user_id}: {e}")
             return 0
+
+    # ===== НОВЫЕ МЕТОДЫ ДЛЯ ПЛАТНЫХ РАССЫЛОК =====
+
+    async def schedule_paid_user_messages(self, context: ContextTypes.DEFAULT_TYPE, user_id):
+        """Запланировать отправку всех сообщений для оплатившего пользователя"""
+        try:
+            logger.info(f"💰 Начинаем планирование платных сообщений для пользователя {user_id}")
+            
+            # Получаем актуальную информацию о пользователе
+            user_info = self.db.get_user(user_id)
+            if not user_info:
+                logger.error(f"❌ Пользователь {user_id} не найден в базе данных")
+                return False
+                
+            user_id_db, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at = user_info
+            
+            # Проверяем, что пользователь активен
+            if not is_active:
+                logger.warning(f"⚠️ Пользователь {user_id} неактивен (is_active = {is_active})")
+                return False
+            
+            # Проверяем, что пользователь оплатил
+            if not has_paid:
+                logger.warning(f"⚠️ Пользователь {user_id} не оплатил (has_paid = {has_paid})")
+                return False
+            
+            # Проверяем, есть ли уже запланированные платные сообщения
+            existing_messages = self.db.get_user_paid_scheduled_messages(user_id)
+            if existing_messages:
+                logger.info(f"ℹ️ Пользователь {user_id} уже имеет {len(existing_messages)} запланированных платных сообщений")
+                return True
+            
+            # Получаем все сообщения рассылки для оплативших
+            messages = self.db.get_all_paid_broadcast_messages()
+            if not messages:
+                logger.warning("⚠️ Нет сообщений платной рассылки в базе данных")
+                return True  # Это не ошибка, просто нет настроенных сообщений
+            
+            logger.info(f"📋 Найдено {len(messages)} платных сообщений рассылки для планирования")
+            
+            current_time = datetime.now()
+            logger.info(f"💰 ⏰ Планирование платных сообщений для пользователя {user_id} (@{username}), текущее время: {current_time}")
+            
+            scheduled_count = 0
+            for message_number, text, delay_hours, photo_url in messages:
+                try:
+                    # Вычисляем время отправки от момента оплаты
+                    scheduled_time = current_time + timedelta(hours=delay_hours)
+                    
+                    # Добавляем в расписание
+                    success = self.db.schedule_paid_message(user_id, message_number, scheduled_time)
+                    if success:
+                        scheduled_count += 1
+                        
+                        # Форматируем время для логов
+                        time_diff = scheduled_time - current_time
+                        if time_diff.total_seconds() < 3600:  # Меньше часа
+                            time_str = f"{int(time_diff.total_seconds() / 60)} минут"
+                        else:
+                            time_str = f"{delay_hours} часов"
+                        
+                        logger.info(f"✅ Запланировано платное сообщение {message_number} для пользователя {user_id} на {scheduled_time.strftime('%Y-%m-%d %H:%M:%S')} (через {time_str})")
+                    else:
+                        logger.error(f"❌ Не удалось запланировать платное сообщение {message_number} для пользователя {user_id}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при планировании платного сообщения {message_number} для пользователя {user_id}: {e}")
+                    continue
+            
+            if scheduled_count > 0:
+                logger.info(f"💰 🎉 Всего запланировано {scheduled_count} платных сообщений для пользователя {user_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ Не удалось запланировать ни одного платного сообщения для пользователя {user_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка при планировании платных сообщений для пользователя {user_id}: {e}", exc_info=True)
+            return False
+
+    async def send_scheduled_paid_messages(self, context: ContextTypes.DEFAULT_TYPE):
+        """Отправить все запланированные платные сообщения"""
+        try:
+            current_time = datetime.now()
+            logger.debug(f"💰 🔄 Проверка запланированных платных сообщений на {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Проверяем статус рассылки
+            broadcast_status = self.db.get_broadcast_status()
+            
+            # Если рассылка отключена, пропускаем
+            if not broadcast_status['enabled']:
+                logger.debug("❌ Платные рассылки отключены")
+                return
+            
+            # Получаем платные сообщения, готовые к отправке
+            pending_messages = self.db.get_pending_paid_messages()
+            
+            if not pending_messages:
+                logger.debug("💰 📭 Нет платных сообщений для отправки")
+                return
+            
+            logger.info(f"💰 📬 Найдено {len(pending_messages)} платных сообщений для отправки")
+            
+            sent_count = 0
+            failed_count = 0
+            
+            for message_id, user_id, message_number, text, photo_url in pending_messages:
+                try:
+                    logger.debug(f"💰 📤 Отправляем платное сообщение {message_number} пользователю {user_id}")
+                    
+                    # Убеждаемся, что пользователь еще оплачен и активен
+                    user_info = self.db.get_user(user_id)
+                    if not user_info or not user_info[4] or not user_info[6]:  # is_active, has_paid
+                        logger.warning(f"💰 ⚠️ Пользователь {user_id} больше не активен или не оплачен, пропускаем платное сообщение {message_number}")
+                        self.db.mark_paid_message_sent(message_id)
+                        continue
+                    
+                    # Небольшая задержка между отправками
+                    await asyncio.sleep(0.1)
+                    
+                    # Получаем кнопки для этого сообщения
+                    buttons = self.db.get_paid_message_buttons(message_number)
+                    
+                    # Обрабатываем контент с UTM метками
+                    processed_text, processed_buttons = self.process_message_content(text, buttons, user_id)
+                    
+                    reply_markup = None
+                    if processed_buttons:
+                        # Создаем клавиатуру с обработанными кнопками
+                        keyboard = []
+                        for button_id, button_text, button_url, position in processed_buttons:
+                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                        
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        logger.debug(f"💰 🔘 Добавлены кнопки к платному сообщению {message_number}: {len(processed_buttons)} кнопок с UTM метками")
+                    
+                    # Отправляем сообщение
+                    if photo_url:
+                        # Отправляем с фото
+                        await context.bot.send_photo(
+                            chat_id=user_id,
+                            photo=photo_url,
+                            caption=processed_text,
+                            parse_mode='HTML',
+                            reply_markup=reply_markup
+                        )
+                        logger.debug(f"💰 🖼️ Отправлено платное сообщение с фото")
+                    else:
+                        # Отправляем только текст
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=processed_text,
+                            parse_mode='HTML',
+                            disable_web_page_preview=True,
+                            reply_markup=reply_markup
+                        )
+                        logger.debug(f"💰 📝 Отправлено платное текстовое сообщение")
+                    
+                    # Отмечаем как отправленное
+                    self.db.mark_paid_message_sent(message_id)
+                    sent_count += 1
+                    
+                    logger.info(f"✅ Отправлено платное сообщение {message_number} пользователю {user_id} с UTM метками")
+                    
+                except Forbidden as e:
+                    # Пользователь заблокировал бота
+                    logger.warning(f"❌ Пользователь {user_id} заблокировал бота при отправке платного сообщения: {e}")
+                    self.db.mark_paid_message_sent(message_id)
+                    self.db.deactivate_user(user_id)
+                    failed_count += 1
+                    
+                except BadRequest as e:
+                    # Неверный chat_id или другая ошибка
+                    logger.error(f"❌ BadRequest для пользователя {user_id} при отправке платного сообщения: {e}")
+                    self.db.mark_paid_message_sent(message_id)
+                    failed_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"❌ Не удалось отправить платное сообщение {message_id} пользователю {user_id}: {e}")
+                    failed_count += 1
+            
+            if sent_count > 0 or failed_count > 0:
+                logger.info(f"💰 📊 Результаты платной рассылки: отправлено {sent_count}, ошибок {failed_count}")
+                        
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в send_scheduled_paid_messages: {e}", exc_info=True)
+
+    async def send_scheduled_paid_broadcasts(self, context: ContextTypes.DEFAULT_TYPE):
+        """Отправить запланированные массовые рассылки для оплативших"""
+        try:
+            current_time = datetime.now()
+            logger.debug(f"💰 📡 Проверка запланированных рассылок для оплативших на {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Проверяем статус рассылки
+            broadcast_status = self.db.get_broadcast_status()
+            
+            # Если рассылка отключена, пропускаем
+            if not broadcast_status['enabled']:
+                logger.debug("❌ Массовые рассылки для оплативших отключены")
+                return
+            
+            # Получаем рассылки для оплативших, готовые к отправке
+            pending_broadcasts = self.db.get_pending_paid_broadcasts()
+            
+            if not pending_broadcasts:
+                logger.debug("💰 📭 Нет запланированных рассылок для оплативших")
+                return
+            
+            logger.info(f"💰 📡 Найдено {len(pending_broadcasts)} запланированных рассылок для оплативших")
+            
+            # Получаем пользователей, которые оплатили
+            paid_users = self.db.get_users_with_payment()
+            
+            if not paid_users:
+                logger.warning("⚠️ Нет оплативших пользователей для массовой рассылки")
+                # Отмечаем рассылки как отправленные
+                for broadcast_id, message_text, photo_url, scheduled_time in pending_broadcasts:
+                    self.db.mark_paid_broadcast_sent(broadcast_id)
+                return
+            
+            logger.info(f"💰 👥 Будем отправлять рассылки {len(paid_users)} оплатившим пользователям")
+            
+            for broadcast_id, message_text, photo_url, scheduled_time in pending_broadcasts:
+                try:
+                    logger.info(f"💰 📤 Начинаем отправку рассылки для оплативших #{broadcast_id}")
+                    
+                    # Получаем кнопки для этой рассылки
+                    buttons = self.db.get_paid_scheduled_broadcast_buttons(broadcast_id)
+                    
+                    sent_count = 0
+                    failed_count = 0
+                    
+                    # Отправляем всем оплатившим пользователям
+                    for user in paid_users:
+                        user_id = user[0]
+                        
+                        try:
+                            # Небольшая задержка между отправками
+                            await asyncio.sleep(0.1)
+                            
+                            # Обрабатываем контент с UTM метками для каждого пользователя
+                            processed_text, processed_buttons = self.process_message_content(message_text, buttons, user_id)
+                            
+                            reply_markup = None
+                            if processed_buttons:
+                                # Создаем клавиатуру с обработанными кнопками
+                                keyboard = []
+                                for button_id, button_text, button_url, position in processed_buttons:
+                                    keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                
+                                reply_markup = InlineKeyboardMarkup(keyboard)
+                                logger.debug(f"💰 🔘 Добавлены кнопки к рассылке для оплативших #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок с UTM метками")
+                            
+                            if photo_url:
+                                # Отправляем с фото
+                                await context.bot.send_photo(
+                                    chat_id=user_id,
+                                    photo=photo_url,
+                                    caption=processed_text,
+                                    parse_mode='HTML',
+                                    reply_markup=reply_markup
+                                )
+                            else:
+                                # Отправляем только текст
+                                await context.bot.send_message(
+                                    chat_id=user_id,
+                                    text=processed_text,
+                                    parse_mode='HTML',
+                                    disable_web_page_preview=True,
+                                    reply_markup=reply_markup
+                                )
+                            
+                            sent_count += 1
+                            
+                        except Forbidden as e:
+                            # Пользователь заблокировал бота
+                            logger.warning(f"❌ Пользователь {user_id} заблокировал бота при рассылке для оплативших #{broadcast_id}: {e}")
+                            self.db.deactivate_user(user_id)
+                            failed_count += 1
+                            
+                        except BadRequest as e:
+                            # Неверный chat_id или другая ошибка
+                            logger.error(f"❌ BadRequest для пользователя {user_id} при рассылке для оплативших #{broadcast_id}: {e}")
+                            failed_count += 1
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Не удалось отправить рассылку для оплативших #{broadcast_id} пользователю {user_id}: {e}")
+                            failed_count += 1
+                    
+                    # Отмечаем рассылку как отправленную
+                    self.db.mark_paid_broadcast_sent(broadcast_id)
+                    
+                    logger.info(f"✅ Рассылка для оплативших #{broadcast_id} завершена с UTM метками: отправлено {sent_count}, ошибок {failed_count}")
+                    
+                    # Пауза между разными рассылками
+                    if len(pending_broadcasts) > 1:
+                        await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Критическая ошибка при отправке рассылки для оплативших #{broadcast_id}: {e}")
+                    # Отмечаем как отправленную, чтобы не зацикливаться
+                    self.db.mark_paid_broadcast_sent(broadcast_id)
+            
+            logger.info(f"💰 📊 Обработка запланированных рассылок для оплативших завершена")
+                        
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в send_scheduled_paid_broadcasts: {e}", exc_info=True)
