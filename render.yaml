@@ -1,0 +1,56 @@
+services:
+  - type: web
+    name: telegram-bot
+    env: python
+    plan: starter  # Можно изменить на standard или pro
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: USE_WEBHOOK
+        value: true
+      - key: WEBHOOK_URL
+        sync: false  # Устанавливается автоматически Render
+      - key: BOT_TOKEN
+        sync: false  # Нужно установить в dashboard
+      - key: ADMIN_CHAT_ID
+        sync: false  # Нужно установить в dashboard
+      - key: CHANNEL_ID
+        sync: false  # Нужно установить в dashboard
+      - key: RENDER_DISK_PATH
+        value: /data  # ИСПРАВЛЕНО: правильный путь к диску
+    
+    # ВАЖНО: Подключение Render Disk для persistent storage
+    disk:
+      name: bot-database-disk
+      mountPath: /data  # ИСПРАВЛЕНО: правильный путь
+      sizeGB: 1  # Минимальный размер 1GB, можно увеличить
+
+    # Настройки автоматического деплоя
+    autoDeploy: true
+    
+    # Health check настройки
+    healthCheckPath: /health
+    
+    # Настройки ресурсов
+    numInstances: 1  # Один инстанс для бота
+    
+    # Регион (можно изменить на более близкий)
+    region: oregon  # Доступны: oregon, frankfurt, singapore
+    
+    # Переменные окружения для оптимизации Python
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    
+    # Дополнительные настройки для Python
+    runtimeSource:
+      type: image
+      image: python:3.11-slim
+      
+# Дополнительные настройки для базы данных (если нужны)
+databases: []  # Мы используем SQLite с Disk, поэтому внешняя БД не нужна
+
+# Настройки окружения
+envVarGroups: []
