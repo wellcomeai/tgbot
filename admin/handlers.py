@@ -180,6 +180,38 @@ class HandlersMixin:
                 "💰 ✏️ Отправьте текст нового сообщения для оплативших:\n\n💡 После этого мы попросим задержку для отправки.",
                 InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_paid_broadcast")]])
             )
+        # Редактирование платных сообщений
+        elif data.startswith("edit_paid_text_"):
+            message_number = int(data.split("_")[3])
+            await self.request_text_input(update, context, "paid_broadcast_text", message_number=message_number)
+        elif data.startswith("edit_paid_delay_"):
+            message_number = int(data.split("_")[3])
+            await self.request_text_input(update, context, "paid_broadcast_delay", message_number=message_number)
+        elif data.startswith("edit_paid_photo_"):
+            message_number = int(data.split("_")[3])
+            await self.request_text_input(update, context, "paid_broadcast_photo", message_number=message_number)
+        elif data.startswith("remove_paid_photo_"):
+            message_number = int(data.split("_")[3])
+            self.db.update_paid_broadcast_message(message_number, photo_url="")
+            await self.show_paid_message_edit(update, context, message_number)
+        elif data.startswith("delete_paid_msg_"):
+            message_number = int(data.split("_")[3])
+            # Подтверждение удаления
+            keyboard = [
+                [InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_paid_{message_number}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"edit_paid_msg_{message_number}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.safe_edit_or_send_message(
+                update, context,
+                f"⚠️ Вы уверены, что хотите удалить сообщение для оплативших {message_number}?\n\nЭто также отменит все запланированные отправки этого сообщения.",
+                reply_markup
+            )
+        elif data.startswith("confirm_delete_paid_"):
+            message_number = int(data.split("_")[3])
+            self.db.delete_paid_broadcast_message(message_number)
+            await self.show_paid_broadcast_menu(update, context)
         
         # Управление приветственными кнопками
         elif data == "manage_welcome_buttons":
@@ -330,6 +362,14 @@ class HandlersMixin:
         elif input_type == "paid_mass_button_url":
             await self.handle_paid_mass_button_url_input(update, context, text)
         
+        # Платные сообщения рассылки
+        elif input_type == "paid_broadcast_text":
+            await self.handle_paid_broadcast_text_input(update, context, text)
+        elif input_type == "paid_broadcast_delay":
+            await self.handle_paid_broadcast_delay_input(update, context, text)
+        elif input_type == "paid_broadcast_photo":
+            await self.handle_paid_broadcast_photo_input(update, context, text)
+        
         # Остальные типы
         elif input_type == "broadcast_timer":
             await self.handle_broadcast_timer(update, context, text)
@@ -409,6 +449,61 @@ class HandlersMixin:
             return False
         
         return True
+    
+    # === Обработчики для платных сообщений рассылки ===
+    
+    async def handle_paid_broadcast_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода текста для платного сообщения рассылки"""
+        user_id = update.effective_user.id
+        waiting_data = self.waiting_for[user_id]
+        message_number = waiting_data["message_number"]
+        
+        if len(text) > 4096:
+            await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
+            return
+        
+        self.db.update_paid_broadcast_message(message_number, text=text)
+        await update.message.reply_text(f"✅ Текст платного сообщения {message_number} обновлён!")
+        del self.waiting_for[user_id]
+        await self.show_paid_message_edit_from_context(update, context, message_number)
+    
+    async def handle_paid_broadcast_delay_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода задержки для платного сообщения рассылки"""
+        user_id = update.effective_user.id
+        waiting_data = self.waiting_for[user_id]
+        message_number = waiting_data["message_number"]
+        
+        delay_hours, delay_display = self.parse_delay_input(text)
+        
+        if delay_hours is not None and delay_hours > 0:
+            self.db.update_paid_broadcast_message(message_number, delay_hours=delay_hours)
+            await update.message.reply_text(f"✅ Задержка для платного сообщения {message_number} установлена на {delay_display}!")
+            del self.waiting_for[user_id]
+            await self.show_paid_message_edit_from_context(update, context, message_number)
+        else:
+            await update.message.reply_text(
+                "❌ Неверный формат! Примеры правильного ввода:\n\n"
+                "• <code>3м</code> или <code>3 минуты</code>\n"
+                "• <code>2ч</code> или <code>2 часа</code>\n"
+                "• <code>1.5</code> (для 1.5 часов)\n"
+                "• <code>0.05</code> (для 3 минут)",
+                parse_mode='HTML'
+            )
+    
+    async def handle_paid_broadcast_photo_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода фото для платного сообщения рассылки"""
+        user_id = update.effective_user.id
+        waiting_data = self.waiting_for[user_id]
+        message_number = waiting_data["message_number"]
+        
+        if not (text.startswith("http://") or text.startswith("https://")):
+            await update.message.reply_text("❌ Отправьте фото или ссылку на фото (начинающуюся с http:// или https://)")
+            return
+        
+        self.db.update_paid_broadcast_message(message_number, photo_url=text)
+        await update.message.reply_text(f"✅ Фото для платного сообщения {message_number} обновлено!")
+        del self.waiting_for[user_id]
+        await self.show_paid_message_edit_from_context(update, context, message_number)
     
     # === Вспомогательные методы для обработки ===
     
