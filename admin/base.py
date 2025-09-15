@@ -36,7 +36,10 @@ class AdminPanel(
     UtilsMixin,
     MenuMixin,
     InputMixin,
-    NavigationMixin
+    NavigationMixin,
+    PaidBroadcastsMixin,
+    PaidButtonsMixin,
+    PaidMassBroadcastsMixin
 ):
     """
     Главный класс админ-панели, объединяющий всю функциональность
@@ -131,6 +134,7 @@ class AdminPanel(
         keyboard = [
             [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton("✉️ Управление рассылкой", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("💰 Рассылки для оплативших", callback_data="admin_paid_broadcast")],
             [InlineKeyboardButton(f"{status_icon} Статус рассылки", callback_data="admin_broadcast_status")],
             [InlineKeyboardButton("👋 Приветственное сообщение", callback_data="admin_welcome")],
             [InlineKeyboardButton("😢 Прощальное сообщение", callback_data="admin_goodbye")],
@@ -158,6 +162,7 @@ class AdminPanel(
         keyboard = [
             [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton("✉️ Управление рассылкой", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("💰 Рассылки для оплативших", callback_data="admin_paid_broadcast")],
             [InlineKeyboardButton(f"{status_icon} Статус рассылки", callback_data="admin_broadcast_status")],
             [InlineKeyboardButton("👋 Приветственное сообщение", callback_data="admin_welcome")],
             [InlineKeyboardButton("😢 Прощальное сообщение", callback_data="admin_goodbye")],
