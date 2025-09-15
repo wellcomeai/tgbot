@@ -243,13 +243,16 @@ async def handle_successful_payment(user_id: int, amount: str, webhook_data: dic
         cancelled_count = db.cancel_remaining_messages(user_id)
         logger.info(f"🚫 Отменено {cancelled_count} запланированных сообщений обычной рассылки для пользователя {user_id}")
         
-        # НОВОЕ: Планируем сообщения для оплативших пользователей
+        # ИСПРАВЛЕНО: Планируем сообщения для оплативших пользователей
         if bot_application and bot_application.job_queue:
-            context = await bot_application.bot.create_context(
-                update=None,
-                user_id=user_id
-            )
+            # Создаем простой контекст без create_context
+            class SimpleContext:
+                def __init__(self, bot):
+                    self.bot = bot
+                    
+            context = SimpleContext(bot_instance)
             paid_schedule_success = await scheduler.schedule_paid_user_messages(context, user_id)
+            
             if paid_schedule_success:
                 logger.info(f"✅ Запланированы сообщения для оплатившего пользователя {user_id}")
             else:
