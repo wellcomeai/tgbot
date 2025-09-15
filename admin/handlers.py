@@ -475,7 +475,7 @@ class HandlersMixin:
         
         delay_hours, delay_display = self.parse_delay_input(text)
         
-        if delay_hours is not None and delay_hours > 0:
+        if delay_hours is not None and delay_hours >= 0:  # Разрешаем 0 для мгновенной отправки
             self.db.update_paid_broadcast_message(message_number, delay_hours=delay_hours)
             await update.message.reply_text(f"✅ Задержка для платного сообщения {message_number} установлена на {delay_display}!")
             del self.waiting_for[user_id]
@@ -486,7 +486,7 @@ class HandlersMixin:
                 "• <code>3м</code> или <code>3 минуты</code>\n"
                 "• <code>2ч</code> или <code>2 часа</code>\n"
                 "• <code>1.5</code> (для 1.5 часов)\n"
-                "• <code>0.05</code> (для 3 минут)",
+                "• <code>0</code> (для мгновенной отправки)",
                 parse_mode='HTML'
             )
     
