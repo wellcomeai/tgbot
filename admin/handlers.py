@@ -4,7 +4,7 @@
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import asyncio
 import utm_utils
@@ -35,6 +35,12 @@ class HandlersMixin:
                 await self.show_statistics(update, context)
             elif data == "admin_broadcast":
                 await self.show_broadcast_menu(update, context)
+            elif data == "admin_paid_broadcast":
+                await self.show_paid_broadcast_menu(update, context)
+            elif data == "paid_send_all":
+                await self.show_paid_send_all_menu(update, context)
+            elif data == "paid_scheduled_broadcasts":
+                await self.show_paid_scheduled_broadcasts(update, context)
             elif data == "admin_broadcast_status":
                 await self.show_broadcast_status(update, context)
             elif data == "admin_users":
@@ -94,6 +100,26 @@ class HandlersMixin:
             elif data == "mass_confirm_send":
                 await self.execute_mass_broadcast(update, context)
             
+            # === Платные массовые рассылки ===
+            elif data == "paid_mass_edit_text":
+                await self.request_text_input(update, context, "paid_mass_text")
+            elif data == "paid_mass_add_photo":
+                await self.request_text_input(update, context, "paid_mass_photo")
+            elif data == "paid_mass_set_time":
+                await self.request_text_input(update, context, "paid_mass_time")
+            elif data == "paid_mass_add_button":
+                await self.request_text_input(update, context, "paid_mass_button_text")
+            elif data == "paid_mass_remove_photo":
+                await self._handle_paid_mass_remove_photo(update, context)
+            elif data == "paid_mass_remove_button":
+                await self._handle_paid_mass_remove_button(update, context)
+            elif data == "paid_mass_preview":
+                await self.show_paid_mass_broadcast_preview(update, context)
+            elif data == "paid_mass_send_now":
+                await self._handle_paid_mass_send_now(update, context)
+            elif data == "paid_mass_confirm_send":
+                await self.execute_paid_mass_broadcast(update, context)
+            
             # === Остальные обработчики ===
             elif await self.handle_specific_callbacks(update, context):
                 pass
@@ -128,6 +154,32 @@ class HandlersMixin:
             await self.request_text_input(update, context, "edit_button_url", button_id=button_id)
         elif data.startswith("delete_button_"):
             await self._handle_delete_button(update, context, data)
+        
+        # Обработка для платных сообщений рассылки
+        elif data.startswith("edit_paid_msg_"):
+            message_number = int(data.split("_")[3])
+            await self.show_paid_message_edit(update, context, message_number)
+        elif data.startswith("manage_paid_buttons_"):
+            message_number = int(data.split("_")[3])
+            await self.show_paid_message_buttons(update, context, message_number)
+        elif data.startswith("edit_paid_button_") and not data.startswith("edit_paid_button_text_") and not data.startswith("edit_paid_button_url_"):
+            button_id = int(data.split("_")[3])
+            await self.show_paid_button_edit(update, context, button_id)
+        elif data.startswith("add_paid_button_"):
+            message_number = int(data.split("_")[3])
+            await self.request_text_input(update, context, "add_paid_button", message_number=message_number)
+        elif data == "add_paid_message":
+            user_id = update.callback_query.from_user.id
+            self.waiting_for[user_id] = {
+                "type": "add_paid_message", 
+                "created_at": datetime.now(), 
+                "step": "text"
+            }
+            await self.safe_edit_or_send_message(
+                update, context,
+                "💰 ✏️ Отправьте текст нового сообщения для оплативших:\n\n💡 После этого мы попросим задержку для отправки.",
+                InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_paid_broadcast")]])
+            )
         
         # Управление приветственными кнопками
         elif data == "manage_welcome_buttons":
@@ -262,6 +314,22 @@ class HandlersMixin:
         elif input_type == "mass_button_url":
             await self.handle_mass_button_url_input(update, context, text)
         
+        # Платные рассылки
+        elif input_type == "add_paid_message":
+            await self.handle_add_paid_message(update, context, text)
+        elif input_type == "add_paid_button":
+            await self.handle_add_paid_button(update, context, text)
+        elif input_type == "paid_mass_text":
+            await self.handle_paid_mass_text_input(update, context, text)
+        elif input_type == "paid_mass_photo":
+            await self.handle_paid_mass_photo_input(update, context, text)
+        elif input_type == "paid_mass_time":
+            await self.handle_paid_mass_time_input(update, context, text)
+        elif input_type == "paid_mass_button_text":
+            await self.handle_paid_mass_button_text_input(update, context, text)
+        elif input_type == "paid_mass_button_url":
+            await self.handle_paid_mass_button_url_input(update, context, text)
+        
         # Остальные типы
         elif input_type == "broadcast_timer":
             await self.handle_broadcast_timer(update, context, text)
@@ -392,6 +460,27 @@ class HandlersMixin:
             self.broadcast_drafts[user_id]["scheduled_hours"] = None
             await self.show_mass_broadcast_preview(update, context)
     
+    async def _handle_paid_mass_remove_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаление фото из платной массовой рассылки"""
+        user_id = update.effective_user.id
+        if user_id in self.broadcast_drafts:
+            self.broadcast_drafts[user_id]["photo_data"] = None
+            await self.show_paid_send_all_menu(update, context)
+
+    async def _handle_paid_mass_remove_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаление последней кнопки из платной массовой рассылки"""
+        user_id = update.effective_user.id
+        if user_id in self.broadcast_drafts and self.broadcast_drafts[user_id]["buttons"]:
+            self.broadcast_drafts[user_id]["buttons"].pop()
+            await self.show_paid_send_all_menu(update, context)
+
+    async def _handle_paid_mass_send_now(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Установка немедленной отправки платной массовой рассылки"""
+        user_id = update.effective_user.id
+        if user_id in self.broadcast_drafts:
+            self.broadcast_drafts[user_id]["scheduled_hours"] = None
+            await self.show_paid_mass_broadcast_preview(update, context)
+    
     async def _handle_delete_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
         """Удаление кнопки сообщения"""
         button_id = int(data.split("_")[2])
@@ -509,6 +598,158 @@ class HandlersMixin:
         await update.message.reply_text("✅ URL кнопки обновлен!")
         del self.waiting_for[user_id]
         await self.show_button_edit_from_context(update, context, button_id)
+    
+    # Обработчики ввода для платных массовых рассылок
+    async def handle_paid_mass_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода текста для платной массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if len(text) > 4096:
+            await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
+            return
+        
+        if user_id not in self.broadcast_drafts:
+            self.broadcast_drafts[user_id] = {
+                "message_text": "",
+                "photo_data": None,
+                "buttons": [],
+                "scheduled_hours": None,
+                "created_at": datetime.now(),
+                "is_paid_broadcast": True
+            }
+        
+        self.broadcast_drafts[user_id]["message_text"] = text
+        self.broadcast_drafts[user_id]["is_paid_broadcast"] = True
+        
+        await update.message.reply_text("✅ Текст сообщения для оплативших сохранен!")
+        del self.waiting_for[user_id]
+        
+        await self.show_paid_send_all_menu_from_context(update, context)
+
+    async def handle_paid_mass_photo_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода фото для платной массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if not (text.startswith("http://") or text.startswith("https://")):
+            await update.message.reply_text("❌ Отправьте фото или ссылку на фото (начинающуюся с http:// или https://)")
+            return
+        
+        if user_id not in self.broadcast_drafts:
+            self.broadcast_drafts[user_id] = {
+                "message_text": "",
+                "photo_data": None,
+                "buttons": [],
+                "scheduled_hours": None,
+                "created_at": datetime.now(),
+                "is_paid_broadcast": True
+            }
+        
+        self.broadcast_drafts[user_id]["photo_data"] = text
+        self.broadcast_drafts[user_id]["is_paid_broadcast"] = True
+        
+        await update.message.reply_text("✅ Фото для рассылки оплативших добавлено!")
+        del self.waiting_for[user_id]
+        
+        await self.show_paid_send_all_menu_from_context(update, context)
+
+    async def handle_paid_mass_time_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода времени для платной массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if user_id not in self.broadcast_drafts:
+            await update.message.reply_text("❌ Черновик не найден!")
+            return
+        
+        if not text.strip():
+            self.broadcast_drafts[user_id]["scheduled_hours"] = None
+            await update.message.reply_text("✅ Рассылка для оплативших будет отправлена сейчас!")
+        else:
+            try:
+                hours = float(text.strip())
+                if hours < 0:
+                    await update.message.reply_text("❌ Количество часов не может быть отрицательным")
+                    return
+                
+                self.broadcast_drafts[user_id]["scheduled_hours"] = hours
+                if hours == 0:
+                    await update.message.reply_text("✅ Рассылка для оплативших будет отправлена немедленно!")
+                else:
+                    scheduled_time = datetime.now() + timedelta(hours=hours)
+                    await update.message.reply_text(f"✅ Рассылка для оплативших запланирована на {scheduled_time.strftime('%d.%m.%Y %H:%M')}!")
+                
+            except ValueError:
+                await update.message.reply_text("❌ Введите корректное число часов")
+                return
+        
+        del self.waiting_for[user_id]
+        await self.show_paid_send_all_menu_from_context(update, context)
+
+    async def handle_paid_mass_button_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода текста кнопки для платной массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if len(text) > 64:
+            await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 64 символа.")
+            return
+        
+        if user_id not in self.broadcast_drafts:
+            await update.message.reply_text("❌ Черновик не найден!")
+            return
+        
+        self.waiting_for[user_id]["button_text"] = text
+        self.waiting_for[user_id]["type"] = "paid_mass_button_url"
+        
+        await update.message.reply_text("🔗 Теперь отправьте URL для кнопки:")
+
+    async def handle_paid_mass_button_url_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка ввода URL кнопки для платной массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if not (text.startswith("http://") or text.startswith("https://")):
+            await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
+            return
+        
+        if len(text) > 256:
+            await update.message.reply_text("❌ URL слишком длинный.")
+            return
+        
+        if user_id not in self.broadcast_drafts:
+            await update.message.reply_text("❌ Черновик не найден!")
+            return
+        
+        if len(self.broadcast_drafts[user_id]["buttons"]) >= 10:
+            await update.message.reply_text("❌ Максимум 10 кнопок на сообщение.")
+            return
+        
+        button_text = self.waiting_for[user_id]["button_text"]
+        
+        self.broadcast_drafts[user_id]["buttons"].append({
+            "text": button_text,
+            "url": text
+        })
+        
+        await update.message.reply_text("✅ Кнопка для оплативших добавлена!")
+        del self.waiting_for[user_id]
+        
+        await self.show_paid_send_all_menu_from_context(update, context)
+
+    async def show_paid_send_all_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отправить НОВОЕ сообщение меню платной массовой рассылки"""
+        user_id = update.effective_user.id
+        
+        if user_id not in self.broadcast_drafts:
+            self.broadcast_drafts[user_id] = {
+                "message_text": "",
+                "photo_data": None,
+                "buttons": [],
+                "scheduled_hours": None,
+                "created_at": datetime.now(),
+                "is_paid_broadcast": True
+            }
+        
+        self.broadcast_drafts[user_id]["is_paid_broadcast"] = True
+        
+        await self.show_paid_send_all_menu(update, context)
     
     async def handle_additional_callbacks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Дополнительные обработчики callback для рассылок"""
