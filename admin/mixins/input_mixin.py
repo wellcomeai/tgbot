@@ -82,6 +82,13 @@ class InputMixin:
                                    f"• <code>0</code> - для мгновенной отправки\n\n"
                                    f"💡 Примеры: <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>0</code>",
             "paid_broadcast_photo": f"💰 🖼 Отправьте фото для сообщения оплативших {kwargs.get('message_number')} или ссылку на фото:",
+            
+            # Платные массовые рассылки
+            "paid_mass_text": "💰 ✏️ Отправьте текст для массовой рассылки оплативших:",
+            "paid_mass_photo": "💰 🖼 Отправьте фото для массовой рассылки оплативших или ссылку на фото:",
+            "paid_mass_time": "💰 ⏰ Через сколько часов отправить рассылку оплативших?\n\nПримеры: 1, 2.5, 24\n\nОставьте пустым для отправки сейчас:",
+            "paid_mass_button_text": "💰 ✏️ Отправьте текст для кнопки:",
+            "paid_mass_button_url": "💰 🔗 Отправьте URL для кнопки:",
         }
         
         text = texts.get(input_type, "Отправьте необходимые данные:")
@@ -115,6 +122,28 @@ class InputMixin:
             del self.waiting_for[user_id]
             
             await self.show_send_all_menu_from_context(update, context)
+        
+        elif input_type == "paid_mass_photo":
+            # Фото для массовой рассылки оплативших
+            photo_file_id = update.message.photo[-1].file_id
+            
+            if user_id not in self.broadcast_drafts:
+                self.broadcast_drafts[user_id] = {
+                    "message_text": "",
+                    "photo_data": None,
+                    "buttons": [],
+                    "scheduled_hours": None,
+                    "created_at": datetime.now(),
+                    "is_paid_broadcast": True
+                }
+            
+            self.broadcast_drafts[user_id]["photo_data"] = photo_file_id
+            self.broadcast_drafts[user_id]["is_paid_broadcast"] = True
+            
+            await update.message.reply_text("✅ Фото для рассылки оплативших добавлено!")
+            del self.waiting_for[user_id]
+            
+            await self.show_paid_send_all_menu_from_context(update, context)
         
         elif input_type == "payment_message_photo":
             # Фото для сообщения об оплате
@@ -245,3 +274,32 @@ class InputMixin:
             await update.message.reply_text("✅ Ссылка на фото сохранена!")
             del self.waiting_for[user_id]
             await self.show_send_all_menu_from_context(update, context)
+        
+        elif input_type == "paid_mass_photo":
+            if user_id not in self.broadcast_drafts:
+                self.broadcast_drafts[user_id] = {
+                    "message_text": "",
+                    "photo_data": None,
+                    "buttons": [],
+                    "scheduled_hours": None,
+                    "created_at": datetime.now(),
+                    "is_paid_broadcast": True
+                }
+            
+            self.broadcast_drafts[user_id]["photo_data"] = url
+            self.broadcast_drafts[user_id]["is_paid_broadcast"] = True
+            await update.message.reply_text("✅ Ссылка на фото для рассылки оплативших сохранена!")
+            del self.waiting_for[user_id]
+            await self.show_paid_send_all_menu_from_context(update, context)
+    
+    def _get_delay_text(self, message_number):
+        """Получить текст для ввода задержки"""
+        return (
+            f"⏰ Отправьте новую задержку для сообщения {message_number}:\n\n"
+            f"📝 <b>Форматы ввода:</b>\n"
+            f"• <code>30м</code> или <code>30 минут</code> - для минут\n"
+            f"• <code>2ч</code> или <code>2 часа</code> - для часов\n"
+            f"• <code>1.5</code> - для 1.5 часов\n"
+            f"• <code>0.05</code> - для 3 минут\n\n"
+            f"💡 Примеры: <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>1.5</code>"
+        )
