@@ -295,3 +295,48 @@ class PaidBroadcastsMixin:
         )
         
         await self.send_new_menu_message(context, user_id, message_text, reply_markup)
+    
+    async def show_paid_message_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
+        """Отправить НОВОЕ сообщение для редактирования платного сообщения"""
+        user_id = update.effective_user.id
+        
+        msg_data = self.db.get_paid_broadcast_message(message_number)
+        if not msg_data:
+            await context.bot.send_message(chat_id=user_id, text="❌ Сообщение не найдено!")
+            return
+        
+        text, delay_hours, photo_url = msg_data
+        buttons = self.db.get_paid_message_buttons(message_number)
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_paid_text_{message_number}")],
+            [InlineKeyboardButton("⏰ Изменить задержку", callback_data=f"edit_paid_delay_{message_number}")],
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_paid_photo_{message_number}")]
+        ]
+        
+        if photo_url:
+            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data=f"remove_paid_photo_{message_number}")])
+        
+        keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data=f"manage_paid_buttons_{message_number}")])
+        keyboard.append([InlineKeyboardButton("🗑 Удалить сообщение", callback_data=f"delete_paid_msg_{message_number}")])
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_paid_broadcast")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        buttons_info = ""
+        if buttons:
+            buttons_info = f"\n<b>Кнопки ({len(buttons)}):</b>\n"
+            for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
+                buttons_info += f"{i}. {button_text} → {button_url}\n"
+        
+        delay_str = self.format_delay_display_full(delay_hours)
+        
+        message_text = (
+            f"💰 <b>Сообщение для оплативших {message_number}</b>\n\n"
+            f"<b>Текущий текст:</b>\n{text}\n\n"
+            f"<b>Задержка:</b> {delay_str} после оплаты\n"
+            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
+            f"{buttons_info}\n\n"
+            f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
+        )
+        
+        await self.send_new_menu_message(context, user_id, message_text, reply_markup)
