@@ -19,6 +19,9 @@ from .utils import UtilsMixin
 from .mixins.menu_mixin import MenuMixin
 from .mixins.input_mixin import InputMixin
 from .mixins.navigation_mixin import NavigationMixin
+from .paid_broadcasts import PaidBroadcastsMixin
+from .paid_buttons import PaidButtonsMixin  
+from .paid_mass_broadcasts import PaidMassBroadcastsMixin
 
 logger = logging.getLogger(__name__)
 
