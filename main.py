@@ -239,9 +239,23 @@ async def handle_successful_payment(user_id: int, amount: str, webhook_data: dic
         # Логируем платеж
         db.log_payment(user_id, amount, 'success', utm_source, utm_id)
         
-        # Отменяем оставшиеся запланированные сообщения
+        # Отменяем оставшиеся запланированные сообщения (обычной рассылки)
         cancelled_count = db.cancel_remaining_messages(user_id)
-        logger.info(f"🚫 Отменено {cancelled_count} запланированных сообщений для пользователя {user_id}")
+        logger.info(f"🚫 Отменено {cancelled_count} запланированных сообщений обычной рассылки для пользователя {user_id}")
+        
+        # НОВОЕ: Планируем сообщения для оплативших пользователей
+        if bot_application and bot_application.job_queue:
+            context = await bot_application.bot.create_context(
+                update=None,
+                user_id=user_id
+            )
+            paid_schedule_success = await scheduler.schedule_paid_user_messages(context, user_id)
+            if paid_schedule_success:
+                logger.info(f"✅ Запланированы сообщения для оплатившего пользователя {user_id}")
+            else:
+                logger.warning(f"⚠️ Не удалось запланировать сообщения для оплатившего пользователя {user_id}")
+        else:
+            logger.warning("⚠️ Bot application не доступен для планирования платных сообщений")
         
         # Отправляем уведомление об успешной оплате
         if bot_instance:
@@ -1073,6 +1087,20 @@ async def run_telegram_bot():
         scheduler.send_scheduled_broadcasts,
         interval=120,  # каждые 2 минуты
         first=20  # первый запуск через 20 секунд
+    )
+    
+    # Запускаем фоновую задачу для рассылки платных сообщений
+    application.job_queue.run_repeating(
+        scheduler.send_scheduled_paid_messages,
+        interval=60,  # каждые 60 секунд
+        first=15  # первый запуск через 15 секунд
+    )
+
+    # Запускаем фоновую задачу для запланированных массовых рассылок оплативших
+    application.job_queue.run_repeating(
+        scheduler.send_scheduled_paid_broadcasts,
+        interval=120,  # каждые 2 минуты
+        first=25  # первый запуск через 25 секунд
     )
     
     if USE_WEBHOOK and WEBHOOK_URL:
