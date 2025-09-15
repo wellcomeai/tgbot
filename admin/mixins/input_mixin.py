@@ -71,6 +71,17 @@ class InputMixin:
             "add_goodbye_button": "🔘 Отправьте текст для новой кнопки прощания:\n\n💡 После этого мы попросим URL для кнопки.",
             "edit_goodbye_button_text": "📝 Отправьте новый текст для кнопки:",
             "edit_goodbye_button_url": "🔗 Отправьте новый URL для кнопки:",
+            
+            # Платные сообщения рассылки
+            "paid_broadcast_text": f"💰 ✏️ Отправьте новый текст для сообщения оплативших {kwargs.get('message_number')}:",
+            "paid_broadcast_delay": f"💰 ⏰ Отправьте новую задержку для сообщения оплативших {kwargs.get('message_number')} после оплаты:\n\n"
+                                   f"📝 <b>Форматы ввода:</b>\n"
+                                   f"• <code>30м</code> или <code>30 минут</code> - для минут\n"
+                                   f"• <code>2ч</code> или <code>2 часа</code> - для часов\n"
+                                   f"• <code>1.5</code> - для 1.5 часов\n"
+                                   f"• <code>0</code> - для мгновенной отправки\n\n"
+                                   f"💡 Примеры: <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>0</code>",
+            "paid_broadcast_photo": f"💰 🖼 Отправьте фото для сообщения оплативших {kwargs.get('message_number')} или ссылку на фото:",
         }
         
         text = texts.get(input_type, "Отправьте необходимые данные:")
@@ -137,6 +148,16 @@ class InputMixin:
             del self.waiting_for[user_id]
             await self.show_message_edit_from_context(update, context, message_number)
         
+        elif input_type == "paid_broadcast_photo":
+            # Фото для платного сообщения рассылки
+            message_number = waiting_data["message_number"]
+            photo_file_id = update.message.photo[-1].file_id
+            
+            self.db.update_paid_broadcast_message(message_number, photo_url=photo_file_id)
+            await update.message.reply_text(f"✅ Фото для сообщения оплативших {message_number} обновлено!")
+            del self.waiting_for[user_id]
+            await self.show_paid_message_edit_from_context(update, context, message_number)
+        
         elif input_type == "welcome_photo":
             # Фото для приветственного сообщения
             photo_file_id = update.message.photo[-1].file_id
@@ -169,6 +190,13 @@ class InputMixin:
             await update.message.reply_text(f"✅ Ссылка на фото для сообщения {message_number} сохранена!")
             del self.waiting_for[user_id]
             await self.show_message_edit_from_context(update, context, message_number)
+        
+        elif input_type == "paid_broadcast_photo":
+            message_number = kwargs.get("message_number")
+            self.db.update_paid_broadcast_message(message_number, photo_url=url)
+            await update.message.reply_text(f"✅ Ссылка на фото для сообщения оплативших {message_number} сохранена!")
+            del self.waiting_for[user_id]
+            await self.show_paid_message_edit_from_context(update, context, message_number)
         
         elif input_type == "welcome_photo":
             welcome_text = self.db.get_welcome_message()['text']
