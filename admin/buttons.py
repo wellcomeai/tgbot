@@ -22,7 +22,14 @@ class ButtonsMixin:
         keyboard = []
         
         for button_id, button_text, button_url, position in buttons:
-            keyboard.append([InlineKeyboardButton(f"📝 {button_text}", callback_data=f"edit_button_{button_id}")])
+            if button_url and button_url.strip():
+                # URL кнопка
+                display_text = f"🔗 {button_text}"
+            else:
+                # Callback кнопка
+                display_text = f"📩 {button_text}"
+            
+            keyboard.append([InlineKeyboardButton(display_text, callback_data=f"edit_button_{button_id}")])
         
         if len(buttons) < 3:  # Максимум 3 кнопки
             keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data=f"add_button_{message_number}")])
@@ -30,10 +37,20 @@ class ButtonsMixin:
         keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"edit_msg_{message_number}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        # Формируем детальную информацию о кнопках
+        buttons_info = ""
+        if buttons:
+            for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
+                if button_url and button_url.strip():
+                    buttons_info += f"{i}. 🔗 {button_text} → {button_url}\n"
+                else:
+                    buttons_info += f"{i}. 📩 {button_text} (следующее сообщение)\n"
+        
         text = (
             f"🔘 <b>Кнопки сообщения {message_number}</b>\n\n"
             f"Текущие кнопки: {len(buttons)}/3\n\n"
-            "💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
+            f"{buttons_info}\n" if buttons_info else ""
+            f"💡 <i>🔗 - URL кнопки ведут на сайт, 📩 - отправляют следующее сообщение</i>\n\n"
             "Выберите кнопку для редактирования или добавьте новую:"
         )
         
@@ -48,7 +65,14 @@ class ButtonsMixin:
         keyboard = []
         
         for button_id, button_text, button_url, position in buttons:
-            keyboard.append([InlineKeyboardButton(f"📝 {button_text}", callback_data=f"edit_button_{button_id}")])
+            if button_url and button_url.strip():
+                # URL кнопка
+                display_text = f"🔗 {button_text}"
+            else:
+                # Callback кнопка
+                display_text = f"📩 {button_text}"
+            
+            keyboard.append([InlineKeyboardButton(display_text, callback_data=f"edit_button_{button_id}")])
         
         if len(buttons) < 3:
             keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data=f"add_button_{message_number}")])
@@ -56,10 +80,20 @@ class ButtonsMixin:
         keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"edit_msg_{message_number}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        # Формируем детальную информацию о кнопках
+        buttons_info = ""
+        if buttons:
+            for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
+                if button_url and button_url.strip():
+                    buttons_info += f"{i}. 🔗 {button_text} → {button_url}\n"
+                else:
+                    buttons_info += f"{i}. 📩 {button_text} (следующее сообщение)\n"
+        
         message_text = (
             f"🔘 <b>Кнопки сообщения {message_number}</b>\n\n"
             f"Текущие кнопки: {len(buttons)}/3\n\n"
-            "💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
+            f"{buttons_info}\n" if buttons_info else ""
+            f"💡 <i>🔗 - URL кнопки ведут на сайт, 📩 - отправляют следующее сообщение</i>\n\n"
             "Выберите кнопку для редактирования или добавьте новую:"
         )
         
@@ -84,19 +118,35 @@ class ButtonsMixin:
         
         message_number, button_text, button_url = button_data
         
-        keyboard = [
-            [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
-            [InlineKeyboardButton("🔗 Изменить URL", callback_data=f"edit_button_url_{button_id}")],
-            [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
-            [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
-        ]
+        # Определяем тип кнопки для отображения
+        if button_url and button_url.strip():
+            button_type_text = "🔗 URL кнопка"
+            button_info = f"<b>URL:</b> {button_url}"
+            
+            keyboard = [
+                [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
+                [InlineKeyboardButton("🔗 Изменить URL", callback_data=f"edit_button_url_{button_id}")],
+                [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
+                [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
+            ]
+        else:
+            button_type_text = "📩 Callback кнопка"
+            button_info = "<b>Действие:</b> Переход к следующему сообщению"
+            
+            keyboard = [
+                [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
+                [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
+                [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
+            ]
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         text = (
             f"🔘 <b>Редактирование кнопки</b>\n\n"
+            f"<b>Тип:</b> {button_type_text}\n"
             f"<b>Текст:</b> {button_text}\n"
-            f"<b>URL:</b> {button_url}\n\n"
-            f"💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
+            f"{button_info}\n\n"
+            f"💡 <i>UTM метки добавляются автоматически при отправке URL кнопок.</i>\n\n"
             "Выберите действие:"
         )
         
@@ -123,19 +173,35 @@ class ButtonsMixin:
         
         message_number, button_text, button_url = button_data
         
-        keyboard = [
-            [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
-            [InlineKeyboardButton("🔗 Изменить URL", callback_data=f"edit_button_url_{button_id}")],
-            [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
-            [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
-        ]
+        # Определяем тип кнопки для отображения
+        if button_url and button_url.strip():
+            button_type_text = "🔗 URL кнопка"
+            button_info = f"<b>URL:</b> {button_url}"
+            
+            keyboard = [
+                [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
+                [InlineKeyboardButton("🔗 Изменить URL", callback_data=f"edit_button_url_{button_id}")],
+                [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
+                [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
+            ]
+        else:
+            button_type_text = "📩 Callback кнопка"
+            button_info = "<b>Действие:</b> Переход к следующему сообщению"
+            
+            keyboard = [
+                [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
+                [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
+                [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
+            ]
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         message_text = (
             f"🔘 <b>Редактирование кнопки</b>\n\n"
+            f"<b>Тип:</b> {button_type_text}\n"
             f"<b>Текст:</b> {button_text}\n"
-            f"<b>URL:</b> {button_url}\n\n"
-            f"💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
+            f"{button_info}\n\n"
+            f"💡 <i>UTM метки добавляются автоматически при отправке URL кнопок.</i>\n\n"
             "Выберите действие:"
         )
         
@@ -451,22 +517,15 @@ class ButtonsMixin:
             await update.message.reply_text(
                 f"✅ Текст кнопки сохранен: <b>{text}</b>\n\n"
                 f"🔗 Теперь отправьте URL для кнопки:\n\n"
-                f"💡 Пример: https://example.com\n"
-                f"🎯 UTM метки будут добавлены автоматически!",
+                f"💡 <b>Варианты:</b>\n"
+                f"• Отправьте ссылку (https://example.com) - создастся 🔗 URL кнопка\n"
+                f"• Отправьте <code>-</code> или <code>skip</code> - создастся 📩 кнопка следующего сообщения\n\n"
+                f"🎯 UTM метки добавляются автоматически!",
                 parse_mode='HTML'
             )
             
         elif current_step == "url":
-            # Шаг 2: Получаем URL кнопки
-            if not (text.startswith("http://") or text.startswith("https://")):
-                await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
-                return
-            
-            if len(text) > 256:
-                await update.message.reply_text("❌ URL слишком длинный.")
-                return
-            
-            # Добавляем кнопку в базу данных
+            # Шаг 2: Получаем URL или создаем callback кнопку
             message_number = waiting_data["message_number"]
             button_text = waiting_data["button_text"]
             
@@ -474,16 +533,44 @@ class ButtonsMixin:
             existing_buttons = self.db.get_message_buttons(message_number)
             position = len(existing_buttons) + 1
             
-            # Сохраняем кнопку в БД
-            self.db.add_message_button(message_number, button_text, text, position)
-            
-            await update.message.reply_text(
-                f"✅ Кнопка успешно добавлена!\n\n"
-                f"📝 <b>Текст:</b> {button_text}\n"
-                f"🔗 <b>URL:</b> {text}\n\n"
-                f"🎯 <b>UTM метки будут добавлены автоматически при отправке!</b>",
-                parse_mode='HTML'
-            )
+            # Проверяем тип кнопки
+            if text.strip() in ["-", "skip", "нет", ""] or not text.strip():
+                # Callback кнопка (следующее сообщение) - пустой URL
+                self.db.add_message_button(message_number, button_text, "", position)
+                
+                await update.message.reply_text(
+                    f"✅ Callback кнопка успешно добавлена!\n\n"
+                    f"📩 <b>Текст:</b> {button_text}\n"
+                    f"<b>Действие:</b> Переход к следующему сообщению\n\n"
+                    f"💡 <i>При нажатии пользователь получит следующее запланированное сообщение.</i>",
+                    parse_mode='HTML'
+                )
+            elif text.startswith("http://") or text.startswith("https://"):
+                # URL кнопка
+                if len(text) > 256:
+                    await update.message.reply_text("❌ URL слишком длинный.")
+                    return
+                
+                self.db.add_message_button(message_number, button_text, text, position)
+                
+                await update.message.reply_text(
+                    f"✅ URL кнопка успешно добавлена!\n\n"
+                    f"🔗 <b>Текст:</b> {button_text}\n"
+                    f"<b>URL:</b> {text}\n\n"
+                    f"🎯 <b>UTM метки будут добавлены автоматически при отправке!</b>",
+                    parse_mode='HTML'
+                )
+            else:
+                # Неверный формат URL
+                await update.message.reply_text(
+                    "❌ Неверный формат!\n\n"
+                    "💡 <b>Варианты:</b>\n"
+                    "• Ссылка: https://example.com\n"
+                    "• Callback кнопка: отправьте <code>-</code> или <code>skip</code>\n\n"
+                    "Попробуйте еще раз:",
+                    parse_mode='HTML'
+                )
+                return
             
             # Очищаем состояние ожидания
             del self.waiting_for[user_id]
