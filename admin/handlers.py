@@ -450,6 +450,52 @@ class HandlersMixin:
         
         return True
     
+    async def handle_add_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Обработка добавления новой кнопки"""
+        user_id = update.effective_user.id
+        waiting_data = self.waiting_for[user_id]
+        
+        if len(text) > 64:
+            await update.message.reply_text("❌ Текст кнопки слишком длинный. Максимум 64 символа.")
+            return
+        
+        current_step = waiting_data.get("step", "text")
+        
+        if current_step == "text":
+            # Сохраняем текст и запрашиваем URL
+            self.waiting_for[user_id]["button_text"] = text
+            self.waiting_for[user_id]["step"] = "url"
+            await update.message.reply_text(
+                f"✅ Текст кнопки: <b>{text}</b>\n\n"
+                "🔗 Теперь отправьте URL для кнопки:\n\n"
+                "💡 <b>Варианты:</b>\n"
+                "• Отправьте ссылку (https://example.com) - создастся URL кнопка\n"
+                "• Отправьте <code>-</code> или оставьте пустым - создастся кнопка следующего сообщения\n"
+                "• Отправьте <code>skip</code> - кнопка будет переходить к следующему сообщению",
+                parse_mode='HTML'
+            )
+        elif current_step == "url":
+            # Обрабатываем URL или его отсутствие
+            message_number = waiting_data["message_number"]
+            button_text = waiting_data["button_text"]
+            
+            # Определяем тип кнопки
+            if text.strip() in ["-", "skip", "нет", ""] or not text.startswith("http"):
+                # Callback кнопка (следующее сообщение)
+                self.db.add_message_button(message_number, button_text, "", 1)  # Пустой URL
+                await update.message.reply_text(f"✅ Добавлена callback кнопка: <b>{button_text}</b>\n\n📩 При нажатии будет отправлено следующее сообщение.", parse_mode='HTML')
+            else:
+                # URL кнопка
+                if not (text.startswith("http://") or text.startswith("https://")):
+                    await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
+                    return
+                
+                self.db.add_message_button(message_number, button_text, text, 1)
+                await update.message.reply_text(f"✅ Добавлена URL кнопка: <b>{button_text}</b> → {text}", parse_mode='HTML')
+            
+            del self.waiting_for[user_id]
+            await self.show_message_buttons_from_context(update, context, message_number)
+    
     # === Обработчики для платных сообщений рассылки ===
     
     async def handle_paid_broadcast_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
@@ -845,6 +891,15 @@ class HandlersMixin:
         self.broadcast_drafts[user_id]["is_paid_broadcast"] = True
         
         await self.show_paid_send_all_menu(update, context)
+
+    async def show_message_buttons_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
+        """Показать управление кнопками сообщения из контекста обработки ввода"""
+        try:
+            # Отправляем новое сообщение вместо редактирования
+            await self.show_message_buttons(update, context, message_number)
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе кнопок сообщения {message_number}: {e}")
+            await self.show_error_message(update, context, "❌ Произошла ошибка. Попробуйте еще раз.")
     
     async def handle_additional_callbacks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Дополнительные обработчики callback для рассылок"""
@@ -904,7 +959,7 @@ class HandlersMixin:
             if len(existing_buttons) >= 3:
                 await query.answer("❌ Максимум 3 кнопки на сообщение!", show_alert=True)
                 return False
-            await self.request_text_input(update, context, "add_button", message_number=message_number)
+            await self.request_text_input(update, context, "add_button", message_number=message_number, step="text")
         else:
             return False  # Не обработано
         
