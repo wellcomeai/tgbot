@@ -192,13 +192,18 @@ class MessageScheduler:
                     
                     reply_markup = None
                     if processed_buttons:
-                        # Создаем клавиатуру с обработанными кнопками
                         keyboard = []
+                        
                         for button_id, button_text, button_url, position in processed_buttons:
-                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                            if button_url and button_url.strip():
+                                # Есть URL - создаем URL кнопку
+                                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                            else:
+                                # Нет URL - создаем callback кнопку для следующего сообщения
+                                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
-                        logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(processed_buttons)} кнопок с UTM метками")
+                        logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(processed_buttons)} кнопок")
                     
                     # Отправляем сообщение
                     if photo_url:
@@ -261,6 +266,73 @@ class MessageScheduler:
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в send_scheduled_messages: {e}", exc_info=True)
     
+    async def send_next_scheduled_message(self, context: ContextTypes.DEFAULT_TYPE, user_id):
+        """Отправить следующее запланированное сообщение для пользователя"""
+        try:
+            # Получаем следующее неотправленное сообщение
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT sm.id, sm.message_number, bm.text, bm.photo_url
+                FROM scheduled_messages sm
+                JOIN broadcast_messages bm ON sm.message_number = bm.message_number
+                WHERE sm.user_id = ? AND sm.is_sent = 0
+                ORDER BY sm.message_number ASC
+                LIMIT 1
+            ''', (user_id,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if not result:
+                return False  # Нет запланированных сообщений
+                
+            message_id, message_number, text, photo_url = result
+            
+            # Отправляем сообщение (используем существующую логику)
+            buttons = self.db.get_message_buttons(message_number)
+            processed_text, processed_buttons = self.process_message_content(text, buttons, user_id)
+            
+            reply_markup = None
+            if processed_buttons:
+                keyboard = []
+                
+                for button_id, button_text, button_url, position in processed_buttons:
+                    if button_url and button_url.strip():
+                        # URL кнопка
+                        keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                    else:
+                        # Callback кнопка
+                        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
+                
+                reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            if photo_url:
+                await context.bot.send_photo(
+                    chat_id=user_id,
+                    photo=photo_url,
+                    caption=processed_text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=processed_text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+            
+            # Отмечаем как отправленное
+            self.db.mark_message_sent(message_id)
+            
+            logger.info(f"✅ Принудительно отправлено сообщение {message_number} пользователю {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при принудительной отправке сообщения пользователю {user_id}: {e}")
+            return False
+    
     async def send_scheduled_broadcasts(self, context: ContextTypes.DEFAULT_TYPE):
         """Отправить запланированные массовые рассылки"""
         try:
@@ -320,13 +392,18 @@ class MessageScheduler:
                             
                             reply_markup = None
                             if processed_buttons:
-                                # Создаем клавиатуру с обработанными кнопками
                                 keyboard = []
+                                
                                 for button_id, button_text, button_url, position in processed_buttons:
-                                    keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                    if button_url and button_url.strip():
+                                        # URL кнопка
+                                        keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                    else:
+                                        # Callback кнопка
+                                        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
                                 
                                 reply_markup = InlineKeyboardMarkup(keyboard)
-                                logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок с UTM метками")
+                                logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок")
                             
                             if photo_url:
                                 # Отправляем с фото
@@ -528,13 +605,18 @@ class MessageScheduler:
                     
                     reply_markup = None
                     if processed_buttons:
-                        # Создаем клавиатуру с обработанными кнопками
                         keyboard = []
+                        
                         for button_id, button_text, button_url, position in processed_buttons:
-                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                            if button_url and button_url.strip():
+                                # URL кнопка
+                                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                            else:
+                                # Callback кнопка
+                                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
-                        logger.debug(f"💰 🔘 Добавлены кнопки к платному сообщению {message_number}: {len(processed_buttons)} кнопок с UTM метками")
+                        logger.debug(f"💰 🔘 Добавлены кнопки к платному сообщению {message_number}: {len(processed_buttons)} кнопок")
                     
                     # Отправляем сообщение
                     if photo_url:
@@ -645,13 +727,18 @@ class MessageScheduler:
                             
                             reply_markup = None
                             if processed_buttons:
-                                # Создаем клавиатуру с обработанными кнопками
                                 keyboard = []
+                                
                                 for button_id, button_text, button_url, position in processed_buttons:
-                                    keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                    if button_url and button_url.strip():
+                                        # URL кнопка
+                                        keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                    else:
+                                        # Callback кнопка
+                                        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
                                 
                                 reply_markup = InlineKeyboardMarkup(keyboard)
-                                logger.debug(f"💰 🔘 Добавлены кнопки к рассылке для оплативших #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок с UTM метками")
+                                logger.debug(f"💰 🔘 Добавлены кнопки к рассылке для оплативших #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок")
                             
                             if photo_url:
                                 # Отправляем с фото
