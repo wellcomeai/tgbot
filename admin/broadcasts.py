@@ -359,6 +359,28 @@ class BroadcastsMixin:
                 "✏️ Отправьте текст нового сообщения:\n\n💡 После этого мы попросим задержку для отправки.",
                 InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_broadcast")]])
             )
+        elif data.startswith("add_button_"):
+            message_number = int(data.split("_")[2])
+            # Проверяем лимит кнопок
+            existing_buttons = self.db.get_message_buttons(message_number)
+            if len(existing_buttons) >= 3:
+                await query.answer("❌ Максимум 3 кнопки на сообщение!", show_alert=True)
+                return False
+            
+            # Инициализируем ожидание ввода кнопки
+            user_id = update.callback_query.from_user.id
+            self.waiting_for[user_id] = {
+                "type": "add_button", 
+                "message_number": message_number,
+                "step": "text",
+                "created_at": datetime.now()
+            }
+            
+            await self.safe_edit_or_send_message(
+                update, context,
+                "✏️ Отправьте текст для кнопки:",
+                InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"manage_buttons_{message_number}")]])
+            )
         else:
             return False  # Не обработано
         
