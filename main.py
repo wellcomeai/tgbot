@@ -636,6 +636,29 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logger.error(f"❌ Не удалось отправить прощальное сообщение пользователю {user.id}: {e}")
 
+async def handle_next_message_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатия кнопки 'Следующее сообщение'"""
+    query = update.callback_query
+    
+    if query.data.startswith("next_msg_"):
+        user_id = int(query.data.split("_")[2])
+        
+        # Проверяем права
+        if query.from_user.id != user_id:
+            await query.answer("❌ Это не ваша кнопка!")
+            return
+            
+        await query.answer("📩 Отправляем следующее сообщение...")
+        
+        # Отправляем следующее сообщение
+        success = await scheduler.send_next_scheduled_message(context, user_id)
+        
+        if not success:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="🎉 Это было последнее сообщение! Спасибо за внимание."
+            )
+
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на инлайн-кнопки"""
     query = update.callback_query
@@ -1071,6 +1094,7 @@ async def run_telegram_bot():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
     application.add_handler(ChatMemberHandler(handle_member_update, ChatMemberHandler.CHAT_MEMBER))
+    application.add_handler(CallbackQueryHandler(handle_next_message_callback, pattern=r"^next_msg_"))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, message_handler))
     
