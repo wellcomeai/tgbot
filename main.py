@@ -215,6 +215,7 @@ async def health_check(request):
             'telegram_webhook': f'/bot{BOT_TOKEN}',
             'payment_webhook': '/webhook/payment',
             'test_expired_subscriptions': '/test/expired-subscriptions',
+            'test_setup_user': '/test/setup-user',
             'bot_running': bot_instance is not None,
             'aiohttp_port': RENDER_PORT,
             'database': db_info,
@@ -257,6 +258,48 @@ async def test_expired_subscriptions(request):
             
     except Exception as e:
         logger.error(f"❌ Ошибка в test_expired_subscriptions: {e}")
+        return web.json_response({
+            'status': 'error',
+            'error': str(e)
+        }, status=500)
+
+async def setup_test_user(request):
+    """Тестовый эндпоинт для настройки тестового пользователя"""
+    try:
+        data = await request.json()
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return web.json_response({
+                'status': 'error',
+                'message': 'user_id required'
+            }, status=400)
+        
+        user_id = int(user_id)
+        
+        # Получаем сегодняшнюю дату в формате YYYY-MM-DD
+        from datetime import date
+        today = date.today().strftime('%Y-%m-%d')
+        
+        # Устанавливаем пользователя как оплатившего с истекающей сегодня подпиской
+        success = db.mark_user_paid(user_id, "999", "success", today)
+        
+        if success:
+            logger.info(f"🧪 Установлены тестовые данные для пользователя {user_id}: подписка до {today}")
+            return web.json_response({
+                'status': 'success',
+                'message': f'User {user_id} set as paid with subscription expiring today ({today})',
+                'user_id': user_id,
+                'payed_till': today
+            })
+        else:
+            return web.json_response({
+                'status': 'error',
+                'message': 'Failed to update user'
+            }, status=500)
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в setup_test_user: {e}")
         return web.json_response({
             'status': 'error',
             'error': str(e)
@@ -360,6 +403,7 @@ app.router.add_post(f'/bot{BOT_TOKEN}', telegram_webhook)
 app.router.add_post('/webhook/payment', payment_webhook)
 app.router.add_get('/health', health_check)
 app.router.add_post('/test/expired-subscriptions', test_expired_subscriptions)
+app.router.add_post('/test/setup-user', setup_test_user)
 
 # ===== КОНСТАНТЫ ДЛЯ CALLBACK ДАННЫХ =====
 CALLBACK_USER_CONSENT = "user_consent"
@@ -1231,6 +1275,7 @@ def main():
     logger.info(f"💰 Payment webhook endpoint: /webhook/payment")
     logger.info(f"🔍 Health check endpoint: /health")
     logger.info(f"🧪 Test expired subscriptions endpoint: /test/expired-subscriptions")
+    logger.info(f"⚙️ Test setup user endpoint: /test/setup-user")
     
     async def init_and_run():
         """Инициализация и запуск всех сервисов"""
