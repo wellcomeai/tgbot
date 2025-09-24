@@ -137,7 +137,7 @@ async def payment_webhook(request):
         logger.info(f"💰 Получен payment webhook: {payment_data}")
         
         # Валидация обязательных полей
-        required_fields = ['user_id', 'payment_status', 'amount']
+        required_fields = ['user_id', 'payment_status', 'amount', 'payed_till']
         for field in required_fields:
             if field not in payment_data:
                 logger.error(f"❌ Отсутствует обязательное поле: {field}")
@@ -153,6 +153,16 @@ async def payment_webhook(request):
         except (ValueError, TypeError):
             logger.error(f"❌ Неверный формат user_id: {user_id}")
             return web.json_response({'error': 'Invalid user_id format'}, status=400)
+        
+        # Валидация формата payed_till
+        payed_till = payment_data.get('payed_till')
+        try:
+            from datetime import datetime
+            # Проверяем формат даты (ожидаем YYYY-MM-DD)
+            datetime.strptime(payed_till, '%Y-%m-%d')
+        except (ValueError, TypeError):
+            logger.error(f"❌ Неверный формат payed_till: {payed_till}. Ожидается YYYY-MM-DD")
+            return web.json_response({'error': 'Invalid payed_till format, expected YYYY-MM-DD'}, status=400)
         
         if payment_status not in ['success', 'failed', 'pending']:
             logger.error(f"❌ Неверный payment_status: {payment_status}")
@@ -224,14 +234,16 @@ async def health_check(request):
 async def handle_successful_payment(user_id: int, amount: str, webhook_data: dict) -> bool:
     """Асинхронная обработка успешного платежа"""
     try:
-        logger.info(f"💰 Обрабатываем успешный платеж для пользователя {user_id}")
+        # Получаем payed_till из webhook данных
+        payed_till = webhook_data.get('payed_till')
+        logger.info(f"💰 Обрабатываем успешный платеж для пользователя {user_id}, подписка до {payed_till}")
         
         # Получаем UTM данные
         utm_source = webhook_data.get('utm_source', '')
         utm_id = webhook_data.get('utm_id', '')
         
         # Отмечаем пользователя как оплатившего
-        success = db.mark_user_paid(user_id, amount, 'success')
+        success = db.mark_user_paid(user_id, amount, 'success', payed_till)
         if not success:
             logger.error(f"❌ Не удалось отметить пользователя {user_id} как оплатившего")
             return False
