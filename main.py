@@ -214,6 +214,7 @@ async def health_check(request):
             'service': 'telegram_bot',
             'telegram_webhook': f'/bot{BOT_TOKEN}',
             'payment_webhook': '/webhook/payment',
+            'test_expired_subscriptions': '/test/expired-subscriptions',
             'bot_running': bot_instance is not None,
             'aiohttp_port': RENDER_PORT,
             'database': db_info,
@@ -230,6 +231,35 @@ async def health_check(request):
             'status': 'error',
             'error': str(e),
             'timestamp': datetime.now().isoformat()
+        }, status=500)
+
+async def test_expired_subscriptions(request):
+    """Тестовый эндпоинт для проверки истекших подписок"""
+    try:
+        if bot_application and bot_application.job_queue:
+            # Создаем простой контекст
+            class SimpleContext:
+                def __init__(self, bot):
+                    self.bot = bot
+                    
+            context = SimpleContext(bot_instance)
+            await scheduler.check_expired_subscriptions(context)
+            
+            return web.json_response({
+                'status': 'success',
+                'message': 'Expired subscriptions check completed'
+            })
+        else:
+            return web.json_response({
+                'status': 'error', 
+                'message': 'Bot not ready'
+            }, status=503)
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в test_expired_subscriptions: {e}")
+        return web.json_response({
+            'status': 'error',
+            'error': str(e)
         }, status=500)
 
 async def handle_successful_payment(user_id: int, amount: str, webhook_data: dict) -> bool:
@@ -329,6 +359,7 @@ async def send_payment_success_notification(user_id: int, amount: str):
 app.router.add_post(f'/bot{BOT_TOKEN}', telegram_webhook)
 app.router.add_post('/webhook/payment', payment_webhook)
 app.router.add_get('/health', health_check)
+app.router.add_post('/test/expired-subscriptions', test_expired_subscriptions)
 
 # ===== КОНСТАНТЫ ДЛЯ CALLBACK ДАННЫХ =====
 CALLBACK_USER_CONSENT = "user_consent"
@@ -1084,6 +1115,7 @@ async def post_init(application: Application) -> None:
     logger.info(f"📱 Telegram webhook: {WEBHOOK_URL}/bot{BOT_TOKEN}")
     logger.info(f"💰 Payment webhook: {WEBHOOK_URL}/webhook/payment")
     logger.info(f"🔍 Health check: {WEBHOOK_URL}/health")
+    logger.info(f"🧪 Test expired subscriptions: {WEBHOOK_URL}/test/expired-subscriptions")
     
     # Выводим информацию о базе данных
     db_info = db.get_database_info()
@@ -1198,6 +1230,7 @@ def main():
     logger.info(f"📱 Telegram webhook endpoint: /bot{BOT_TOKEN}")
     logger.info(f"💰 Payment webhook endpoint: /webhook/payment")
     logger.info(f"🔍 Health check endpoint: /health")
+    logger.info(f"🧪 Test expired subscriptions endpoint: /test/expired-subscriptions")
     
     async def init_and_run():
         """Инициализация и запуск всех сервисов"""
