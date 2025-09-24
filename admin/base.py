@@ -21,9 +21,6 @@ class AdminBaseMixin:
         self.admin_chat_id = admin_chat_id
         self.waiting_for = {}  # Словарь для отслеживания ожидания ввода
         self.broadcast_drafts = {}  # Черновики массовых рассылок
-        
-        # Очистка старых состояний ожидания при запуске
-        asyncio.create_task(self.cleanup_old_waiting_states())
     
     async def cleanup_old_waiting_states(self):
         """Очистка старых состояний ожидания ввода"""
