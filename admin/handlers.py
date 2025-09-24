@@ -66,6 +66,10 @@ class HandlersMixin:
             elif data == "set_broadcast_timer":
                 await self.request_text_input(update, context, "broadcast_timer")
             
+            # === Продление подписок ===
+            elif data == "admin_renewal":
+                await self.show_renewal_menu(update, context)
+            
             # === Платежи ===
             elif data == "admin_payment_message":
                 await self.show_payment_message_edit(update, context)
@@ -136,8 +140,12 @@ class HandlersMixin:
         query = update.callback_query
         data = query.data
         
+        # === Обработчики для продления подписок ===
+        if await self.handle_renewal_callbacks(update, context):
+            return True
+        
         # Обработка для основных сообщений рассылки
-        if data.startswith("edit_msg_"):
+        elif data.startswith("edit_msg_"):
             message_number = int(data.split("_")[2])
             await self.show_message_edit(update, context, message_number)
         elif data.startswith("manage_buttons_"):
@@ -314,8 +322,16 @@ class HandlersMixin:
     async def _route_input_by_type(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                  text: str, input_type: str, waiting_data: dict):
         """Маршрутизация ввода по типам"""
+        # === Продление подписок ===
+        if input_type == "renewal_text":
+            await self.handle_renewal_text_input(update, context, text)
+        elif input_type == "renewal_button_text":
+            await self.handle_renewal_button_text_input(update, context, text)
+        elif input_type == "renewal_button_url":
+            await self.handle_renewal_button_url_input(update, context, text)
+        
         # Кнопки приветствия
-        if input_type == "add_welcome_button":
+        elif input_type == "add_welcome_button":
             await self.handle_add_welcome_button_input(update, context, text)
         elif input_type == "edit_welcome_button_text":
             await self.handle_edit_welcome_button_text_input(update, context, text)
@@ -433,7 +449,7 @@ class HandlersMixin:
         elif input_type == "broadcast_delay":
             await self._handle_broadcast_delay_input(update, context, text, waiting_data)
         
-        elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo", "payment_message_photo"]:
+        elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo", "payment_message_photo", "renewal_photo"]:
             if text.startswith("http://") or text.startswith("https://"):
                 await self.handle_photo_url_input(update, context, text, input_type, **waiting_data)
             else:
