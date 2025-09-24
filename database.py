@@ -98,6 +98,11 @@ class Database:
                 cursor.execute('ALTER TABLE users ADD COLUMN paid_at TIMESTAMP DEFAULT NULL')
                 logger.info("Добавлена колонка paid_at в users")
             
+            # НОВАЯ КОЛОНКА: payed_till
+            if 'payed_till' not in columns:
+                cursor.execute('ALTER TABLE users ADD COLUMN payed_till DATE DEFAULT NULL')
+                logger.info("Добавлена колонка payed_till в users")
+            
             # Новая таблица платежей
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS payments (
@@ -110,6 +115,37 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
+            ''')
+            
+            # НОВАЯ ТАБЛИЦА: Таблица настроек продления подписки
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS renewal_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            ''')
+            
+            # Инициализация настроек продления
+            cursor.execute('''
+                INSERT OR IGNORE INTO renewal_settings (key, value) 
+                VALUES ('renewal_message', ?)
+            ''', ("⏰ <b>Ваша подписка истекает сегодня!</b>\n\n"
+                 "💳 Чтобы продолжить получать эксклюзивные материалы, продлите подписку.\n\n"
+                 "✨ Не упустите возможность оставаться в курсе всех новинок!",))
+            
+            cursor.execute('''
+                INSERT OR IGNORE INTO renewal_settings (key, value) 
+                VALUES ('renewal_photo_url', '')
+            ''')
+            
+            cursor.execute('''
+                INSERT OR IGNORE INTO renewal_settings (key, value) 
+                VALUES ('renewal_button_text', 'Продлить подписку')
+            ''')
+            
+            cursor.execute('''
+                INSERT OR IGNORE INTO renewal_settings (key, value) 
+                VALUES ('renewal_button_url', '')
             ''')
             
             # Обновляем таблицу сообщений рассылки - добавляем поле для фото
@@ -507,24 +543,32 @@ class Database:
 
     # ===== НОВЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ПЛАТЕЖАМИ =====
     
-    def mark_user_paid(self, user_id, amount, payment_status):
+    def mark_user_paid(self, user_id, amount, payment_status, payed_till=None):
         """Отметить пользователя как оплатившего"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         try:
-            cursor.execute('''
-                UPDATE users 
-                SET has_paid = 1, paid_at = CURRENT_TIMESTAMP 
-                WHERE user_id = ?
-            ''', (user_id,))
+            if payed_till:
+                cursor.execute('''
+                    UPDATE users 
+                    SET has_paid = 1, paid_at = CURRENT_TIMESTAMP, payed_till = ?
+                    WHERE user_id = ?
+                ''', (payed_till, user_id))
+                logger.info(f"✅ Пользователь {user_id} отмечен как оплативший ({amount}) до {payed_till}")
+            else:
+                cursor.execute('''
+                    UPDATE users 
+                    SET has_paid = 1, paid_at = CURRENT_TIMESTAMP 
+                    WHERE user_id = ?
+                ''', (user_id,))
+                logger.info(f"✅ Пользователь {user_id} отмечен как оплативший ({amount})")
             
             if cursor.rowcount == 0:
                 logger.error(f"❌ Пользователь {user_id} не найден при отметке оплаты")
                 return False
             
             conn.commit()
-            logger.info(f"✅ Пользователь {user_id} отмечен как оплативший ({amount})")
             return True
             
         except Exception as e:
@@ -2595,6 +2639,147 @@ class Database:
             ''')
             users = cursor.fetchall()
             return users
+        finally:
+            if conn:
+                conn.close()
+    
+    # ===== МЕТОДЫ ДЛЯ УПРАВЛЕНИЯ ПРОДЛЕНИЕМ ПОДПИСОК =====
+    
+    def get_expired_subscriptions(self):
+        """Получить пользователей с истекшей подпиской на сегодня"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            from datetime import date
+            today = date.today()
+            
+            cursor.execute('''
+                SELECT user_id, username, first_name, payed_till
+                FROM users 
+                WHERE has_paid = 1 
+                AND is_active = 1 
+                AND payed_till = ?
+            ''', (today,))
+            
+            expired_users = cursor.fetchall()
+            return expired_users
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении истекших подписок: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+    
+    def get_renewal_message(self):
+        """Получение сообщения о продлении подписки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_message"')
+            message = cursor.fetchone()
+            
+            cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_photo_url"')
+            photo = cursor.fetchone()
+            
+            cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_button_text"')
+            button_text = cursor.fetchone()
+            
+            cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_button_url"')
+            button_url = cursor.fetchone()
+            
+            return {
+                'text': message[0] if message else None,
+                'photo_url': photo[0] if photo and photo[0] else None,
+                'button_text': button_text[0] if button_text else None,
+                'button_url': button_url[0] if button_url and button_url[0] else None
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении сообщения о продлении: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+    
+    def set_renewal_message(self, text=None, photo_url=None, button_text=None, button_url=None):
+        """Установка сообщения о продлении подписки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            if text is not None:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO renewal_settings (key, value) 
+                    VALUES ('renewal_message', ?)
+                ''', (text,))
+            
+            if photo_url is not None:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO renewal_settings (key, value) 
+                    VALUES ('renewal_photo_url', ?)
+                ''', (photo_url,))
+            
+            if button_text is not None:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO renewal_settings (key, value) 
+                    VALUES ('renewal_button_text', ?)
+                ''', (button_text,))
+            
+            if button_url is not None:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO renewal_settings (key, value) 
+                    VALUES ('renewal_button_url', ?)
+                ''', (button_url,))
+            
+            conn.commit()
+            logger.info("✅ Сообщение о продлении подписки обновлено")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при установке сообщения о продлении: {e}")
+        finally:
+            if conn:
+                conn.close()
+    
+    def expire_user_subscription(self, user_id):
+        """Завершить подписку пользователя и перевести на обычные рассылки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Сбрасываем статус оплаты
+            cursor.execute('''
+                UPDATE users 
+                SET has_paid = 0, payed_till = NULL
+                WHERE user_id = ?
+            ''', (user_id,))
+            
+            if cursor.rowcount == 0:
+                logger.error(f"❌ Пользователь {user_id} не найден при завершении подписки")
+                return False
+            
+            # Отменяем все неотправленные платные сообщения
+            cursor.execute('''
+                DELETE FROM paid_scheduled_messages 
+                WHERE user_id = ? AND is_sent = 0
+            ''', (user_id,))
+            
+            cancelled_paid_count = cursor.rowcount
+            
+            conn.commit()
+            
+            logger.info(f"✅ Подписка пользователя {user_id} завершена, отменено {cancelled_paid_count} платных сообщений")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при завершении подписки пользователя {user_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return False
         finally:
             if conn:
                 conn.close()
