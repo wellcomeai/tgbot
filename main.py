@@ -13,6 +13,7 @@ from admin import AdminPanel
 from scheduler import MessageScheduler
 from aiohttp import web, ClientSession
 import threading
+import pytz
 
 # Настройка логирования для Render
 logging.basicConfig(
@@ -1140,6 +1141,20 @@ async def run_telegram_bot():
         scheduler.send_scheduled_paid_broadcasts,
         interval=120,  # каждые 2 минуты
         first=25  # первый запуск через 25 секунд
+    )
+    
+    # Запускаем фоновую задачу для проверки истекших подписок (ежедневно в 12:00 МСК)
+    # Переводит пользователей с истекшими подписками обратно в обычную воронку БЕЗ планирования новых сообщений
+    from datetime import time
+    import pytz
+    
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    moscow_noon = time(12, 0, 0)  # 12:00 по Москве
+    
+    application.job_queue.run_daily(
+        scheduler.check_expired_subscriptions,
+        time=moscow_noon,
+        name="check_expired_subscriptions"
     )
     
     if USE_WEBHOOK and WEBHOOK_URL:
