@@ -794,3 +794,116 @@ class MessageScheduler:
                         
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в send_scheduled_paid_broadcasts: {e}", exc_info=True)
+
+    async def check_expired_subscriptions(self, context: ContextTypes.DEFAULT_TYPE):
+        """Проверка истекших подписок и отправка уведомлений о продлении"""
+        try:
+            from datetime import date, datetime
+            import pytz
+            
+            current_time = datetime.now()
+            logger.info(f"🔄 Проверка истекших подписок на {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Получаем пользователей с истекшей подпиской
+            expired_users = self.db.get_expired_subscriptions()
+            
+            if not expired_users:
+                logger.debug("📭 Нет пользователей с истекшими подписками")
+                return
+            
+            logger.info(f"⏰ Найдено {len(expired_users)} пользователей с истекшими подписками")
+            
+            # Получаем настройки сообщения продления
+            renewal_data = self.db.get_renewal_message()
+            
+            if not renewal_data or not renewal_data.get('text'):
+                logger.error("❌ Не настроено сообщение о продлении подписки")
+                return
+            
+            sent_count = 0
+            failed_count = 0
+            
+            for user_id, username, first_name, payed_till in expired_users:
+                try:
+                    logger.info(f"📤 Отправляем уведомление о продлении пользователю {user_id} (@{username})")
+                    
+                    # Обрабатываем текст с UTM метками
+                    processed_text = utm_utils.process_text_links(renewal_data['text'], user_id)
+                    
+                    # Создаем клавиатуру с кнопкой продления
+                    reply_markup = None
+                    if renewal_data.get('button_text') and renewal_data.get('button_url'):
+                        # Добавляем UTM метки к URL кнопки
+                        processed_url = utm_utils.add_utm_to_url(renewal_data['button_url'], user_id)
+                        
+                        keyboard = [[InlineKeyboardButton(
+                            renewal_data['button_text'], 
+                            url=processed_url
+                        )]]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        logger.debug(f"🔘 Добавлена кнопка продления с UTM метками")
+                    
+                    # Отправляем сообщение
+                    if renewal_data.get('photo_url'):
+                        # Отправляем с фото
+                        await context.bot.send_photo(
+                            chat_id=user_id,
+                            photo=renewal_data['photo_url'],
+                            caption=processed_text,
+                            parse_mode='HTML',
+                            reply_markup=reply_markup
+                        )
+                        logger.debug(f"🖼️ Отправлено уведомление с фото")
+                    else:
+                        # Отправляем только текст
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=processed_text,
+                            parse_mode='HTML',
+                            disable_web_page_preview=True,
+                            reply_markup=reply_markup
+                        )
+                        logger.debug(f"📝 Отправлено текстовое уведомление")
+                    
+                    # Завершаем подписку пользователя
+                    expire_success = self.db.expire_user_subscription(user_id)
+                    
+                    if expire_success:
+                        # Запланируем обычные сообщения рассылки
+                        schedule_success = await self.schedule_user_messages(context, user_id)
+                        
+                        if schedule_success:
+                            logger.info(f"✅ Пользователь {user_id} переведен на обычные рассылки после истечения подписки")
+                        else:
+                            logger.warning(f"⚠️ Не удалось запланировать обычные сообщения для пользователя {user_id}")
+                    else:
+                        logger.error(f"❌ Не удалось завершить подписку пользователя {user_id}")
+                    
+                    sent_count += 1
+                    
+                    # Небольшая задержка между отправками
+                    await asyncio.sleep(0.2)
+                    
+                except Forbidden as e:
+                    # Пользователь заблокировал бота
+                    logger.warning(f"❌ Пользователь {user_id} заблокировал бота при уведомлении о продлении: {e}")
+                    # Все равно завершаем подписку
+                    self.db.expire_user_subscription(user_id)
+                    self.db.deactivate_user(user_id)
+                    failed_count += 1
+                    
+                except BadRequest as e:
+                    # Неверный chat_id или другая ошибка
+                    logger.error(f"❌ BadRequest для пользователя {user_id} при уведомлении о продлении: {e}")
+                    # Все равно завершаем подписку
+                    self.db.expire_user_subscription(user_id)
+                    failed_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"❌ Не удалось отправить уведомление о продлении пользователю {user_id}: {e}")
+                    failed_count += 1
+            
+            logger.info(f"📊 Проверка истекших подписок завершена: уведомлений отправлено {sent_count}, ошибок {failed_count}")
+                        
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в check_expired_subscriptions: {e}", exc_info=True)
