@@ -1,5 +1,5 @@
 """
-Функциональность управления сообщениями продления подписки для админ-панели
+Исправленная функциональность управления сообщениями продления подписки для админ-панели
 """
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,15 +17,23 @@ class RenewalMixin:
         """Показать меню управления сообщениями продления"""
         renewal_data = self.db.get_renewal_message()
         
-        if not renewal_data:
+        # Улучшенная проверка на None и тип данных
+        if renewal_data is None or not isinstance(renewal_data, dict):
+            logger.error(f"❌ get_renewal_message() вернул некорректные данные: {renewal_data}")
             await self.show_error_message(update, context, "❌ Ошибка при получении настроек продления")
             return
         
-        # Формируем информацию о текущих настройках
-        text_info = renewal_data.get('text', 'Не настроено')[:100] + '...' if len(renewal_data.get('text', '')) > 100 else renewal_data.get('text', 'Не настроено')
+        # Безопасное получение данных с проверками
+        text = renewal_data.get('text') or 'Не настроено'
+        text_info = text[:100] + '...' if len(text) > 100 else text
+        
         photo_info = "Есть" if renewal_data.get('photo_url') else "Нет"
-        button_text_info = renewal_data.get('button_text', 'Не настроено')
-        button_url_info = renewal_data.get('button_url', 'Не настроено')
+        
+        button_text = renewal_data.get('button_text') or 'Не настроено'
+        button_text_info = button_text
+        
+        button_url = renewal_data.get('button_url') or 'Не настроено'
+        button_url_info = button_url[:50] + '...' if len(button_url) > 50 else button_url
         
         text = (
             "💰 <b>Сообщения продления подписки</b>\n\n"
@@ -34,7 +42,7 @@ class RenewalMixin:
             f"📝 <b>Текст:</b> {text_info}\n\n"
             f"🖼 <b>Фото:</b> {photo_info}\n\n"
             f"🔘 <b>Кнопка:</b> {button_text_info}\n"
-            f"🔗 <b>URL кнопки:</b> {button_url_info[:50]}{'...' if len(button_url_info) > 50 else ''}\n\n"
+            f"🔗 <b>URL кнопки:</b> {button_url_info}\n\n"
             "💡 <i>Все ссылки автоматически получают UTM метки для отслеживания конверсий.</i>\n\n"
             "Выберите что настроить:"
         )
@@ -45,11 +53,13 @@ class RenewalMixin:
             [InlineKeyboardButton("🔘 Настроить кнопку", callback_data="renewal_edit_button")],
         ]
         
-        # Дополнительные действия
+        # Дополнительные действия - проверяем на существование и не пустоту
         if renewal_data.get('photo_url'):
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="renewal_remove_photo")])
         
-        if renewal_data.get('button_text') and renewal_data.get('button_url'):
+        button_text_val = renewal_data.get('button_text')
+        button_url_val = renewal_data.get('button_url')
+        if button_text_val and button_url_val:
             keyboard.append([InlineKeyboardButton("🗑 Удалить кнопку", callback_data="renewal_remove_button")])
         
         keyboard.extend([
@@ -66,18 +76,26 @@ class RenewalMixin:
         """Показать детальное меню редактирования продления"""
         renewal_data = self.db.get_renewal_message()
         
-        if not renewal_data:
+        # Улучшенная проверка
+        if renewal_data is None or not isinstance(renewal_data, dict):
+            logger.error(f"❌ get_renewal_message() вернул некорректные данные: {renewal_data}")
             await self.show_error_message(update, context, "❌ Ошибка при получении настроек продления")
             return
+        
+        # Безопасное получение данных
+        text_val = renewal_data.get('text') or 'Не настроено'
+        photo_status = 'Установлено' if renewal_data.get('photo_url') else 'Не установлено'
+        button_text_val = renewal_data.get('button_text') or 'Не настроено'
+        button_url_val = renewal_data.get('button_url') or 'Не настроено'
         
         text = (
             f"💰 <b>Редактирование сообщения продления</b>\n\n"
             f"<b>Текущий текст сообщения:</b>\n"
-            f"{renewal_data.get('text', 'Не настроено')}\n\n"
-            f"<b>Фото:</b> {'Установлено' if renewal_data.get('photo_url') else 'Не установлено'}\n\n"
+            f"{text_val}\n\n"
+            f"<b>Фото:</b> {photo_status}\n\n"
             f"<b>Кнопка:</b>\n"
-            f"Текст: {renewal_data.get('button_text', 'Не настроено')}\n"
-            f"URL: {renewal_data.get('button_url', 'Не настроено')}\n\n"
+            f"Текст: {button_text_val}\n"
+            f"URL: {button_url_val}\n\n"
             f"💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
             f"Выберите что изменить:"
         )
@@ -99,18 +117,29 @@ class RenewalMixin:
         
         renewal_data = self.db.get_renewal_message()
         
-        if not renewal_data:
+        # Улучшенная проверка
+        if renewal_data is None or not isinstance(renewal_data, dict):
+            logger.error(f"❌ get_renewal_message() вернул некорректные данные: {renewal_data}")
             await context.bot.send_message(chat_id=user_id, text="❌ Ошибка при получении настроек продления")
             return
+        
+        # Безопасное получение данных
+        text_val = renewal_data.get('text') or 'Не настроено'
+        text_info = text_val[:100] + '...' if len(text_val) > 100 else text_val
+        
+        photo_info = 'Есть' if renewal_data.get('photo_url') else 'Нет'
+        button_text_val = renewal_data.get('button_text') or 'Не настроено'
+        button_url_val = renewal_data.get('button_url') or 'Не настроено'
+        button_url_info = button_url_val[:50] + '...' if len(button_url_val) > 50 else button_url_val
         
         message_text = (
             "💰 <b>Сообщения продления подписки</b>\n\n"
             "⏰ <b>Отправляется:</b> В день истечения подписки в 12:00 МСК\n\n"
             "<b>Текущие настройки:</b>\n\n"
-            f"📝 <b>Текст:</b> {renewal_data.get('text', 'Не настроено')[:100]}{'...' if len(renewal_data.get('text', '')) > 100 else ''}\n\n"
-            f"🖼 <b>Фото:</b> {'Есть' if renewal_data.get('photo_url') else 'Нет'}\n\n"
-            f"🔘 <b>Кнопка:</b> {renewal_data.get('button_text', 'Не настроено')}\n"
-            f"🔗 <b>URL кнопки:</b> {renewal_data.get('button_url', 'Не настроено')[:50]}{'...' if len(renewal_data.get('button_url', '')) > 50 else ''}\n\n"
+            f"📝 <b>Текст:</b> {text_info}\n\n"
+            f"🖼 <b>Фото:</b> {photo_info}\n\n"
+            f"🔘 <b>Кнопка:</b> {button_text_val}\n"
+            f"🔗 <b>URL кнопки:</b> {button_url_info}\n\n"
             "💡 <i>Все ссылки автоматически получают UTM метки для отслеживания конверсий.</i>\n\n"
             "Выберите что настроить:"
         )
@@ -121,7 +150,7 @@ class RenewalMixin:
             [InlineKeyboardButton("🔘 Настроить кнопку", callback_data="renewal_edit_button")],
         ]
         
-        # Дополнительные действия
+        # Дополнительные действия с проверками
         if renewal_data.get('photo_url'):
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="renewal_remove_photo")])
         
@@ -142,10 +171,20 @@ class RenewalMixin:
         """Показать меню настройки кнопки продления"""
         renewal_data = self.db.get_renewal_message()
         
+        # Улучшенная проверка
+        if renewal_data is None or not isinstance(renewal_data, dict):
+            logger.error(f"❌ get_renewal_message() вернул некорректные данные: {renewal_data}")
+            await self.show_error_message(update, context, "❌ Ошибка при получении настроек продления")
+            return
+        
+        # Безопасное получение данных
+        button_text_val = renewal_data.get('button_text') or 'Не настроено'
+        button_url_val = renewal_data.get('button_url') or 'Не настроено'
+        
         text = (
             "🔘 <b>Настройка кнопки продления</b>\n\n"
-            f"<b>Текущий текст кнопки:</b> {renewal_data.get('button_text', 'Не настроено')}\n"
-            f"<b>Текущий URL:</b> {renewal_data.get('button_url', 'Не настроено')}\n\n"
+            f"<b>Текущий текст кнопки:</b> {button_text_val}\n"
+            f"<b>Текущий URL:</b> {button_url_val}\n\n"
             "💡 <i>Кнопка будет добавлена под сообщением о продлении с автоматическими UTM метками.</i>\n\n"
             "Что хотите изменить?"
         )
@@ -164,7 +203,15 @@ class RenewalMixin:
         renewal_data = self.db.get_renewal_message()
         user_id = update.callback_query.from_user.id
         
-        if not renewal_data or not renewal_data.get('text'):
+        # Улучшенная проверка
+        if renewal_data is None or not isinstance(renewal_data, dict):
+            logger.error(f"❌ get_renewal_message() вернул некорректные данные: {renewal_data}")
+            await update.callback_query.answer("❌ Ошибка при получении настроек продления!", show_alert=True)
+            return
+        
+        # Проверяем наличие текста
+        renewal_text = renewal_data.get('text')
+        if not renewal_text:
             await update.callback_query.answer("❌ Сначала настройте текст сообщения!", show_alert=True)
             return
         
@@ -186,19 +233,20 @@ class RenewalMixin:
         try:
             # Создаем клавиатуру если есть кнопка
             reply_markup = None
-            if renewal_data.get('button_text') and renewal_data.get('button_url'):
-                keyboard = [[InlineKeyboardButton(
-                    renewal_data['button_text'], 
-                    url=renewal_data['button_url']
-                )]]
+            button_text = renewal_data.get('button_text')
+            button_url = renewal_data.get('button_url')
+            
+            if button_text and button_url:
+                keyboard = [[InlineKeyboardButton(button_text, url=button_url)]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
             
-            if renewal_data.get('photo_url'):
+            photo_url = renewal_data.get('photo_url')
+            if photo_url:
                 # Отправляем с фото
                 await context.bot.send_photo(
                     chat_id=user_id,
-                    photo=renewal_data['photo_url'],
-                    caption=renewal_data['text'],
+                    photo=photo_url,
+                    caption=renewal_text,
                     parse_mode='HTML',
                     reply_markup=reply_markup
                 )
@@ -206,7 +254,7 @@ class RenewalMixin:
                 # Отправляем только текст
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=renewal_data['text'],
+                    text=renewal_text,
                     parse_mode='HTML',
                     reply_markup=reply_markup
                 )
