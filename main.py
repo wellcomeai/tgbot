@@ -32,7 +32,22 @@ logging.getLogger('httpcore').setLevel(logging.WARNING)
 
 # ===== КОНФИГУРАЦИЯ ДЛЯ RENDER =====
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_CHAT_ID = int(os.environ.get('ADMIN_CHAT_ID', '0'))
+
+# ОБНОВЛЕНО: Поддержка нескольких администраторов через запятую
+admin_ids_str = os.environ.get('ADMIN_CHAT_ID', '0')
+if ',' in admin_ids_str:
+    ADMIN_CHAT_IDS = [int(id.strip()) for id in admin_ids_str.split(',')]
+else:
+    ADMIN_CHAT_IDS = [int(admin_ids_str)]
+
+# Для обратной совместимости (если AdminPanel требует одно значение)
+ADMIN_CHAT_ID = ADMIN_CHAT_IDS[0]
+
+# Функция-помощник для проверки прав админа
+def is_admin(user_id: int) -> bool:
+    """Проверяет, является ли пользователь администратором"""
+    return user_id in ADMIN_CHAT_IDS
+
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
 # Настройки для Render
@@ -48,7 +63,7 @@ if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не установлен!")
     raise ValueError("BOT_TOKEN не установлен в переменных окружения")
 
-if ADMIN_CHAT_ID == 0:
+if not ADMIN_CHAT_IDS or ADMIN_CHAT_IDS[0] == 0:
     logger.error("❌ ADMIN_CHAT_ID не установлен!")
     raise ValueError("ADMIN_CHAT_ID не установлен в переменных окружения")
 
@@ -65,7 +80,7 @@ logger.info(f"🚀 Конфигурация для Render:")
 logger.info(f"   🌐 aiohttp порт: {RENDER_PORT}")
 logger.info(f"   📱 Webhook URL: {WEBHOOK_URL}")
 logger.info(f"   💾 Render Disk: {RENDER_DISK_PATH}")
-logger.info(f"   👤 Admin ID: {ADMIN_CHAT_ID}")
+logger.info(f"   👤 Admin IDs: {ADMIN_CHAT_IDS}")
 logger.info(f"   📢 Channel: {CHANNEL_ID}")
 
 # ===== ИНИЦИАЛИЗАЦИЯ КОМПОНЕНТОВ =====
@@ -515,8 +530,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     user = update.effective_user
     
-    # Проверяем, является ли пользователь админом
-    if user.id == ADMIN_CHAT_ID:
+    # ОБНОВЛЕНО: Проверяем, является ли пользователь админом
+    if is_admin(user.id):
         await admin_panel.show_main_menu(update, context)
         return
     
@@ -753,8 +768,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     user_id = query.from_user.id
     callback_data = query.data
     
-    # Проверяем, является ли пользователь админом
-    if user_id == ADMIN_CHAT_ID:
+    # ОБНОВЛЕНО: Проверяем, является ли пользователь админом
+    if is_admin(user_id):
         await query.answer()
         await admin_panel.handle_callback(update, context)
         return
@@ -805,8 +820,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     message_text = update.message.text
     
-    # Проверяем, является ли пользователь админом
-    if user_id == ADMIN_CHAT_ID:
+    # ОБНОВЛЕНО: Проверяем, является ли пользователь админом
+    if is_admin(user_id):
         await admin_panel.handle_message(update, context)
         return
     
