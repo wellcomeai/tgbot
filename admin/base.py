@@ -171,13 +171,13 @@ class AdminBaseMixin:
         # Определяем текст запроса в зависимости от типа
         prompt_texts = {
             "welcome": "✏️ Отправьте новый текст приветственного сообщения:",
-            "welcome_photo": "🖼 Отправьте фото или ссылку на фото для приветствия:",
+            "welcome_photo": "🖼 Отправьте фото напрямую или ссылку на фото (http://...):",
             "goodbye": "✏️ Отправьте новый текст прощального сообщения:",
-            "goodbye_photo": "🖼 Отправьте фото или ссылку на фото для прощания:",
+            "goodbye_photo": "🖼 Отправьте фото напрямую или ссылку на фото (http://...):",
             "success_message": "✏️ Отправьте новый текст сообщения подтверждения:",
             "broadcast_timer": "⏰ На сколько часов отключить рассылку?\n\nПример: <code>2.5</code> (на 2,5 часа)",
             "renewal_text": "✏️ Отправьте текст сообщения о продлении подписки:",
-            "renewal_photo": "🖼 Отправьте фото или ссылку на фото для сообщения продления:",
+            "renewal_photo": "🖼 Отправьте фото напрямую или ссылку на фото (http://...):",
             "renewal_button_text": "📝 Отправьте текст кнопки продления:",
             "renewal_button_url": "🔗 Отправьте URL для кнопки продления:"
         }
@@ -211,30 +211,29 @@ class AdminBaseMixin:
         input_type = waiting_data["type"]
         
         try:
-            # Получаем файл с наибольшим разрешением
+            # ✅ НОВОЕ: Получаем file_id напрямую, без конвертации в URL
             photo = update.message.photo[-1]
-            file = await context.bot.get_file(photo.file_id)
+            photo_file_id = photo.file_id
             
-            # Формируем URL для доступа к фото
-            photo_url = f"https://api.telegram.org/file/bot{context.bot.token}/{file.file_path}"
+            logger.info(f"📸 Получен file_id фото: {photo_file_id}")
             
             # Обрабатываем в зависимости от типа
             if input_type == "welcome_photo":
                 welcome_text = self.db.get_welcome_message()['text']
-                self.db.set_welcome_message(welcome_text, photo_url)
+                self.db.set_welcome_message(welcome_text, photo_file_id)
                 await update.message.reply_text("✅ Фото приветствия обновлено!")
                 del self.waiting_for[user_id]
                 await self.show_welcome_edit_from_context(update, context)
                 
             elif input_type == "goodbye_photo":
                 goodbye_text = self.db.get_goodbye_message()['text']
-                self.db.set_goodbye_message(goodbye_text, photo_url)
+                self.db.set_goodbye_message(goodbye_text, photo_file_id)
                 await update.message.reply_text("✅ Фото прощания обновлено!")
                 del self.waiting_for[user_id]
                 await self.show_goodbye_edit_from_context(update, context)
                 
             elif input_type == "renewal_photo":
-                self.db.set_renewal_message(photo_url=photo_url)
+                self.db.set_renewal_message(photo_url=photo_file_id)
                 await update.message.reply_text("✅ Фото сообщения продления обновлено!")
                 del self.waiting_for[user_id]
                 await self.show_renewal_edit_from_context(update, context)
@@ -249,27 +248,27 @@ class AdminBaseMixin:
     
     async def handle_photo_url_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                    url: str, input_type: str, **kwargs):
-        """Обработка ввода URL фото"""
+        """Обработка ввода URL фото (для обратной совместимости)"""
         user_id = update.effective_user.id
         
         try:
             if input_type == "welcome_photo":
                 welcome_text = self.db.get_welcome_message()['text']
                 self.db.set_welcome_message(welcome_text, url)
-                await update.message.reply_text("✅ Фото приветствия обновлено!")
+                await update.message.reply_text("✅ Ссылка на фото приветствия сохранена!")
                 del self.waiting_for[user_id]
                 await self.show_welcome_edit_from_context(update, context)
                 
             elif input_type == "goodbye_photo":
                 goodbye_text = self.db.get_goodbye_message()['text']
                 self.db.set_goodbye_message(goodbye_text, url)
-                await update.message.reply_text("✅ Фото прощания обновлено!")
+                await update.message.reply_text("✅ Ссылка на фото прощания сохранена!")
                 del self.waiting_for[user_id]
                 await self.show_goodbye_edit_from_context(update, context)
                 
             elif input_type == "renewal_photo":
                 self.db.set_renewal_message(photo_url=url)
-                await update.message.reply_text("✅ Фото сообщения продления обновлено!")
+                await update.message.reply_text("✅ Ссылка на фото сообщения продления сохранена!")
                 del self.waiting_for[user_id]
                 await self.show_renewal_edit_from_context(update, context)
                 
