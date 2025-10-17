@@ -401,6 +401,12 @@ class Database:
                 VALUES ('payment_success_photo_url', '')
             ''')
             
+            # ✅ НОВОЕ: Инициализация настройки для включения/выключения сообщения подтверждения
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value) 
+                VALUES ('success_message_enabled', '1')
+            ''')
+            
             # Инициализация сообщений рассылки по умолчанию
             default_messages = [
                 ("Сообщение 1: Основы работы с нашим сервисом 📚", 0.05, None),    # 3 минуты
@@ -751,6 +757,55 @@ class Database:
             except:
                 pass
             return 0
+        finally:
+            if conn:
+                conn.close()
+    
+    # ===== ✅ НОВЫЕ МЕТОДЫ ДЛЯ УПРАВЛЕНИЯ СООБЩЕНИЕМ ПОДТВЕРЖДЕНИЯ =====
+    
+    def is_success_message_enabled(self):
+        """Проверить включено ли сообщение подтверждения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('SELECT value FROM settings WHERE key = "success_message_enabled"')
+            result = cursor.fetchone()
+            
+            # По умолчанию включено
+            if result is None:
+                return True
+            
+            return result[0] == "1" or result[0] == "True"
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке статуса сообщения подтверждения: {e}")
+            return True  # По умолчанию включено в случае ошибки
+        finally:
+            if conn:
+                conn.close()
+    
+    def set_success_message_enabled(self, enabled: bool):
+        """Включить/выключить сообщение подтверждения"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            value = "1" if enabled else "0"
+            cursor.execute('''
+                INSERT OR REPLACE INTO settings (key, value) 
+                VALUES (?, ?)
+            ''', ('success_message_enabled', value))
+            
+            conn.commit()
+            logger.info(f"✅ Сообщение подтверждения {'включено' if enabled else 'выключено'}")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при изменении статуса сообщения подтверждения: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
         finally:
             if conn:
                 conn.close()
