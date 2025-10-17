@@ -66,6 +66,19 @@ class HandlersMixin:
             elif data == "set_broadcast_timer":
                 await self.request_text_input(update, context, "broadcast_timer")
             
+            # === ✅ НОВОЕ: Переключение сообщения подтверждения ===
+            elif data == "toggle_success_message":
+                # Переключаем статус
+                current_status = self.db.is_success_message_enabled()
+                new_status = not current_status
+                self.db.set_success_message_enabled(new_status)
+                
+                status_text = "включено" if new_status else "выключено"
+                await query.answer(f"✅ Сообщение подтверждения {status_text}!")
+                
+                # Обновляем меню
+                await self.show_success_message_edit(update, context)
+            
             # === Продление подписок ===
             elif data == "admin_renewal":
                 await self.show_renewal_menu(update, context)
