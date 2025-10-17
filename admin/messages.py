@@ -163,7 +163,14 @@ class MessagesMixin:
         else:
             current_message = self._get_default_success_message()
         
+        # ✅ НОВОЕ: Получаем статус включения/выключения
+        is_enabled = self.db.is_success_message_enabled()
+        status_text = "🟢 Включено" if is_enabled else "🔴 Выключено"
+        toggle_button_text = "🔴 Выключить сообщение" if is_enabled else "🟢 Включить сообщение"
+        
         keyboard = [
+            # ✅ НОВОЕ: Кнопка переключения статуса
+            [InlineKeyboardButton(toggle_button_text, callback_data="toggle_success_message")],
             [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_success_message_text")],
             [InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_success_message")],
             [InlineKeyboardButton("« Назад", callback_data="admin_back")]
@@ -172,6 +179,7 @@ class MessagesMixin:
         
         message_text = (
             "✅ <b>Сообщение подтверждения</b>\n\n"
+            f"<b>Статус:</b> {status_text}\n\n"
             "Это сообщение отправляется пользователям после успешной подписки.\n\n"
             f"<b>Текущий текст:</b>\n{current_message}"
         )
@@ -194,7 +202,14 @@ class MessagesMixin:
         else:
             current_message = self._get_default_success_message()
         
+        # ✅ НОВОЕ: Получаем статус включения/выключения
+        is_enabled = self.db.is_success_message_enabled()
+        status_text = "🟢 Включено" if is_enabled else "🔴 Выключено"
+        toggle_button_text = "🔴 Выключить сообщение" if is_enabled else "🟢 Включить сообщение"
+        
         keyboard = [
+            # ✅ НОВОЕ: Кнопка переключения статуса
+            [InlineKeyboardButton(toggle_button_text, callback_data="toggle_success_message")],
             [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_success_message_text")],
             [InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_success_message")],
             [InlineKeyboardButton("« Назад", callback_data="admin_back")]
@@ -203,6 +218,7 @@ class MessagesMixin:
         
         message_text = (
             "✅ <b>Сообщение подтверждения</b>\n\n"
+            f"<b>Статус:</b> {status_text}\n\n"
             "Это сообщение отправляется пользователям после успешной подписки.\n\n"
             f"<b>Текущий текст:</b>\n{current_message}"
         )
