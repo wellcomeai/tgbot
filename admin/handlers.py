@@ -318,8 +318,15 @@ class HandlersMixin:
                 await self.handle_photo_input(update, context, waiting_data)
                 return
             
-            # Обработка текста
-            text = update.message.text if update.message.text else update.message.caption
+            # ✅ ОБНОВЛЕНО: Обработка текста с HTML форматированием из Telegram
+            # Используем text_html и caption_html для сохранения форматирования
+            if update.message.text:
+                text = update.message.text_html  # ← Автоматически конвертирует entities в HTML
+            elif update.message.caption:
+                text = update.message.caption_html  # ← Для подписей к фото
+            else:
+                text = None
+            
             if not text:
                 await self.show_error_message(update, context, "❌ Пустое сообщение. Попробуйте еще раз.")
                 return
