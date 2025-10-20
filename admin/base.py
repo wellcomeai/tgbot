@@ -222,11 +222,12 @@ class AdminBaseMixin:
             "paid_broadcast_text": f"💰 ✏️ Отправьте новый текст для сообщения оплативших {message_number}:",
             "paid_broadcast_delay": f"💰 ⏰ Отправьте новую задержку для сообщения оплативших {message_number} после оплаты:\n\n" + 
                                    "📝 <b>Форматы ввода:</b>\n" +
+                                   "• <code>5с</code> или <code>5 секунд</code> - для секунд\n" +
                                    "• <code>30м</code> или <code>30 минут</code> - для минут\n" +
                                    "• <code>2ч</code> или <code>2 часа</code> - для часов\n" +
                                    "• <code>1.5</code> - для 1.5 часов\n" +
                                    "• <code>0</code> - для мгновенной отправки\n\n" +
-                                   "💡 Примеры: <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>0</code>",
+                                   "💡 Примеры: <code>1с</code>, <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>0</code>",
             "paid_broadcast_photo": f"💰 🖼 Отправьте фото для сообщения оплативших {message_number} напрямую или ссылку (http://...):",
             
             # === КНОПКИ ПЛАТНОЙ ВОРОНКИ ===
@@ -295,16 +296,20 @@ class AdminBaseMixin:
         return (
             f"⏰ Отправьте новую задержку для сообщения {message_number}:\n\n"
             f"📝 <b>Форматы ввода:</b>\n"
+            f"• <code>5с</code> или <code>5 секунд</code> - для секунд\n"
             f"• <code>30м</code> или <code>30 минут</code> - для минут\n"
             f"• <code>2ч</code> или <code>2 часа</code> - для часов\n"
             f"• <code>1.5</code> - для 1.5 часов\n"
             f"• <code>0.05</code> - для 3 минут\n\n"
-            f"💡 Примеры: <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>1.5</code>"
+            f"💡 Примеры: <code>1с</code>, <code>3м</code>, <code>30 минут</code>, <code>2ч</code>, <code>1.5</code>"
         )
     
     def format_delay_display(self, delay_hours: float) -> str:
         """Форматирование отображения задержки"""
-        if delay_hours < 1:
+        if delay_hours < 1/60:  # Меньше минуты - показываем секунды
+            seconds = int(delay_hours * 3600)
+            return f"{seconds}с"
+        elif delay_hours < 1:
             minutes = int(delay_hours * 60)
             return f"{minutes}м"
         elif delay_hours == int(delay_hours):
@@ -314,13 +319,30 @@ class AdminBaseMixin:
     
     def format_delay_display_full(self, delay_hours: float) -> str:
         """Полное форматирование отображения задержки"""
-        if delay_hours < 1:
+        if delay_hours < 1/60:  # Меньше минуты
+            seconds = int(delay_hours * 3600)
+            if seconds == 1:
+                return "1 секунда"
+            elif seconds in [2, 3, 4]:
+                return f"{seconds} секунды"
+            else:
+                return f"{seconds} секунд"
+        elif delay_hours < 1:
             minutes = int(delay_hours * 60)
-            return f"{minutes} минут"
+            if minutes == 1:
+                return "1 минута"
+            elif minutes in [2, 3, 4]:
+                return f"{minutes} минуты"
+            else:
+                return f"{minutes} минут"
         elif delay_hours == 1:
             return "1 час"
         elif delay_hours == int(delay_hours):
-            return f"{int(delay_hours)} часов"
+            hours = int(delay_hours)
+            if hours in [2, 3, 4]:
+                return f"{hours} часа"
+            else:
+                return f"{hours} часов"
         else:
             return f"{delay_hours} часов"
     
@@ -333,7 +355,14 @@ class AdminBaseMixin:
             text = ' '.join(text.split())
             
             # Парсинг различных форматов
-            if 'м' in text or 'мин' in text:
+            if 'с' in text or 'сек' in text:
+                # Секунды
+                number_str = text.replace('с', '').replace('сек', '').replace('унд', '').replace('ы', '').replace('а', '').strip()
+                seconds = float(number_str)
+                hours = seconds / 3600  # Конвертируем секунды в часы
+                return hours, self.format_delay_display(hours)
+                
+            elif 'м' in text or 'мин' in text:
                 # Минуты
                 number_str = text.replace('м', '').replace('мин', '').replace('инут', '').replace('ы', '').replace('а', '').strip()
                 minutes = float(number_str)
