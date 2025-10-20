@@ -1309,7 +1309,7 @@ async def run_telegram_bot():
     application.job_queue.run_repeating(
         scheduler.send_scheduled_messages,
         interval=60,  # каждые 60 секунд
-        first=10  # первый запуск через 10 секунд
+        first=1  # первый запуск через 10 секунд
     )
     
     # Запускаем фоновую задачу для запланированных массовых рассылок
