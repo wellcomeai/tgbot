@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime
 import logging
 import io
+import html
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class StatisticsMixin:
         if stats['utm_sources']:
             text += "🔗 <b>По источникам:</b>\n"
             for utm_source, count in stats['utm_sources']:
-                text += f"• {utm_source}: {count} платежей\n"
+                text += f"• {html.escape(str(utm_source))}: {count} платежей\n"
             text += "\n"
         
         # Последние платежи
@@ -83,7 +84,7 @@ class StatisticsMixin:
             for user_id, first_name, username, amount, created_at in stats['recent_payments'][:5]:
                 username_str = f"@{username}" if username else "без username"
                 date_str = datetime.fromisoformat(created_at).strftime("%d.%m %H:%M")
-                text += f"• {first_name} ({username_str}): {amount} руб. - {date_str}\n"
+                text += f"• {html.escape(str(first_name))} ({html.escape(username_str)}): {amount} руб. - {date_str}\n"
         
         keyboard = [
             [InlineKeyboardButton("🔄 Обновить", callback_data="admin_payment_stats")],
@@ -124,8 +125,8 @@ class StatisticsMixin:
                     dropped = msg_data['dropped']
                     drop_rate = msg_data['drop_rate']
                     
-                    # Заголовок сообщения - БЕЗ тегов <i> чтобы избежать конфликтов
-                    text += f"<b>Сообщение {message_number}:</b> {message_text}\n"
+                    # Заголовок сообщения - экранируем HTML для безопасности
+                    text += f"<b>Сообщение {message_number}:</b> {html.escape(message_text)}\n"
                     
                     if delivered == 0:
                         text += "└─ ⏳ Еще не отправлялось\n\n"
@@ -204,9 +205,9 @@ class StatisticsMixin:
             # Формируем текст
             text = f"📝 <b>СООБЩЕНИЕ {message_number} - Детальная статистика</b>\n\n"
             
-            # Обрезаем текст сообщения если он слишком длинный и убираем HTML теги для безопасности
+            # Обрезаем текст сообщения если он слишком длинный и экранируем HTML
             display_text = message_text[:100] + '...' if len(message_text) > 100 else message_text
-            text += f"{display_text}\n\n"
+            text += f"{html.escape(display_text)}\n\n"
             
             if delivered == 0:
                 text += "⏳ Это сообщение еще не отправлялось пользователям.\n"
@@ -244,7 +245,8 @@ class StatisticsMixin:
                         # Иконка в зависимости от типа кнопки
                         icon = "📩" if button_type == "callback" else "🔗"
                         
-                        text += f"{icon} <b>{button_text}</b> → {click_count} кликов ({percentage}%)\n"
+                        # Экранируем текст кнопки
+                        text += f"{icon} <b>{html.escape(button_text)}</b> → {click_count} кликов ({percentage}%)\n"
                     
                     text += "\n"
                 else:
@@ -302,7 +304,8 @@ class StatisticsMixin:
                 username_str = f"@{username}" if username else "без username"
                 join_date = datetime.fromisoformat(joined_at).strftime("%d.%m.%Y %H:%M")
                 bot_status = "💬" if bot_started else "❌"
-                text += f"• {first_name} ({username_str}) {bot_status}{paid_icon}\n  ID: {user_id_db}, {join_date}\n\n"
+                # Экранируем пользовательские данные
+                text += f"• {html.escape(str(first_name))} ({html.escape(username_str)}) {bot_status}{paid_icon}\n  ID: {user_id_db}, {join_date}\n\n"
             
             text += "\n💬 - может получать рассылки\n❌ - нужно написать боту /start\n💰 - оплатил"
         
