@@ -731,14 +731,16 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Если пользователь покинул канал
     if old_status in ["member", "administrator", "creator"] and new_status in ["left", "kicked"]:
-        logger.info(f"Пользователь {user.id} (@{user.username}) покинул канал")
+        logger.info(f"👋 Пользователь {user.id} (@{user.username}) покинул канал")
         
-        # Деактивируем пользователя
+        # 1. Удаляем ВСЕ запланированные сообщения
+        cancelled = db.cancel_user_messages(user.id)
+        logger.info(f"🗑️ Удалено {cancelled} запланированных сообщений")
+        
+        # 2. Деактивируем пользователя
         db.deactivate_user(user.id)
         
-        # Отменяем запланированные сообщения
-        db.cancel_user_messages(user.id)
-        
+        # 3. Отправляем прощальное сообщение
         # Получаем прощальное сообщение и кнопки
         goodbye_data = db.get_goodbye_message()
         goodbye_buttons = db.get_goodbye_buttons()
