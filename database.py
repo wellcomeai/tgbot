@@ -2444,22 +2444,34 @@ class Database:
             if conn:
                 conn.close()
     
-    def cancel_user_messages(self, user_id):
-        """Отмена всех запланированных сообщений для пользователя"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+  def cancel_user_messages(self, user_id):
+    """Удаляет ВСЕ запланированные сообщения пользователя"""
+    conn = self._get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Удаляем ВСЕ сообщения (и отправленные, и запланированные)
+        cursor.execute('''
+            DELETE FROM scheduled_messages 
+            WHERE user_id = ?
+        ''', (user_id,))
         
+        affected = cursor.rowcount
+        conn.commit()
+        
+        logger.info(f"🗑️ Удалено {affected} запланированных сообщений для пользователя {user_id}")
+        return affected
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при удалении сообщений для пользователя {user_id}: {e}")
         try:
-            cursor.execute('''
-                DELETE FROM scheduled_messages 
-                WHERE user_id = ? AND is_sent = 0
-            ''', (user_id,))
-            
-            conn.commit()
-            logger.info(f"Отменены запланированные сообщения для пользователя {user_id}")
-        finally:
-            if conn:
-                conn.close()
+            conn.rollback()
+        except:
+            pass
+        return 0
+    finally:
+        if conn:
+            conn.close()
     
     def debug_user_state(self, user_id):
         """Отладка состояния пользователя"""
