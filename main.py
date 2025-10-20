@@ -794,6 +794,39 @@ async def handle_next_message_callback(update: Update, context: ContextTypes.DEF
             
         await query.answer("📩 Отправляем следующее сообщение...")
         
+        # 📊 НОВОЕ: Логируем клик по callback кнопке
+        # Нужно определить, из какого сообщения был клик
+        # Для этого получаем последнее отправленное сообщение пользователю
+        try:
+            # Получаем последнее отправленное (но не следующее) сообщение
+            conn = db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT message_number 
+                FROM scheduled_messages 
+                WHERE user_id = ? AND is_sent = 1 
+                ORDER BY id DESC 
+                LIMIT 1
+            ''', (user_id,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                current_message_number = result[0]
+                
+                # Логируем клик
+                db.log_button_click(
+                    user_id=user_id,
+                    message_number=current_message_number,
+                    button_id=None,  # Для callback кнопок следующего сообщения
+                    button_type='callback',
+                    button_text='Следующее сообщение'
+                )
+                
+                logger.info(f"📊 Залогирован клик по callback кнопке в сообщении {current_message_number} от пользователя {user_id}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при логировании клика по кнопке: {e}")
+        
         # Отправляем следующее сообщение
         success = await scheduler.send_next_scheduled_message(context, user_id)
         
