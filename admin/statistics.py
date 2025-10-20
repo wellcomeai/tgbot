@@ -42,6 +42,7 @@ class StatisticsMixin:
         
         keyboard = [
             [InlineKeyboardButton("📊 Детали платежей", callback_data="admin_payment_stats")],
+            [InlineKeyboardButton("🔄 Статистика воронки", callback_data="admin_funnel_stats")],
             [InlineKeyboardButton("« Назад", callback_data="admin_back")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -91,6 +92,194 @@ class StatisticsMixin:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_funnel_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать статистику воронки рассылки"""
+        try:
+            # Получаем данные воронки
+            funnel_data = self.db.get_funnel_data()
+            
+            if not funnel_data:
+                text = (
+                    "📊 <b>ВОРОНКА РАССЫЛКИ</b>\n\n"
+                    "⚠️ Пока нет данных по воронке.\n\n"
+                    "Данные появятся после того, как:\n"
+                    "• Будут отправлены сообщения рассылки\n"
+                    "• Пользователи начнут нажимать на кнопки\n\n"
+                    "💡 Воронка показывает, на каком этапе пользователи теряют интерес к вашему контенту."
+                )
+            else:
+                text = "📊 <b>ВОРОНКА РАССЫЛКИ</b>\n\n"
+                
+                # Находим сообщение с максимальным отвалом
+                biggest_drop = self.db.get_biggest_drop_message()
+                
+                for msg_data in funnel_data:
+                    message_number = msg_data['message_number']
+                    message_text = msg_data['message_text']
+                    delivered = msg_data['delivered']
+                    clicked_callback = msg_data['clicked_callback']
+                    clicked_url = msg_data['clicked_url']
+                    conversion_rate = msg_data['conversion_rate']
+                    dropped = msg_data['dropped']
+                    drop_rate = msg_data['drop_rate']
+                    
+                    # Заголовок сообщения
+                    text += f"<b>Сообщение {message_number}</b>\n"
+                    text += f"<i>{message_text}</i>\n"
+                    
+                    if delivered == 0:
+                        text += "└─ ⏳ Еще не отправлялось\n\n"
+                        continue
+                    
+                    # Статистика
+                    text += f"├─ 📬 Получили: <b>{delivered}</b> чел.\n"
+                    text += f"├─ 🔘 Нажали кнопку: <b>{clicked_callback}</b> ({conversion_rate}%)\n"
+                    
+                    # Предупреждение о большом отвале
+                    if drop_rate >= 30:
+                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate}%) ⚠️ <b>БОЛЬШОЙ ОТВАЛ!</b>\n\n"
+                    elif drop_rate >= 20:
+                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate}%) ⚠️\n\n"
+                    else:
+                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate}%)\n\n"
+                
+                # Добавляем рекомендацию если есть проблемное сообщение
+                if biggest_drop and biggest_drop['drop_rate'] >= 20:
+                    text += (
+                        f"⚠️ <b>ПРОБЛЕМА:</b> Самый большой отвал после "
+                        f"<b>Сообщения {biggest_drop['message_number']}</b> ({biggest_drop['drop_rate']}%)\n\n"
+                        f"💡 <b>Рекомендация:</b> Проверьте текст и предложение в этом сообщении."
+                    )
+            
+            # Создаем кнопки для детализации
+            keyboard = []
+            
+            if funnel_data:
+                # Добавляем кнопки для сообщений с данными
+                for msg_data in funnel_data[:5]:  # Показываем первые 5
+                    if msg_data['delivered'] > 0:
+                        message_number = msg_data['message_number']
+                        keyboard.append([
+                            InlineKeyboardButton(
+                                f"📝 Детали сообщения {message_number}",
+                                callback_data=f"admin_msg_detail_{message_number}"
+                            )
+                        ])
+            
+            keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="admin_funnel_stats")])
+            keyboard.append([InlineKeyboardButton("« Назад к статистике", callback_data="admin_stats")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе статистики воронки: {e}")
+            text = "❌ <b>Ошибка при загрузке статистики воронки</b>"
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_back")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_message_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
+        """Показать детальную статистику по конкретному сообщению"""
+        try:
+            # Получаем детализацию
+            details = self.db.get_message_details(message_number)
+            
+            if not details:
+                text = f"❌ <b>Сообщение {message_number} не найдено</b>"
+                keyboard = [[InlineKeyboardButton("« Назад к воронке", callback_data="admin_funnel_stats")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await self.safe_edit_or_send_message(update, context, text, reply_markup)
+                return
+            
+            message_text = details['message_text']
+            delivered = details['delivered']
+            clicked_callback = details['clicked_callback_count']
+            clicked_url = details['clicked_url_count']
+            not_clicked = details['not_clicked']
+            avg_reaction_time = details['avg_reaction_time_seconds']
+            button_details = details['button_details']
+            
+            # Формируем текст
+            text = f"📝 <b>СООБЩЕНИЕ {message_number} - Детальная статистика</b>\n\n"
+            text += f"<i>{message_text[:100]}{'...' if len(message_text) > 100 else ''}</i>\n\n"
+            
+            if delivered == 0:
+                text += "⏳ Это сообщение еще не отправлялось пользователям.\n"
+            else:
+                text += f"📬 <b>Отправлено:</b> {delivered} пользователям\n"
+                
+                # Среднее время реакции
+                if avg_reaction_time > 0:
+                    if avg_reaction_time < 60:
+                        time_str = f"{int(avg_reaction_time)} сек"
+                    elif avg_reaction_time < 3600:
+                        minutes = int(avg_reaction_time / 60)
+                        seconds = int(avg_reaction_time % 60)
+                        time_str = f"{minutes} мин {seconds} сек"
+                    else:
+                        hours = int(avg_reaction_time / 3600)
+                        minutes = int((avg_reaction_time % 3600) / 60)
+                        time_str = f"{hours} ч {minutes} мин"
+                    
+                    text += f"⏰ <b>Среднее время реакции:</b> {time_str}\n\n"
+                else:
+                    text += f"⏰ <b>Среднее время реакции:</b> Нет данных\n\n"
+                
+                # Статистика по кнопкам
+                if button_details:
+                    total_clicks = sum([btn['click_count'] for btn in button_details])
+                    text += f"🔘 <b>Кнопки (всего кликов: {total_clicks}):</b>\n"
+                    
+                    for btn in button_details:
+                        button_text = btn['button_text']
+                        button_type = btn['button_type']
+                        click_count = btn['click_count']
+                        percentage = btn['percentage']
+                        
+                        # Иконка в зависимости от типа кнопки
+                        icon = "📩" if button_type == "callback" else "🔗"
+                        
+                        text += f"{icon} <b>{button_text}</b> → {click_count} кликов ({percentage}%)\n"
+                    
+                    text += "\n"
+                else:
+                    text += "🔘 <b>Кнопки:</b> Нет кнопок в этом сообщении\n\n"
+                
+                # Не нажали ничего
+                if not_clicked > 0:
+                    not_clicked_percent = round((not_clicked / delivered * 100), 2)
+                    text += f"❌ <b>Не нажали ничего:</b> {not_clicked} чел. ({not_clicked_percent}%)\n\n"
+                
+                # Рекомендации
+                if not_clicked_percent >= 30:
+                    text += (
+                        "💡 <b>Рекомендация:</b> Большой процент пользователей не нажимает на кнопки. "
+                        "Возможно, стоит:\n"
+                        "• Сделать призыв к действию более заметным\n"
+                        "• Упростить текст кнопки\n"
+                        "• Добавить больше ценности в предложение"
+                    )
+                elif clicked_callback / delivered >= 0.7:  # Конверсия >= 70%
+                    text += "✅ <b>Отлично!</b> Высокая вовлеченность пользователей."
+            
+            # Кнопки навигации
+            keyboard = [
+                [InlineKeyboardButton("🔄 Обновить", callback_data=f"admin_msg_detail_{message_number}")],
+                [InlineKeyboardButton("« Назад к воронке", callback_data="admin_funnel_stats")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе деталей сообщения {message_number}: {e}")
+            text = "❌ <b>Ошибка при загрузке деталей сообщения</b>"
+            keyboard = [[InlineKeyboardButton("« Назад к воронке", callback_data="admin_funnel_stats")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     async def show_users_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать список пользователей"""
