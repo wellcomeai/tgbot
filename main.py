@@ -567,6 +567,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success = await callback_handler.execute_start_logic(user.id, context, user)
     
     if success:
+        # ✅ ИСПРАВЛЕНИЕ: Проверяем статус включения сообщения подтверждения
+        if not db.is_success_message_enabled():
+            logger.info(f"ℹ️ Сообщение подтверждения выключено, ничего не отправляем пользователю {user.id}")
+            return  # Просто выходим, ничего не отправляем
+        
         # Получаем настраиваемое сообщение подтверждения из базы данных
         try:
             conn = db._get_connection()
@@ -606,7 +611,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "💬 Если у вас есть вопросы - не стесняйтесь писать!"
             )
         
-        # ✅ НОВОЕ: Персонализируем текст
+        # Персонализируем текст
         success_text = personalize_message(success_text, user)
         
         # Отправляем настраиваемое приветственное сообщение и убираем клавиатуру
@@ -640,7 +645,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         welcome_data = db.get_welcome_message()
         welcome_buttons = db.get_welcome_buttons()
         
-        # ✅ НОВОЕ: Персонализируем текст приветствия
+        # Персонализируем текст приветствия
         welcome_text = personalize_message(welcome_data['text'], user)
         
         # Создаем клавиатуру
@@ -681,14 +686,14 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                 sent_message = await context.bot.send_photo(
                     chat_id=user.id,
                     photo=welcome_data['photo'],
-                    caption=welcome_text,  # ← Используем персонализированный текст
+                    caption=welcome_text,
                     parse_mode='HTML',
                     reply_markup=reply_markup
                 )
             else:
                 sent_message = await context.bot.send_message(
                     chat_id=user.id,
-                    text=welcome_text,  # ← Используем персонализированный текст
+                    text=welcome_text,
                     parse_mode='HTML',
                     reply_markup=reply_markup
                 )
@@ -738,7 +743,7 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
         goodbye_data = db.get_goodbye_message()
         goodbye_buttons = db.get_goodbye_buttons()
         
-        # ✅ НОВОЕ: Персонализируем текст прощания
+        # Персонализируем текст прощания
         goodbye_text = personalize_message(goodbye_data['text'], user)
         
         # Создаем инлайн-клавиатуру если есть кнопки
@@ -755,14 +760,14 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
                 await context.bot.send_photo(
                     chat_id=user.id,
                     photo=goodbye_data['photo'],
-                    caption=goodbye_text,  # ← Используем персонализированный текст
+                    caption=goodbye_text,
                     parse_mode='HTML',
                     reply_markup=reply_markup
                 )
             else:
                 await context.bot.send_message(
                     chat_id=user.id,
-                    text=goodbye_text,  # ← Используем персонализированный текст
+                    text=goodbye_text,
                     parse_mode='HTML',
                     reply_markup=reply_markup
                 )
@@ -873,6 +878,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             if success:
+                # ✅ ИСПРАВЛЕНИЕ: Проверяем статус включения сообщения подтверждения
+                if not db.is_success_message_enabled():
+                    logger.info(f"ℹ️ Сообщение подтверждения выключено, ничего не отправляем пользователю {user_id}")
+                    return  # Просто выходим, ничего не отправляем
+                
                 # Получаем настраиваемое сообщение подтверждения из базы данных
                 try:
                     conn = db._get_connection()
@@ -903,7 +913,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "💬 Если у вас есть вопросы - не стесняйтесь писать!"
                     )
                 
-                # ✅ НОВОЕ: Персонализируем текст подтверждения
+                # Персонализируем текст подтверждения
                 success_text = personalize_message(success_text, update.effective_user)
                 
                 # Убираем клавиатуру и отправляем подтверждение
@@ -950,6 +960,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
+            # ✅ ИСПРАВЛЕНИЕ: Проверяем статус включения сообщения подтверждения
+            if not db.is_success_message_enabled():
+                logger.info(f"ℹ️ Сообщение подтверждения выключено, ничего не отправляем пользователю {user_id}")
+                return  # Просто выходим, ничего не отправляем
+            
             # Получаем настраиваемое сообщение подтверждения
             try:
                 conn = db._get_connection()
@@ -981,7 +996,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "💬 Если у вас есть вопросы - не стесняйтесь писать!"
                 )
             
-            # ✅ НОВОЕ: Персонализируем текст
+            # Персонализируем текст
             success_text = personalize_message(success_text, update.effective_user)
             
             # Убираем клавиатуру
@@ -1043,6 +1058,11 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
         success = await callback_handler.execute_start_logic(user_id, context, user)
         
         if success:
+            # ✅ ИСПРАВЛЕНИЕ: Проверяем статус включения сообщения подтверждения
+            if not db.is_success_message_enabled():
+                logger.info(f"ℹ️ Сообщение подтверждения выключено, ничего не отправляем пользователю {user_id}")
+                return  # Просто выходим, ничего не отправляем
+            
             # Получаем настраиваемое сообщение подтверждения
             try:
                 conn = db._get_connection()
@@ -1073,7 +1093,7 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
                     "💬 Если у вас есть вопросы - не стесняйтесь писать!"
                 )
             
-            # ✅ НОВОЕ: Персонализируем текст
+            # Персонализируем текст
             success_text = personalize_message(success_text, user)
             
             await update.message.reply_text(
