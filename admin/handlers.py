@@ -88,6 +88,15 @@ class HandlersMixin:
                 await self.show_payment_message_edit(update, context)
             elif data == "admin_payment_stats":
                 await self.show_payment_statistics(update, context)
+            
+            # === 📊 НОВОЕ: Статистика воронки ===
+            elif data == "admin_funnel_stats":
+                await self.statistics.show_funnel_statistics(update, context)
+            elif data.startswith("admin_msg_detail_"):
+                # Извлекаем номер сообщения из callback данных
+                message_number = int(data.split("_")[3])
+                await self.statistics.show_message_details(update, context, message_number)
+            
             elif data == "edit_payment_message_text":
                 await self.request_text_input(update, context, "payment_message_text")
             elif data == "edit_payment_message_photo":
