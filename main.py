@@ -1364,7 +1364,7 @@ async def run_telegram_bot():
         await application.bot.set_webhook(
             url=webhook_url,
             drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
+            allowed_updates=["message", "chat_join_request", "chat_member", "callback_query"]
         )
         
         # Запускаем job queue
