@@ -2,7 +2,7 @@
 Функциональность массовых рассылок для админ-панели
 """
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 import logging
@@ -18,12 +18,13 @@ class MassBroadcastsMixin:
     async def show_send_all_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать меню массовой рассылки с отдельными пунктами"""
         user_id = update.effective_user.id
-        
+
         # Инициализируем черновик если его нет
         if user_id not in self.broadcast_drafts:
             self.broadcast_drafts[user_id] = {
                 "message_text": "",
                 "photo_data": None,
+                "video_data": None,
                 "buttons": [],
                 "scheduled_hours": None,
                 "created_at": datetime.now()
@@ -49,7 +50,13 @@ class MassBroadcastsMixin:
             text += "🖼 <b>Фото:</b> Есть\n"
         else:
             text += "🖼 <b>Фото:</b> Нет\n"
-        
+
+        # Видео
+        if draft.get("video_data"):
+            text += "🎥 <b>Видео:</b> Есть\n"
+        else:
+            text += "🎥 <b>Видео:</b> Нет\n"
+
         # Кнопки
         if draft["buttons"]:
             text += f"🔘 <b>Кнопки:</b> {len(draft['buttons'])}\n"
@@ -73,13 +80,18 @@ class MassBroadcastsMixin:
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="mass_edit_text")],
             [InlineKeyboardButton("🖼 Добавить фото", callback_data="mass_add_photo")],
+            [InlineKeyboardButton("🎥 Добавить видео", callback_data="mass_add_video")],
             [InlineKeyboardButton("⏰ Время отправки", callback_data="mass_set_time")],
             [InlineKeyboardButton("🔘 Добавить кнопку", callback_data="mass_add_button")],
         ]
-        
+
         # Кнопка удаления фото (если есть)
         if draft["photo_data"]:
             keyboard.append([InlineKeyboardButton("🗑 Удалить фото", callback_data="mass_remove_photo")])
+
+        # Кнопка удаления видео (если есть)
+        if draft.get("video_data"):
+            keyboard.append([InlineKeyboardButton("🗑 Удалить видео", callback_data="mass_remove_video")])
         
         # Кнопка удаления последней кнопки (если есть)
         if draft["buttons"]:
@@ -106,11 +118,12 @@ class MassBroadcastsMixin:
             self.broadcast_drafts[user_id] = {
                 "message_text": "",
                 "photo_data": None,
+                "video_data": None,
                 "buttons": [],
                 "scheduled_hours": None,
                 "created_at": datetime.now()
             }
-        
+
         draft = self.broadcast_drafts[user_id]
         
         # Формируем информацию о текущем состоянии
@@ -127,7 +140,13 @@ class MassBroadcastsMixin:
             text += "🖼 <b>Фото:</b> Есть\n"
         else:
             text += "🖼 <b>Фото:</b> Нет\n"
-        
+
+        # Видео
+        if draft.get("video_data"):
+            text += "🎥 <b>Видео:</b> Есть\n"
+        else:
+            text += "🎥 <b>Видео:</b> Нет\n"
+
         # Кнопки
         if draft["buttons"]:
             text += f"🔘 <b>Кнопки:</b> {len(draft['buttons'])}\n"
@@ -151,13 +170,18 @@ class MassBroadcastsMixin:
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="mass_edit_text")],
             [InlineKeyboardButton("🖼 Добавить фото", callback_data="mass_add_photo")],
+            [InlineKeyboardButton("🎥 Добавить видео", callback_data="mass_add_video")],
             [InlineKeyboardButton("⏰ Время отправки", callback_data="mass_set_time")],
             [InlineKeyboardButton("🔘 Добавить кнопку", callback_data="mass_add_button")],
         ]
-        
+
         # Кнопка удаления фото (если есть)
         if draft["photo_data"]:
             keyboard.append([InlineKeyboardButton("🗑 Удалить фото", callback_data="mass_remove_photo")])
+
+        # Кнопка удаления видео (если есть)
+        if draft.get("video_data"):
+            keyboard.append([InlineKeyboardButton("🗑 Удалить видео", callback_data="mass_remove_video")])
         
         # Кнопка удаления последней кнопки (если есть)
         if draft["buttons"]:
@@ -275,9 +299,10 @@ class MassBroadcastsMixin:
                 # Запланированная рассылка
                 scheduled_time = datetime.now() + timedelta(hours=draft["scheduled_hours"])
                 broadcast_id = self.db.add_scheduled_broadcast(
-                    draft["message_text"], 
-                    scheduled_time, 
-                    draft["photo_data"]
+                    draft["message_text"],
+                    scheduled_time,
+                    draft["photo_data"],
+                    draft.get("video_data")
                 )
                 
                 # Добавляем кнопки если есть
@@ -348,11 +373,30 @@ class MassBroadcastsMixin:
                                 processed_url = utm_utils.add_utm_to_url(button["url"], user_id_to_send)
                                 keyboard.append([InlineKeyboardButton(button["text"], url=processed_url)])
                             processed_reply_markup = InlineKeyboardMarkup(keyboard)
-                        
-                        if draft["photo_data"]:
+
+                        photo_data = draft["photo_data"]
+                        video_data = draft.get("video_data")
+
+                        if photo_data and video_data:
+                            media_group = [
+                                InputMediaPhoto(media=photo_data, caption=processed_text, parse_mode='HTML'),
+                                InputMediaVideo(media=video_data)
+                            ]
+                            await context.bot.send_media_group(chat_id=user_id_to_send, media=media_group)
+                            if processed_reply_markup:
+                                await context.bot.send_message(chat_id=user_id_to_send, text="👇 Выберите действие:", reply_markup=processed_reply_markup)
+                        elif photo_data:
                             await context.bot.send_photo(
                                 chat_id=user_id_to_send,
-                                photo=draft["photo_data"],
+                                photo=photo_data,
+                                caption=processed_text,
+                                parse_mode='HTML',
+                                reply_markup=processed_reply_markup
+                            )
+                        elif video_data:
+                            await context.bot.send_video(
+                                chat_id=user_id_to_send,
+                                video=video_data,
                                 caption=processed_text,
                                 parse_mode='HTML',
                                 reply_markup=processed_reply_markup

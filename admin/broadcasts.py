@@ -19,16 +19,17 @@ class BroadcastsMixin:
         messages = self.db.get_all_broadcast_messages()
         
         keyboard = []
-        for msg_num, text, delay_hours, photo_url in messages:
+        for msg_num, text, delay_hours, photo_url, video_url in messages:
             # Получаем количество кнопок для сообщения
             buttons = self.db.get_message_buttons(msg_num)
             button_icon = f"🔘{len(buttons)}" if buttons else ""
             photo_icon = "🖼" if photo_url else ""
-            
+            video_icon = "🎥" if video_url else ""
+
             # Форматируем отображение времени
             delay_str = self.format_delay_display(delay_hours)
-            
-            button_text = f"{photo_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
+
+            button_text = f"{photo_icon}{video_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_msg_{msg_num}")])
         
         keyboard.append([InlineKeyboardButton("➕ Добавить сообщение", callback_data="add_message")])
@@ -40,6 +41,7 @@ class BroadcastsMixin:
             "Выберите сообщение для редактирования.\n"
             "В скобках указана задержка после регистрации.\n"
             "🖼 - сообщение содержит фото\n"
+            "🎥 - сообщение содержит видео\n"
             "🔘N - количество кнопок в сообщении\n\n"
             "💡 <i>Все ссылки в сообщениях автоматически получают UTM метки для отслеживания конверсий.</i>"
         )
@@ -53,14 +55,15 @@ class BroadcastsMixin:
         messages = self.db.get_all_broadcast_messages()
         
         keyboard = []
-        for msg_num, text, delay_hours, photo_url in messages:
+        for msg_num, text, delay_hours, photo_url, video_url in messages:
             buttons = self.db.get_message_buttons(msg_num)
             button_icon = f"🔘{len(buttons)}" if buttons else ""
             photo_icon = "🖼" if photo_url else ""
-            
+            video_icon = "🎥" if video_url else ""
+
             delay_str = self.format_delay_display(delay_hours)
-            
-            button_text = f"{photo_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
+
+            button_text = f"{photo_icon}{video_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_msg_{msg_num}")])
         
         keyboard.append([InlineKeyboardButton("➕ Добавить сообщение", callback_data="add_message")])
@@ -72,6 +75,7 @@ class BroadcastsMixin:
             "Выберите сообщение для редактирования.\n"
             "В скобках указана задержка после регистрации.\n"
             "🖼 - сообщение содержит фото\n"
+            "🎥 - сообщение содержит видео\n"
             "🔘N - количество кнопок в сообщении\n\n"
             "💡 <i>Все ссылки в сообщениях автоматически получают UTM метки для отслеживания конверсий.</i>"
         )
@@ -109,18 +113,22 @@ class BroadcastsMixin:
         if not msg_data:
             await update.callback_query.answer("Сообщение не найдено!", show_alert=True)
             return
-        
-        text, delay_hours, photo_url = msg_data
+
+        text, delay_hours, photo_url, video_url = msg_data
         buttons = self.db.get_message_buttons(message_number)
-        
+
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_text_{message_number}")],
             [InlineKeyboardButton("⏰ Изменить задержку", callback_data=f"edit_delay_{message_number}")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_photo_{message_number}")]
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_photo_{message_number}")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data=f"edit_video_{message_number}")]
         ]
-        
+
         if photo_url:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data=f"remove_photo_{message_number}")])
+
+        if video_url:
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data=f"remove_video_{message_number}")])
         
         keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data=f"manage_buttons_{message_number}")])
         keyboard.append([InlineKeyboardButton("🗑 Удалить сообщение", callback_data=f"delete_msg_{message_number}")])
@@ -134,38 +142,43 @@ class BroadcastsMixin:
                 buttons_info += f"{i}. {button_text} → {button_url}\n"
         
         delay_str = self.format_delay_display_full(delay_hours)
-        
+
         message_text = (
             f"📝 <b>Сообщение {message_number}</b>\n\n"
             f"<b>Текущий текст:</b>\n{text}\n\n"
             f"<b>Задержка:</b> {delay_str} после регистрации\n"
-            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
+            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}\n"
+            f"<b>Видео:</b> {'Есть' if video_url else 'Нет'}"
             f"{buttons_info}\n\n"
             f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
         )
-        
+
         await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
-    
+
     async def show_message_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
         """Отправить НОВОЕ сообщение для редактирования"""
         user_id = update.effective_user.id
-        
+
         msg_data = self.db.get_broadcast_message(message_number)
         if not msg_data:
             await context.bot.send_message(chat_id=user_id, text="❌ Сообщение не найдено!")
             return
-        
-        text, delay_hours, photo_url = msg_data
+
+        text, delay_hours, photo_url, video_url = msg_data
         buttons = self.db.get_message_buttons(message_number)
-        
+
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_text_{message_number}")],
             [InlineKeyboardButton("⏰ Изменить задержку", callback_data=f"edit_delay_{message_number}")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_photo_{message_number}")]
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_photo_{message_number}")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data=f"edit_video_{message_number}")]
         ]
-        
+
         if photo_url:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data=f"remove_photo_{message_number}")])
+
+        if video_url:
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data=f"remove_video_{message_number}")])
         
         keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data=f"manage_buttons_{message_number}")])
         keyboard.append([InlineKeyboardButton("🗑 Удалить сообщение", callback_data=f"delete_msg_{message_number}")])
@@ -179,18 +192,19 @@ class BroadcastsMixin:
                 buttons_info += f"{i}. {button_text} → {button_url}\n"
         
         delay_str = self.format_delay_display_full(delay_hours)
-        
+
         message_text = (
             f"📝 <b>Сообщение {message_number}</b>\n\n"
             f"<b>Текущий текст:</b>\n{text}\n\n"
             f"<b>Задержка:</b> {delay_str} после регистрации\n"
-            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}"
+            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}\n"
+            f"<b>Видео:</b> {'Есть' if video_url else 'Нет'}"
             f"{buttons_info}\n\n"
             f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
         )
-        
+
         await self.send_new_menu_message(context, user_id, message_text, reply_markup)
-    
+
     async def show_scheduled_broadcasts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать запланированные рассылки"""
         broadcasts = self.db.get_scheduled_broadcasts(include_sent=False)

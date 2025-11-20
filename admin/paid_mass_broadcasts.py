@@ -1,8 +1,8 @@
 """
-Функциональность массовых рассылок для оплативших пользователей в админ-панели  
+Функциональность массовых рассылок для оплативших пользователей в админ-панели
 """
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 import logging
@@ -35,9 +35,10 @@ class PaidMassBroadcastsMixin:
                 # Запланированная рассылка для оплативших
                 scheduled_time = datetime.now() + timedelta(hours=draft["scheduled_hours"])
                 broadcast_id = self.db.add_paid_scheduled_broadcast(
-                    draft["message_text"], 
-                    scheduled_time, 
-                    draft["photo_data"]
+                    draft["message_text"],
+                    scheduled_time,
+                    draft["photo_data"],
+                    draft.get("video_data")
                 )
                 
                 # Добавляем кнопки если есть
@@ -108,11 +109,30 @@ class PaidMassBroadcastsMixin:
                                 processed_url = utm_utils.add_utm_to_url(button["url"], user_id_to_send)
                                 keyboard.append([InlineKeyboardButton(button["text"], url=processed_url)])
                             processed_reply_markup = InlineKeyboardMarkup(keyboard)
-                        
-                        if draft["photo_data"]:
+
+                        photo_data = draft["photo_data"]
+                        video_data = draft.get("video_data")
+
+                        if photo_data and video_data:
+                            media_group = [
+                                InputMediaPhoto(media=photo_data, caption=processed_text, parse_mode='HTML'),
+                                InputMediaVideo(media=video_data)
+                            ]
+                            await context.bot.send_media_group(chat_id=user_id_to_send, media=media_group)
+                            if processed_reply_markup:
+                                await context.bot.send_message(chat_id=user_id_to_send, text="👇 Выберите действие:", reply_markup=processed_reply_markup)
+                        elif photo_data:
                             await context.bot.send_photo(
                                 chat_id=user_id_to_send,
-                                photo=draft["photo_data"],
+                                photo=photo_data,
+                                caption=processed_text,
+                                parse_mode='HTML',
+                                reply_markup=processed_reply_markup
+                            )
+                        elif video_data:
+                            await context.bot.send_video(
+                                chat_id=user_id_to_send,
+                                video=video_data,
                                 caption=processed_text,
                                 parse_mode='HTML',
                                 reply_markup=processed_reply_markup

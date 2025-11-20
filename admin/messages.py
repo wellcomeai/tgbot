@@ -19,15 +19,19 @@ class MessagesMixin:
         """Показать меню редактирования приветственного сообщения"""
         welcome_data = self.db.get_welcome_message()
         welcome_buttons = self.db.get_welcome_buttons()
-        
+
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_welcome_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_welcome_photo")]
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_welcome_photo")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data="edit_welcome_video")]
         ]
-        
+
         if welcome_data['photo']:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_welcome_photo")])
-        
+
+        if welcome_data.get('video'):
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data="remove_welcome_video")])
+
         keyboard.append([InlineKeyboardButton("⌨️ Управление кнопками", callback_data="manage_welcome_buttons")])
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -49,41 +53,46 @@ class MessagesMixin:
             "<i>Привет, {username}! 👋\n"
             "{first_name}, рад видеть тебя в нашем канале!</i>"
         )
-        
+
         message_text = (
             "👋 <b>Приветственное сообщение</b>\n\n"
             f"<b>Текущий текст:</b>\n{welcome_data['text']}\n\n"
-            f"<b>Фото:</b> {'Есть' if welcome_data['photo'] else 'Нет'}"
+            f"<b>Фото:</b> {'Есть' if welcome_data['photo'] else 'Нет'}\n"
+            f"<b>Видео:</b> {'Есть' if welcome_data.get('video') else 'Нет'}"
             f"{buttons_info}"
             f"{personalization_info}"
         )
-        
+
         await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
-    
+
     async def show_welcome_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отправить НОВОЕ сообщение для редактирования приветствия"""
         user_id = update.effective_user.id
         welcome_data = self.db.get_welcome_message()
         welcome_buttons = self.db.get_welcome_buttons()
-        
+
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_welcome_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_welcome_photo")]
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_welcome_photo")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data="edit_welcome_video")]
         ]
-        
+
         if welcome_data['photo']:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_welcome_photo")])
-        
+
+        if welcome_data.get('video'):
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data="remove_welcome_video")])
+
         keyboard.append([InlineKeyboardButton("⌨️ Управление кнопками", callback_data="manage_welcome_buttons")])
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         buttons_info = ""
         if welcome_buttons:
             buttons_info = f"\n\n<b>⌨️ Кнопки ({len(welcome_buttons)}):</b>\n"
             for i, (button_id, button_text, position) in enumerate(welcome_buttons, 1):
                 buttons_info += f"{i}. {button_text}\n"
-        
+
         # ✅ НОВОЕ: Добавляем информацию о персонализации
         personalization_info = (
             "\n\n<b>🎯 Персонализация:</b>\n"
@@ -95,11 +104,12 @@ class MessagesMixin:
             "<i>Привет, {username}! 👋\n"
             "{first_name}, рад видеть тебя в нашем канале!</i>"
         )
-        
+
         message_text = (
             "👋 <b>Приветственное сообщение</b>\n\n"
             f"<b>Текущий текст:</b>\n{welcome_data['text']}\n\n"
-            f"<b>Фото:</b> {'Есть' if welcome_data['photo'] else 'Нет'}"
+            f"<b>Фото:</b> {'Есть' if welcome_data['photo'] else 'Нет'}\n"
+            f"<b>Видео:</b> {'Есть' if welcome_data.get('video') else 'Нет'}"
             f"{buttons_info}"
             f"{personalization_info}"
         )
@@ -112,15 +122,19 @@ class MessagesMixin:
         """Показать меню редактирования прощального сообщения"""
         goodbye_data = self.db.get_goodbye_message()
         goodbye_buttons = self.db.get_goodbye_buttons()
-        
+
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_goodbye_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_goodbye_photo")]
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_goodbye_photo")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data="edit_goodbye_video")]
         ]
-        
+
         if goodbye_data['photo']:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_goodbye_photo")])
-        
+
+        if goodbye_data.get('video'):
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data="remove_goodbye_video")])
+
         keyboard.append([InlineKeyboardButton("🔘 Управление инлайн кнопками", callback_data="manage_goodbye_buttons")])
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -146,13 +160,14 @@ class MessagesMixin:
         message_text = (
             "😢 <b>Прощальное сообщение</b>\n\n"
             f"<b>Текущий текст:</b>\n{goodbye_data['text']}\n\n"
-            f"<b>Фото:</b> {'Есть' if goodbye_data['photo'] else 'Нет'}"
+            f"<b>Фото:</b> {'Есть' if goodbye_data['photo'] else 'Нет'}\n"
+            f"<b>Видео:</b> {'Есть' if goodbye_data.get('video') else 'Нет'}"
             f"{buttons_info}"
             f"{personalization_info}"
         )
-        
+
         await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
-    
+
     async def show_goodbye_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отправить НОВОЕ сообщение для редактирования прощания"""
         user_id = update.effective_user.id
@@ -161,22 +176,26 @@ class MessagesMixin:
         
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_goodbye_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_goodbye_photo")]
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_goodbye_photo")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data="edit_goodbye_video")]
         ]
-        
+
         if goodbye_data['photo']:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_goodbye_photo")])
-        
+
+        if goodbye_data.get('video'):
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data="remove_goodbye_video")])
+
         keyboard.append([InlineKeyboardButton("🔘 Управление инлайн кнопками", callback_data="manage_goodbye_buttons")])
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         buttons_info = ""
         if goodbye_buttons:
             buttons_info = f"\n\n<b>🔘 Инлайн кнопки ({len(goodbye_buttons)}):</b>\n"
             for i, (button_id, button_text, button_url, position) in enumerate(goodbye_buttons, 1):
                 buttons_info += f"{i}. {button_text} → {button_url}\n"
-        
+
         # ✅ НОВОЕ: Добавляем информацию о персонализации
         personalization_info = (
             "\n\n<b>🎯 Персонализация:</b>\n"
@@ -188,11 +207,12 @@ class MessagesMixin:
             "<i>До свидания, {first_name}! 😢\n"
             "Будем рады видеть тебя снова, {username}!</i>"
         )
-        
+
         message_text = (
             "😢 <b>Прощальное сообщение</b>\n\n"
             f"<b>Текущий текст:</b>\n{goodbye_data['text']}\n\n"
-            f"<b>Фото:</b> {'Есть' if goodbye_data['photo'] else 'Нет'}"
+            f"<b>Фото:</b> {'Есть' if goodbye_data['photo'] else 'Нет'}\n"
+            f"<b>Видео:</b> {'Есть' if goodbye_data.get('video') else 'Нет'}"
             f"{buttons_info}"
             f"{personalization_info}"
         )
@@ -308,24 +328,30 @@ class MessagesMixin:
     async def show_payment_message_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать меню редактирования сообщения после оплаты"""
         user_id = update.effective_user.id
-        
+
         # Получаем текущее сообщение об оплате
         payment_message_data = self.db.get_payment_success_message()
-        
+
         if payment_message_data and payment_message_data['text']:
             current_message = payment_message_data['text']
             current_photo = payment_message_data['photo_url']
+            current_video = payment_message_data.get('video_url')
         else:
             current_message = self._get_default_payment_message()
             current_photo = None
-        
+            current_video = None
+
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_payment_message_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_payment_message_photo")]
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_payment_message_photo")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data="edit_payment_message_video")]
         ]
-        
+
         if current_photo:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_payment_message_photo")])
+
+        if current_video:
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data="remove_payment_message_video")])
         
         keyboard.append([InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_payment_message")])
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
@@ -336,44 +362,52 @@ class MessagesMixin:
             "💰 <b>Сообщение после оплаты</b>\n\n"
             "Это сообщение отправляется пользователям после успешной оплаты.\n\n"
             f"<b>Текущий текст:</b>\n{current_message}\n\n"
-            f"<b>Фото:</b> {'Есть' if current_photo else 'Нет'}\n\n"
+            f"<b>Фото:</b> {'Есть' if current_photo else 'Нет'}\n"
+            f"<b>Видео:</b> {'Есть' if current_video else 'Нет'}\n\n"
             "💡 <i>В тексте можно использовать переменную <code>{amount}</code> - она будет заменена на сумму платежа.</i>"
         )
-        
+
         await self.safe_edit_or_send_message(update, context, message_text, reply_markup)
-    
+
     async def show_payment_message_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отправить НОВОЕ сообщение для редактирования платежного сообщения"""
         user_id = update.effective_user.id
         
         # Получаем текущее сообщение об оплате
         payment_message_data = self.db.get_payment_success_message()
-        
+
         if payment_message_data and payment_message_data['text']:
             current_message = payment_message_data['text']
             current_photo = payment_message_data['photo_url']
+            current_video = payment_message_data.get('video_url')
         else:
             current_message = self._get_default_payment_message()
             current_photo = None
-        
+            current_video = None
+
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="edit_payment_message_text")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_payment_message_photo")]
+            [InlineKeyboardButton("🖼 Изменить фото", callback_data="edit_payment_message_photo")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data="edit_payment_message_video")]
         ]
-        
+
         if current_photo:
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="remove_payment_message_photo")])
-        
+
+        if current_video:
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data="remove_payment_message_video")])
+
         keyboard.append([InlineKeyboardButton("🔄 Сбросить по умолчанию", callback_data="reset_payment_message")])
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
-        
+
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         message_text = (
             "💰 <b>Сообщение после оплаты</b>\n\n"
             "Это сообщение отправляется пользователям после успешной оплаты.\n\n"
             f"<b>Текущий текст:</b>\n{current_message}\n\n"
-            f"<b>Фото:</b> {'Есть' if current_photo else 'Нет'}\n\n"
+            f"<b>Фото:</b> {'Есть' if current_photo else 'Нет'}\n"
+            f"<b>Видео:</b> {'Есть' if current_video else 'Нет'}\n\n"
             "💡 <i>В тексте можно использовать переменную <code>{amount}</code> - она будет заменена на сумму платежа.</i>"
         )
         

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from telegram.ext import ContextTypes
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.error import Forbidden, BadRequest
 import logging
 import asyncio
@@ -59,9 +59,9 @@ class MessageScheduler:
             
             current_time = datetime.now()
             logger.info(f"⏰ Планирование сообщений для пользователя {user_id} (@{username}), текущее время: {current_time}")
-            
+
             scheduled_count = 0
-            for message_number, text, delay_hours, photo_url in messages:
+            for message_number, text, delay_hours, photo_url, video_url in messages:
                 try:
                     # Вычисляем время отправки
                     scheduled_time = current_time + timedelta(hours=delay_hours)
@@ -123,17 +123,87 @@ class MessageScheduler:
         try:
             # Обрабатываем ссылки в тексте
             processed_text = utm_utils.process_text_links(text, user_id)
-            
+
             # Обрабатываем кнопки
             processed_buttons = utm_utils.process_message_buttons(buttons, user_id)
-            
+
             return processed_text, processed_buttons
-            
+
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке контента сообщения для пользователя {user_id}: {e}")
             # Возвращаем оригинальный контент в случае ошибки
             return text, buttons
-    
+
+    async def send_message_with_media(self, context, user_id, text, photo_url, video_url, reply_markup):
+        """
+        Универсальная отправка сообщения с медиа (фото/видео/оба)
+
+        Args:
+            context: Контекст бота
+            user_id: ID пользователя
+            text: Текст сообщения
+            photo_url: URL или file_id фото (может быть None)
+            video_url: URL или file_id видео (может быть None)
+            reply_markup: Клавиатура с кнопками (может быть None)
+        """
+        try:
+            if photo_url and video_url:
+                # Отправляем медиагруппу (фото + видео)
+                media_group = [
+                    InputMediaPhoto(media=photo_url, caption=text, parse_mode='HTML'),
+                    InputMediaVideo(media=video_url)
+                ]
+                await context.bot.send_media_group(
+                    chat_id=user_id,
+                    media=media_group
+                )
+
+                # Кнопки отправляем отдельным сообщением
+                if reply_markup:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="👇 Выберите действие:",
+                        reply_markup=reply_markup
+                    )
+                logger.debug(f"🖼️🎥 Отправлена медиагруппа (фото + видео)")
+
+            elif photo_url:
+                # Только фото
+                await context.bot.send_photo(
+                    chat_id=user_id,
+                    photo=photo_url,
+                    caption=text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+                logger.debug(f"🖼️ Отправлено сообщение с фото")
+
+            elif video_url:
+                # Только видео
+                await context.bot.send_video(
+                    chat_id=user_id,
+                    video=video_url,
+                    caption=text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+                logger.debug(f"🎥 Отправлено сообщение с видео")
+
+            else:
+                # Только текст
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode='HTML',
+                    disable_web_page_preview=True,
+                    reply_markup=reply_markup
+                )
+                logger.debug(f"📝 Отправлено текстовое сообщение")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отправке сообщения с медиа пользователю {user_id}: {e}")
+            raise
+
     async def send_scheduled_messages(self, context: ContextTypes.DEFAULT_TYPE):
         """Отправить все запланированные сообщения, время которых настало"""
         try:
@@ -166,11 +236,11 @@ class MessageScheduler:
                 return
             
             logger.info(f"📬 Найдено {len(pending_messages)} сообщений для отправки")
-            
+
             sent_count = 0
             failed_count = 0
-            
-            for message_id, user_id, message_number, text, photo_url in pending_messages:
+
+            for message_id, user_id, message_number, text, photo_url, video_url in pending_messages:
                 try:
                     logger.debug(f"📤 Отправляем сообщение {message_number} пользователю {user_id}")
                     
@@ -204,29 +274,17 @@ class MessageScheduler:
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(processed_buttons)} кнопок")
-                    
-                    # Отправляем сообщение
-                    if photo_url:
-                        # Отправляем с фото
-                        await context.bot.send_photo(
-                            chat_id=user_id,
-                            photo=photo_url,
-                            caption=processed_text,
-                            parse_mode='HTML',
-                            reply_markup=reply_markup
-                        )
-                        logger.debug(f"🖼️ Отправлено сообщение с фото")
-                    else:
-                        # Отправляем только текст
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=processed_text,
-                            parse_mode='HTML',
-                            disable_web_page_preview=True,
-                            reply_markup=reply_markup
-                        )
-                        logger.debug(f"📝 Отправлено текстовое сообщение")
-                    
+
+                    # Отправляем сообщение с медиа
+                    await self.send_message_with_media(
+                        context,
+                        user_id,
+                        processed_text,
+                        photo_url,
+                        video_url,
+                        reply_markup
+                    )
+
                     # Отмечаем как отправленное
                     self.db.mark_message_sent(message_id)
                     
@@ -277,21 +335,21 @@ class MessageScheduler:
             conn = self.db._get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT sm.id, sm.message_number, bm.text, bm.photo_url
+                SELECT sm.id, sm.message_number, bm.text, bm.photo_url, bm.video_url
                 FROM scheduled_messages sm
                 JOIN broadcast_messages bm ON sm.message_number = bm.message_number
                 WHERE sm.user_id = ? AND sm.is_sent = 0
                 ORDER BY sm.message_number ASC
                 LIMIT 1
             ''', (user_id,))
-            
+
             result = cursor.fetchone()
             conn.close()
-            
+
             if not result:
                 return False  # Нет запланированных сообщений
-                
-            message_id, message_number, text, photo_url = result
+
+            message_id, message_number, text, photo_url, video_url = result
             
             # Отправляем сообщение (используем существующую логику)
             buttons = self.db.get_message_buttons(message_number)
@@ -308,28 +366,22 @@ class MessageScheduler:
                     else:
                         # Callback кнопка
                         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
-                
+
                 reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            if photo_url:
-                await context.bot.send_photo(
-                    chat_id=user_id,
-                    photo=photo_url,
-                    caption=processed_text,
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=processed_text,
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
-            
+
+            # Отправляем сообщение с медиа
+            await self.send_message_with_media(
+                context,
+                user_id,
+                processed_text,
+                photo_url,
+                video_url,
+                reply_markup
+            )
+
             # Отмечаем как отправленное
             self.db.mark_message_sent(message_id)
-            
+
             # 📊 НОВОЕ: Логируем отправку для воронки
             self.db.log_message_delivery(user_id, message_number)
             
@@ -362,20 +414,26 @@ class MessageScheduler:
                 return
             
             logger.info(f"📡 Найдено {len(pending_broadcasts)} запланированных рассылок для отправки")
-            
-            # Получаем пользователей, которые могут получать рассылки (активные, с bot_started=1)
-            users_with_bot = self.db.get_users_with_bot_started()
-            
+
+            # Получаем пользователей, завершивших воронку (получивших последнее сообщение)
+            users_with_bot = self.db.get_users_completed_funnel()
+
+            # Если метод вернул пустой список, пробуем получить всех активных пользователей
+            # (на случай, если воронка пустая или нет message_deliveries)
+            if not users_with_bot:
+                logger.warning("⚠️ Нет пользователей, завершивших воронку. Используем всех активных пользователей.")
+                users_with_bot = self.db.get_users_with_bot_started()
+
             if not users_with_bot:
                 logger.warning("⚠️ Нет пользователей для массовой рассылки")
                 # Отмечаем рассылки как отправленные
-                for broadcast_id, message_text, photo_url, scheduled_time in pending_broadcasts:
+                for broadcast_id, message_text, photo_url, video_url, scheduled_time in pending_broadcasts:
                     self.db.mark_broadcast_sent(broadcast_id)
                 return
-            
+
             logger.info(f"👥 Будем отправлять рассылки {len(users_with_bot)} пользователям")
-            
-            for broadcast_id, message_text, photo_url, scheduled_time in pending_broadcasts:
+
+            for broadcast_id, message_text, photo_url, video_url, scheduled_time in pending_broadcasts:
                 try:
                     logger.info(f"📤 Начинаем отправку рассылки #{broadcast_id}")
                     
@@ -411,26 +469,17 @@ class MessageScheduler:
                                 
                                 reply_markup = InlineKeyboardMarkup(keyboard)
                                 logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок")
-                            
-                            if photo_url:
-                                # Отправляем с фото
-                                await context.bot.send_photo(
-                                    chat_id=user_id,
-                                    photo=photo_url,
-                                    caption=processed_text,
-                                    parse_mode='HTML',
-                                    reply_markup=reply_markup
-                                )
-                            else:
-                                # Отправляем только текст
-                                await context.bot.send_message(
-                                    chat_id=user_id,
-                                    text=processed_text,
-                                    parse_mode='HTML',
-                                    disable_web_page_preview=True,
-                                    reply_markup=reply_markup
-                                )
-                            
+
+                            # Отправляем сообщение с медиа
+                            await self.send_message_with_media(
+                                context,
+                                user_id,
+                                processed_text,
+                                photo_url,
+                                video_url,
+                                reply_markup
+                            )
+
                             # 📊 НОВОЕ: Логируем отправку массовой рассылки для воронки
                             # Используем отрицательный ID для отличия от обычных сообщений
                             self.db.log_message_delivery(user_id, -broadcast_id)
@@ -530,9 +579,9 @@ class MessageScheduler:
             
             current_time = datetime.now()
             logger.info(f"💰 ⏰ Планирование платных сообщений для пользователя {user_id} (@{username}), текущее время: {current_time}")
-            
+
             scheduled_count = 0
-            for message_number, text, delay_hours, photo_url in messages:
+            for message_number, text, delay_hours, photo_url, video_url in messages:
                 try:
                     # Вычисляем время отправки от момента оплаты
                     scheduled_time = current_time + timedelta(hours=delay_hours)
@@ -590,11 +639,11 @@ class MessageScheduler:
                 return
             
             logger.info(f"💰 📬 Найдено {len(pending_messages)} платных сообщений для отправки")
-            
+
             sent_count = 0
             failed_count = 0
-            
-            for message_id, user_id, message_number, text, photo_url in pending_messages:
+
+            for message_id, user_id, message_number, text, photo_url, video_url in pending_messages:
                 try:
                     logger.debug(f"💰 📤 Отправляем платное сообщение {message_number} пользователю {user_id}")
                     
@@ -628,29 +677,17 @@ class MessageScheduler:
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         logger.debug(f"💰 🔘 Добавлены кнопки к платному сообщению {message_number}: {len(processed_buttons)} кнопок")
-                    
-                    # Отправляем сообщение
-                    if photo_url:
-                        # Отправляем с фото
-                        await context.bot.send_photo(
-                            chat_id=user_id,
-                            photo=photo_url,
-                            caption=processed_text,
-                            parse_mode='HTML',
-                            reply_markup=reply_markup
-                        )
-                        logger.debug(f"💰 🖼️ Отправлено платное сообщение с фото")
-                    else:
-                        # Отправляем только текст
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=processed_text,
-                            parse_mode='HTML',
-                            disable_web_page_preview=True,
-                            reply_markup=reply_markup
-                        )
-                        logger.debug(f"💰 📝 Отправлено платное текстовое сообщение")
-                    
+
+                    # Отправляем сообщение с медиа
+                    await self.send_message_with_media(
+                        context,
+                        user_id,
+                        processed_text,
+                        photo_url,
+                        video_url,
+                        reply_markup
+                    )
+
                     # Отмечаем как отправленное
                     self.db.mark_paid_message_sent(message_id)
                     
@@ -714,13 +751,13 @@ class MessageScheduler:
             if not paid_users:
                 logger.warning("⚠️ Нет оплативших пользователей для массовой рассылки")
                 # Отмечаем рассылки как отправленные
-                for broadcast_id, message_text, photo_url, scheduled_time in pending_broadcasts:
+                for broadcast_id, message_text, photo_url, video_url, scheduled_time in pending_broadcasts:
                     self.db.mark_paid_broadcast_sent(broadcast_id)
                 return
-            
+
             logger.info(f"💰 👥 Будем отправлять рассылки {len(paid_users)} оплатившим пользователям")
-            
-            for broadcast_id, message_text, photo_url, scheduled_time in pending_broadcasts:
+
+            for broadcast_id, message_text, photo_url, video_url, scheduled_time in pending_broadcasts:
                 try:
                     logger.info(f"💰 📤 Начинаем отправку рассылки для оплативших #{broadcast_id}")
                     
@@ -755,26 +792,17 @@ class MessageScheduler:
                                 
                                 reply_markup = InlineKeyboardMarkup(keyboard)
                                 logger.debug(f"💰 🔘 Добавлены кнопки к рассылке для оплативших #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок")
-                            
-                            if photo_url:
-                                # Отправляем с фото
-                                await context.bot.send_photo(
-                                    chat_id=user_id,
-                                    photo=photo_url,
-                                    caption=processed_text,
-                                    parse_mode='HTML',
-                                    reply_markup=reply_markup
-                                )
-                            else:
-                                # Отправляем только текст
-                                await context.bot.send_message(
-                                    chat_id=user_id,
-                                    text=processed_text,
-                                    parse_mode='HTML',
-                                    disable_web_page_preview=True,
-                                    reply_markup=reply_markup
-                                )
-                            
+
+                            # Отправляем сообщение с медиа
+                            await self.send_message_with_media(
+                                context,
+                                user_id,
+                                processed_text,
+                                photo_url,
+                                video_url,
+                                reply_markup
+                            )
+
                             # 📊 НОВОЕ: Логируем отправку платной массовой рассылки для воронки
                             # Используем отрицательный ID с префиксом для отличия от обычных рассылок
                             # Умножаем на 10000 чтобы не пересекаться с обычными рассылками
@@ -863,29 +891,20 @@ class MessageScheduler:
                         )]]
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         logger.debug(f"🔘 Добавлена кнопка продления с UTM метками")
-                    
+
                     # Отправляем сообщение
-                    if renewal_data.get('photo_url'):
-                        # Отправляем с фото
-                        await context.bot.send_photo(
-                            chat_id=user_id,
-                            photo=renewal_data['photo_url'],
-                            caption=processed_text,
-                            parse_mode='HTML',
-                            reply_markup=reply_markup
-                        )
-                        logger.debug(f"🖼️ Отправлено уведомление с фото")
-                    else:
-                        # Отправляем только текст
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=processed_text,
-                            parse_mode='HTML',
-                            disable_web_page_preview=True,
-                            reply_markup=reply_markup
-                        )
-                        logger.debug(f"📝 Отправлено текстовое уведомление")
-                    
+                    photo_url = renewal_data.get('photo_url')
+                    video_url = renewal_data.get('video_url')
+
+                    await self.send_message_with_media(
+                        context,
+                        user_id,
+                        processed_text,
+                        photo_url,
+                        video_url,
+                        reply_markup
+                    )
+
                     # Завершаем подписку пользователя
                     expire_success = self.db.expire_user_subscription(user_id)
                     

@@ -82,6 +82,11 @@ class HandlersMixin:
             # === Продление подписок ===
             elif data == "admin_renewal":
                 await self.show_renewal_menu(update, context)
+            elif data == "edit_renewal_video":
+                await self.request_text_input(update, context, "renewal_video")
+            elif data == "remove_renewal_video":
+                self.db.set_renewal_message(video_url="")
+                await self.show_renewal_edit(update, context)
             
             # === Платежи ===
             elif data == "admin_payment_message":
@@ -103,6 +108,12 @@ class HandlersMixin:
                 await self.request_text_input(update, context, "payment_message_photo")
             elif data == "remove_payment_message_photo":
                 await self._handle_remove_payment_photo(update, context)
+            elif data == "edit_payment_message_video":
+                await self.request_text_input(update, context, "payment_message_video")
+            elif data == "remove_payment_message_video":
+                current_data = self.db.get_payment_success_message()
+                self.db.set_payment_success_message(current_data['text'], current_data['photo_url'], "")
+                await self.show_payment_message_edit(update, context)
             elif data == "reset_payment_message":
                 await self._handle_reset_payment_message(update, context)
             
@@ -117,6 +128,10 @@ class HandlersMixin:
                 await self.request_text_input(update, context, "mass_button_text")
             elif data == "mass_remove_photo":
                 await self._handle_mass_remove_photo(update, context)
+            elif data == "mass_add_video":
+                await self.request_text_input(update, context, "mass_video")
+            elif data == "mass_remove_video":
+                await self._handle_mass_remove_video(update, context)
             elif data == "mass_remove_button":
                 await self._handle_mass_remove_button(update, context)
             elif data == "mass_preview":
@@ -137,6 +152,10 @@ class HandlersMixin:
                 await self.request_text_input(update, context, "paid_mass_button_text")
             elif data == "paid_mass_remove_photo":
                 await self._handle_paid_mass_remove_photo(update, context)
+            elif data == "paid_mass_add_video":
+                await self.request_text_input(update, context, "paid_mass_video")
+            elif data == "paid_mass_remove_video":
+                await self._handle_paid_mass_remove_video(update, context)
             elif data == "paid_mass_remove_button":
                 await self._handle_paid_mass_remove_button(update, context)
             elif data == "paid_mass_preview":
@@ -224,6 +243,16 @@ class HandlersMixin:
             message_number = int(data.split("_")[3])
             self.db.update_paid_broadcast_message(message_number, photo_url="")
             await self.show_paid_message_edit(update, context, message_number)
+
+        # Видео для платных сообщений
+        elif data.startswith("edit_paid_video_"):
+            message_number = int(data.split("_")[3])
+            await self.request_text_input(update, context, "paid_broadcast_video", message_number=message_number)
+        elif data.startswith("remove_paid_video_"):
+            message_number = int(data.split("_")[3])
+            self.db.update_paid_broadcast_message(message_number, video_url="")
+            await self.show_paid_message_edit(update, context, message_number)
+
         elif data.startswith("delete_paid_msg_"):
             message_number = int(data.split("_")[3])
             # Подтверждение удаления
@@ -287,12 +316,28 @@ class HandlersMixin:
             await self.request_text_input(update, context, "welcome_photo")
         elif data == "remove_welcome_photo":
             await self._handle_remove_welcome_photo(update, context)
+        elif data == "edit_welcome_video":
+            await self.request_text_input(update, context, "welcome_video")
+        elif data == "remove_welcome_video":
+            welcome_text = self.db.get_welcome_message()['text']
+            welcome_photo = self.db.get_welcome_message()['photo']
+            self.db.set_welcome_message(welcome_text, welcome_photo, "")
+            await self.show_welcome_edit(update, context)
+
         elif data == "edit_goodbye_text":
             await self.request_text_input(update, context, "goodbye")
         elif data == "edit_goodbye_photo":
             await self.request_text_input(update, context, "goodbye_photo")
         elif data == "remove_goodbye_photo":
             await self._handle_remove_goodbye_photo(update, context)
+        elif data == "edit_goodbye_video":
+            await self.request_text_input(update, context, "goodbye_video")
+        elif data == "remove_goodbye_video":
+            goodbye_text = self.db.get_goodbye_message()['text']
+            goodbye_photo = self.db.get_goodbye_message()['photo']
+            self.db.set_goodbye_message(goodbye_text, goodbye_photo, "")
+            await self.show_goodbye_edit(update, context)
+
         elif data == "edit_success_message_text":
             await self.request_text_input(update, context, "success_message")
         elif data == "reset_success_message":
@@ -326,7 +371,12 @@ class HandlersMixin:
             if update.message.photo:
                 await self.handle_photo_input(update, context, waiting_data)
                 return
-            
+
+            # Обработка видео
+            if update.message.video:
+                await self.handle_video_input(update, context, waiting_data)
+                return
+
             # ✅ ОБНОВЛЕНО: Обработка текста с HTML форматированием из Telegram
             # Используем text_html и caption_html для сохранения форматирования
             if update.message.text:
@@ -414,7 +464,27 @@ class HandlersMixin:
             await self.handle_paid_broadcast_delay_input(update, context, text)
         elif input_type == "paid_broadcast_photo":
             await self.handle_paid_broadcast_photo_input(update, context, text)
-        
+
+        # Видео для базовых типов
+        elif input_type == "welcome_video":
+            await self.handle_photo_url_input(update, context, text, "welcome_video")
+        elif input_type == "goodbye_video":
+            await self.handle_photo_url_input(update, context, text, "goodbye_video")
+        elif input_type == "renewal_video":
+            await self.handle_photo_url_input(update, context, text, "renewal_video")
+        elif input_type == "broadcast_video":
+            await self.handle_photo_url_input(update, context, text, "broadcast_video", **waiting_data)
+        elif input_type == "paid_broadcast_video":
+            await self.handle_photo_url_input(update, context, text, "paid_broadcast_video", **waiting_data)
+        elif input_type == "payment_message_video":
+            await self.handle_payment_message_input(update, context, text, "payment_message_video")
+
+        # Видео для массовых рассылок
+        elif input_type == "mass_video":
+            await self.handle_mass_video_input(update, context, text)
+        elif input_type == "paid_mass_video":
+            await self.handle_paid_mass_video_input(update, context, text)
+
         # Остальные типы
         elif input_type == "broadcast_timer":
             await self.handle_broadcast_timer(update, context, text)
@@ -477,13 +547,15 @@ class HandlersMixin:
         
         elif input_type == "broadcast_delay":
             await self._handle_broadcast_delay_input(update, context, text, waiting_data)
-        
-        elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo", "payment_message_photo", "renewal_photo"]:
+
+        elif input_type in ["broadcast_photo", "welcome_photo", "goodbye_photo", "payment_message_photo", "renewal_photo",
+                             "broadcast_video", "welcome_video", "goodbye_video", "payment_message_video", "renewal_video"]:
             if text.startswith("http://") or text.startswith("https://"):
                 await self.handle_photo_url_input(update, context, text, input_type, **waiting_data)
             else:
-                await update.message.reply_text("❌ Отправьте фото или ссылку на фото (начинающуюся с http:// или https://)")
-        
+                media_type = "видео" if "video" in input_type else "фото"
+                await update.message.reply_text(f"❌ Отправьте {media_type} или ссылку на {media_type} (начинающуюся с http:// или https://)")
+
         elif input_type == "edit_button_text":
             await self._handle_edit_button_text_input(update, context, text, waiting_data)
         
@@ -631,7 +703,14 @@ class HandlersMixin:
         if user_id in self.broadcast_drafts:
             self.broadcast_drafts[user_id]["photo_data"] = None
             await self.show_send_all_menu(update, context)
-    
+
+    async def _handle_mass_remove_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаление видео из массовой рассылки"""
+        user_id = update.effective_user.id
+        if user_id in self.broadcast_drafts:
+            self.broadcast_drafts[user_id]["video_data"] = None
+            await self.show_send_all_menu(update, context)
+
     async def _handle_mass_remove_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Удаление последней кнопки из массовой рассылки"""
         user_id = update.effective_user.id
@@ -651,6 +730,13 @@ class HandlersMixin:
         user_id = update.effective_user.id
         if user_id in self.broadcast_drafts:
             self.broadcast_drafts[user_id]["photo_data"] = None
+            await self.show_paid_send_all_menu(update, context)
+
+    async def _handle_paid_mass_remove_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаление видео из платной массовой рассылки"""
+        user_id = update.effective_user.id
+        if user_id in self.broadcast_drafts:
+            self.broadcast_drafts[user_id]["video_data"] = None
             await self.show_paid_send_all_menu(update, context)
 
     async def _handle_paid_mass_remove_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -775,11 +861,7 @@ class HandlersMixin:
         if not (text.startswith("http://") or text.startswith("https://")):
             await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
             return
-        
-        if len(text) > 256:
-            await update.message.reply_text("❌ URL слишком длинный.")
-            return
-        
+
         self.db.update_message_button(button_id, button_url=text)
         await update.message.reply_text("✅ URL кнопки обновлен!")
         del self.waiting_for[user_id]
@@ -894,11 +976,7 @@ class HandlersMixin:
         if not (text.startswith("http://") or text.startswith("https://")):
             await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
             return
-        
-        if len(text) > 256:
-            await update.message.reply_text("❌ URL слишком длинный.")
-            return
-        
+
         if user_id not in self.broadcast_drafts:
             await update.message.reply_text("❌ Черновик не найден!")
             return
@@ -965,6 +1043,16 @@ class HandlersMixin:
             message_number = int(data.split("_")[2])
             self.db.update_broadcast_message(message_number, photo_url="")
             await self.show_message_edit(update, context, message_number)
+
+        # Видео для основных сообщений
+        elif data.startswith("edit_video_"):
+            message_number = int(data.split("_")[2])
+            await self.request_text_input(update, context, "broadcast_video", message_number=message_number)
+        elif data.startswith("remove_video_"):
+            message_number = int(data.split("_")[2])
+            self.db.update_broadcast_message(message_number, video_url="")
+            await self.show_message_edit(update, context, message_number)
+
         elif data.startswith("delete_msg_"):
             message_number = int(data.split("_")[2])
             # Подтверждение удаления

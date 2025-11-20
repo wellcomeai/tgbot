@@ -85,28 +85,36 @@ class RenewalMixin:
         # Безопасное получение данных
         text_val = renewal_data.get('text') or 'Не настроено'
         photo_status = 'Установлено' if renewal_data.get('photo_url') else 'Не установлено'
+        renewal_video = renewal_data.get('video_url')
+        video_status = 'Установлено' if renewal_video else 'Не установлено'
         button_text_val = renewal_data.get('button_text') or 'Не настроено'
         button_url_val = renewal_data.get('button_url') or 'Не настроено'
-        
+
         text = (
             f"💰 <b>Редактирование сообщения продления</b>\n\n"
             f"<b>Текущий текст сообщения:</b>\n"
             f"{text_val}\n\n"
-            f"<b>Фото:</b> {photo_status}\n\n"
+            f"<b>Фото:</b> {photo_status}\n"
+            f"<b>Видео:</b> {video_status}\n\n"
             f"<b>Кнопка:</b>\n"
             f"Текст: {button_text_val}\n"
             f"URL: {button_url_val}\n\n"
             f"💡 <i>UTM метки добавляются автоматически при отправке.</i>\n\n"
             f"Выберите что изменить:"
         )
-        
+
         keyboard = [
             [InlineKeyboardButton("📝 Текст сообщения", callback_data="renewal_edit_text")],
             [InlineKeyboardButton("🖼 Фото", callback_data="renewal_edit_photo")],
+            [InlineKeyboardButton("🎥 Видео", callback_data="edit_renewal_video")],
             [InlineKeyboardButton("📝 Текст кнопки", callback_data="renewal_edit_button_text")],
             [InlineKeyboardButton("🔗 URL кнопки", callback_data="renewal_edit_button_url")],
-            [InlineKeyboardButton("« Назад", callback_data="admin_renewal")]
         ]
+
+        if renewal_video:
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data="remove_renewal_video")])
+
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_renewal")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await self.safe_edit_or_send_message(update, context, text, reply_markup)
@@ -126,34 +134,41 @@ class RenewalMixin:
         # Безопасное получение данных
         text_val = renewal_data.get('text') or 'Не настроено'
         text_info = text_val[:100] + '...' if len(text_val) > 100 else text_val
-        
+
         photo_info = 'Есть' if renewal_data.get('photo_url') else 'Нет'
+        renewal_video = renewal_data.get('video_url')
+        video_info = 'Есть' if renewal_video else 'Нет'
         button_text_val = renewal_data.get('button_text') or 'Не настроено'
         button_url_val = renewal_data.get('button_url') or 'Не настроено'
         button_url_info = button_url_val[:50] + '...' if len(button_url_val) > 50 else button_url_val
-        
+
         message_text = (
             "💰 <b>Сообщения продления подписки</b>\n\n"
             "⏰ <b>Отправляется:</b> В день истечения подписки в 12:00 МСК\n\n"
             "<b>Текущие настройки:</b>\n\n"
             f"📝 <b>Текст:</b> {text_info}\n\n"
-            f"🖼 <b>Фото:</b> {photo_info}\n\n"
+            f"🖼 <b>Фото:</b> {photo_info}\n"
+            f"🎥 <b>Видео:</b> {video_info}\n\n"
             f"🔘 <b>Кнопка:</b> {button_text_val}\n"
             f"🔗 <b>URL кнопки:</b> {button_url_info}\n\n"
             "💡 <i>Все ссылки автоматически получают UTM метки для отслеживания конверсий.</i>\n\n"
             "Выберите что настроить:"
         )
-        
+
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data="renewal_edit_text")],
             [InlineKeyboardButton("🖼 Изменить фото", callback_data="renewal_edit_photo")],
+            [InlineKeyboardButton("🎥 Изменить видео", callback_data="edit_renewal_video")],
             [InlineKeyboardButton("🔘 Настроить кнопку", callback_data="renewal_edit_button")],
         ]
-        
+
         # Дополнительные действия с проверками
         if renewal_data.get('photo_url'):
             keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data="renewal_remove_photo")])
-        
+
+        if renewal_video:
+            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data="remove_renewal_video")])
+
         if renewal_data.get('button_text') and renewal_data.get('button_url'):
             keyboard.append([InlineKeyboardButton("🗑 Удалить кнопку", callback_data="renewal_remove_button")])
         

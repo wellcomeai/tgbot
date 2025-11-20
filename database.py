@@ -169,12 +169,17 @@ class Database:
                  "✨ Не упустите возможность оставаться в курсе всех новинок!",))
             
             cursor.execute('''
-                INSERT OR IGNORE INTO renewal_settings (key, value) 
+                INSERT OR IGNORE INTO renewal_settings (key, value)
                 VALUES ('renewal_photo_url', '')
             ''')
-            
+
             cursor.execute('''
-                INSERT OR IGNORE INTO renewal_settings (key, value) 
+                INSERT OR IGNORE INTO renewal_settings (key, value)
+                VALUES ('renewal_video_url', '')
+            ''')
+
+            cursor.execute('''
+                INSERT OR IGNORE INTO renewal_settings (key, value)
                 VALUES ('renewal_button_text', 'Продлить подписку')
             ''')
             
@@ -183,13 +188,14 @@ class Database:
                 VALUES ('renewal_button_url', '')
             ''')
             
-            # Обновляем таблицу сообщений рассылки - добавляем поле для фото
+            # Обновляем таблицу сообщений рассылки - добавляем поле для фото и видео
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS broadcast_messages (
                     message_number INTEGER PRIMARY KEY,
                     text TEXT NOT NULL,
                     delay_hours INTEGER DEFAULT 24,
-                    photo_url TEXT DEFAULT NULL
+                    photo_url TEXT DEFAULT NULL,
+                    video_url TEXT DEFAULT NULL
                 )
             ''')
             
@@ -199,6 +205,11 @@ class Database:
             if 'photo_url' not in columns:
                 cursor.execute('ALTER TABLE broadcast_messages ADD COLUMN photo_url TEXT DEFAULT NULL')
                 logger.info("Добавлена колонка photo_url в broadcast_messages")
+
+            # Добавляем колонку video_url если её нет
+            if 'video_url' not in columns:
+                cursor.execute('ALTER TABLE broadcast_messages ADD COLUMN video_url TEXT DEFAULT NULL')
+                logger.info("Добавлена колонка video_url в broadcast_messages")
             
             # Таблица кнопок для сообщений рассылки
             cursor.execute('''
@@ -229,6 +240,7 @@ class Database:
                     message_number INTEGER,
                     text TEXT NOT NULL,
                     photo_url TEXT DEFAULT NULL,
+                    video_url TEXT DEFAULT NULL,
                     FOREIGN KEY (welcome_button_id) REFERENCES welcome_buttons(id)
                 )
             ''')
@@ -274,6 +286,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     message_text TEXT NOT NULL,
                     photo_url TEXT DEFAULT NULL,
+                    video_url TEXT DEFAULT NULL,
                     scheduled_time TIMESTAMP NOT NULL,
                     is_sent INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -300,7 +313,8 @@ class Database:
                     message_number INTEGER PRIMARY KEY,
                     text TEXT NOT NULL,
                     delay_hours REAL DEFAULT 24,
-                    photo_url TEXT DEFAULT NULL
+                    photo_url TEXT DEFAULT NULL,
+                    video_url TEXT DEFAULT NULL
                 )
             ''')
 
@@ -335,6 +349,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     message_text TEXT NOT NULL,
                     photo_url TEXT DEFAULT NULL,
+                    video_url TEXT DEFAULT NULL,
                     scheduled_time TIMESTAMP NOT NULL,
                     is_sent INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -417,10 +432,22 @@ class Database:
             
             # Добавляем URL фото для прощания (опционально)
             cursor.execute('''
-                INSERT OR IGNORE INTO settings (key, value) 
+                INSERT OR IGNORE INTO settings (key, value)
                 VALUES ('goodbye_photo_url', '')
             ''')
-            
+
+            # Добавляем URL видео для приветствия (опционально)
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('welcome_video_url', '')
+            ''')
+
+            # Добавляем URL видео для прощания (опционально)
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('goodbye_video_url', '')
+            ''')
+
             # НОВЫЕ настройки для сообщений после оплаты
             cursor.execute('''
                 INSERT OR IGNORE INTO settings (key, value) 
@@ -432,10 +459,16 @@ class Database:
                  "🙏 Благодарим за доверие!",))
             
             cursor.execute('''
-                INSERT OR IGNORE INTO settings (key, value) 
+                INSERT OR IGNORE INTO settings (key, value)
                 VALUES ('payment_success_photo_url', '')
             ''')
-            
+
+            # Добавляем URL видео для сообщения об оплате
+            cursor.execute('''
+                INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('payment_success_video_url', '')
+            ''')
+
             # ✅ НОВОЕ: Инициализация настройки для включения/выключения сообщения подтверждения
             cursor.execute('''
                 INSERT OR IGNORE INTO settings (key, value) 
@@ -483,7 +516,39 @@ class Database:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_clicks_message ON button_clicks(message_number)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_clicks_time ON button_clicks(clicked_at)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_clicks_type ON button_clicks(button_type)')
-            
+
+            # ========================================
+            # 🎥 ДОБАВЛЕНИЕ КОЛОНОК video_url В СУЩЕСТВУЮЩИЕ ТАБЛИЦЫ
+            # ========================================
+
+            # Добавляем video_url в welcome_follow_messages если её нет
+            cursor.execute("PRAGMA table_info(welcome_follow_messages)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'video_url' not in columns:
+                cursor.execute('ALTER TABLE welcome_follow_messages ADD COLUMN video_url TEXT DEFAULT NULL')
+                logger.info("Добавлена колонка video_url в welcome_follow_messages")
+
+            # Добавляем video_url в scheduled_broadcasts если её нет
+            cursor.execute("PRAGMA table_info(scheduled_broadcasts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'video_url' not in columns:
+                cursor.execute('ALTER TABLE scheduled_broadcasts ADD COLUMN video_url TEXT DEFAULT NULL')
+                logger.info("Добавлена колонка video_url в scheduled_broadcasts")
+
+            # Добавляем video_url в paid_broadcast_messages если её нет
+            cursor.execute("PRAGMA table_info(paid_broadcast_messages)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'video_url' not in columns:
+                cursor.execute('ALTER TABLE paid_broadcast_messages ADD COLUMN video_url TEXT DEFAULT NULL')
+                logger.info("Добавлена колонка video_url в paid_broadcast_messages")
+
+            # Добавляем video_url в paid_scheduled_broadcasts если её нет
+            cursor.execute("PRAGMA table_info(paid_scheduled_broadcasts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'video_url' not in columns:
+                cursor.execute('ALTER TABLE paid_scheduled_broadcasts ADD COLUMN video_url TEXT DEFAULT NULL')
+                logger.info("Добавлена колонка video_url в paid_scheduled_broadcasts")
+
             conn.commit()
             logger.info("✅ Индексы созданы для оптимизации производительности")
             
@@ -1028,19 +1093,23 @@ class Database:
         """Получение сообщения об успешной оплате"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('SELECT value FROM settings WHERE key = "payment_success_message"')
             message = cursor.fetchone()
-            
+
             cursor.execute('SELECT value FROM settings WHERE key = "payment_success_photo_url"')
             photo = cursor.fetchone()
-            
+
+            cursor.execute('SELECT value FROM settings WHERE key = "payment_success_video_url"')
+            video = cursor.fetchone()
+
             return {
                 'text': message[0] if message else None,
-                'photo_url': photo[0] if photo and photo[0] else None
+                'photo_url': photo[0] if photo and photo[0] else None,
+                'video_url': video[0] if video and video[0] else None
             }
-            
+
         except Exception as e:
             logger.error(f"❌ Ошибка при получении сообщения об оплате: {e}")
             return None
@@ -1048,26 +1117,32 @@ class Database:
             if conn:
                 conn.close()
     
-    def set_payment_success_message(self, text, photo_url=None):
+    def set_payment_success_message(self, text, photo_url=None, video_url=None):
         """Установка сообщения об успешной оплате"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
-                INSERT OR REPLACE INTO settings (key, value) 
+                INSERT OR REPLACE INTO settings (key, value)
                 VALUES ('payment_success_message', ?)
             ''', (text,))
-            
+
             if photo_url is not None:
                 cursor.execute('''
-                    INSERT OR REPLACE INTO settings (key, value) 
+                    INSERT OR REPLACE INTO settings (key, value)
                     VALUES ('payment_success_photo_url', ?)
                 ''', (photo_url,))
-            
+
+            if video_url is not None:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO settings (key, value)
+                    VALUES ('payment_success_video_url', ?)
+                ''', (video_url,))
+
             conn.commit()
             logger.info("✅ Сообщение об успешной оплате обновлено")
-            
+
         except Exception as e:
             logger.error(f"❌ Ошибка при установке сообщения об оплате: {e}")
         finally:
@@ -1366,10 +1441,10 @@ class Database:
         """Получить только пользователей, которые начали разговор с ботом"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
-                SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at 
+                SELECT user_id, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at
                 FROM users WHERE is_active = 1 AND bot_started = 1
             ''')
             users = cursor.fetchall()
@@ -1377,7 +1452,53 @@ class Database:
         finally:
             if conn:
                 conn.close()
-    
+
+    def get_users_completed_funnel(self):
+        """
+        Получить пользователей, которые завершили воронку (получили последнее сообщение)
+
+        Returns:
+            List: Список пользователей, получивших последнее сообщение воронки
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Находим максимальный номер сообщения в воронке
+            cursor.execute('SELECT MAX(message_number) FROM broadcast_messages')
+            max_message_result = cursor.fetchone()
+
+            if not max_message_result or max_message_result[0] is None:
+                logger.warning("⚠️ Нет сообщений в воронке broadcast_messages")
+                return []
+
+            max_message = max_message_result[0]
+            logger.debug(f"📊 Максимальный номер сообщения воронки: {max_message}")
+
+            # Получаем пользователей, получивших последнее сообщение
+            cursor.execute('''
+                SELECT DISTINCT u.user_id, u.username, u.first_name, u.joined_at,
+                       u.is_active, u.bot_started, u.has_paid, u.paid_at
+                FROM users u
+                INNER JOIN message_deliveries md ON u.user_id = md.user_id
+                WHERE u.is_active = 1
+                AND u.bot_started = 1
+                AND u.has_paid = 0
+                AND md.message_number = ?
+                ORDER BY u.joined_at DESC
+            ''', (max_message,))
+
+            users = cursor.fetchall()
+            logger.info(f"✅ Найдено {len(users)} пользователей, завершивших воронку")
+            return users
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении пользователей, завершивших воронку: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
     def deactivate_user(self, user_id):
         """Деактивация пользователя при отписке"""
         conn = self._get_connection()
@@ -1487,17 +1608,21 @@ class Database:
         """Получение приветственного сообщения и фото"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('SELECT value FROM settings WHERE key = "welcome_message"')
             message = cursor.fetchone()
-            
+
             cursor.execute('SELECT value FROM settings WHERE key = "welcome_photo_url"')
             photo = cursor.fetchone()
-            
+
+            cursor.execute('SELECT value FROM settings WHERE key = "welcome_video_url"')
+            video = cursor.fetchone()
+
             return {
                 'text': message[0] if message else "Добро пожаловать!",
-                'photo': photo[0] if photo and photo[0] else None
+                'photo': photo[0] if photo and photo[0] else None,
+                'video': video[0] if video and video[0] else None
             }
         finally:
             if conn:
@@ -1507,57 +1632,71 @@ class Database:
         """Получение прощального сообщения и фото"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('SELECT value FROM settings WHERE key = "goodbye_message"')
             message = cursor.fetchone()
-            
+
             cursor.execute('SELECT value FROM settings WHERE key = "goodbye_photo_url"')
             photo = cursor.fetchone()
-            
+
+            cursor.execute('SELECT value FROM settings WHERE key = "goodbye_video_url"')
+            video = cursor.fetchone()
+
             return {
                 'text': message[0] if message else "До свидания!",
-                'photo': photo[0] if photo and photo[0] else None
+                'photo': photo[0] if photo and photo[0] else None,
+                'video': video[0] if video and video[0] else None
             }
         finally:
             if conn:
                 conn.close()
     
-    def set_welcome_message(self, message, photo_url=None):
+    def set_welcome_message(self, message, photo_url=None, video_url=None):
         """Установка приветственного сообщения"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
                 UPDATE settings SET value = ? WHERE key = "welcome_message"
             ''', (message,))
-            
+
             if photo_url is not None:
                 cursor.execute('''
                     UPDATE settings SET value = ? WHERE key = "welcome_photo_url"
                 ''', (photo_url,))
-            
+
+            if video_url is not None:
+                cursor.execute('''
+                    UPDATE settings SET value = ? WHERE key = "welcome_video_url"
+                ''', (video_url,))
+
             conn.commit()
         finally:
             if conn:
                 conn.close()
     
-    def set_goodbye_message(self, message, photo_url=None):
+    def set_goodbye_message(self, message, photo_url=None, video_url=None):
         """Установка прощального сообщения"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
                 UPDATE settings SET value = ? WHERE key = "goodbye_message"
             ''', (message,))
-            
+
             if photo_url is not None:
                 cursor.execute('''
                     UPDATE settings SET value = ? WHERE key = "goodbye_photo_url"
                 ''', (photo_url,))
-            
+
+            if video_url is not None:
+                cursor.execute('''
+                    UPDATE settings SET value = ? WHERE key = "goodbye_video_url"
+                ''', (video_url,))
+
             conn.commit()
         finally:
             if conn:
@@ -1661,40 +1800,40 @@ class Database:
         """Получение всех последующих сообщений для кнопки"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
-                SELECT id, message_number, text, photo_url 
-                FROM welcome_follow_messages 
-                WHERE welcome_button_id = ? 
+                SELECT id, message_number, text, photo_url, video_url
+                FROM welcome_follow_messages
+                WHERE welcome_button_id = ?
                 ORDER BY message_number
             ''', (welcome_button_id,))
-            
+
             messages = cursor.fetchall()
             return messages
         finally:
             if conn:
                 conn.close()
     
-    def add_welcome_follow_message(self, welcome_button_id, text, photo_url=None):
+    def add_welcome_follow_message(self, welcome_button_id, text, photo_url=None, video_url=None):
         """Добавление последующего сообщения для кнопки"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             # Определяем номер сообщения
             cursor.execute('''
-                SELECT MAX(message_number) FROM welcome_follow_messages 
+                SELECT MAX(message_number) FROM welcome_follow_messages
                 WHERE welcome_button_id = ?
             ''', (welcome_button_id,))
             max_number = cursor.fetchone()[0]
             message_number = (max_number or 0) + 1
-            
+
             cursor.execute('''
-                INSERT INTO welcome_follow_messages (welcome_button_id, message_number, text, photo_url)
-                VALUES (?, ?, ?, ?)
-            ''', (welcome_button_id, message_number, text, photo_url))
-            
+                INSERT INTO welcome_follow_messages (welcome_button_id, message_number, text, photo_url, video_url)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (welcome_button_id, message_number, text, photo_url, video_url))
+
             conn.commit()
             logger.info(f"Добавлено последующее сообщение {message_number} для кнопки {welcome_button_id}")
             return message_number
@@ -1702,22 +1841,27 @@ class Database:
             if conn:
                 conn.close()
     
-    def update_welcome_follow_message(self, message_id, text=None, photo_url=None):
+    def update_welcome_follow_message(self, message_id, text=None, photo_url=None, video_url=None):
         """Обновление последующего сообщения"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             if text is not None:
                 cursor.execute('''
                     UPDATE welcome_follow_messages SET text = ? WHERE id = ?
                 ''', (text, message_id))
-            
+
             if photo_url is not None:
                 cursor.execute('''
                     UPDATE welcome_follow_messages SET photo_url = ? WHERE id = ?
                 ''', (photo_url if photo_url else None, message_id))
-            
+
+            if video_url is not None:
+                cursor.execute('''
+                    UPDATE welcome_follow_messages SET video_url = ? WHERE id = ?
+                ''', (video_url if video_url else None, message_id))
+
             conn.commit()
             logger.info(f"Обновлено последующее сообщение #{message_id}")
         finally:
@@ -1866,39 +2010,39 @@ class Database:
         """Получение запланированных массовых рассылок"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             if include_sent:
                 cursor.execute('''
-                    SELECT id, message_text, photo_url, scheduled_time, is_sent, created_at
-                    FROM scheduled_broadcasts 
+                    SELECT id, message_text, photo_url, video_url, scheduled_time, is_sent, created_at
+                    FROM scheduled_broadcasts
                     ORDER BY scheduled_time
                 ''')
             else:
                 cursor.execute('''
-                    SELECT id, message_text, photo_url, scheduled_time, is_sent, created_at
-                    FROM scheduled_broadcasts 
+                    SELECT id, message_text, photo_url, video_url, scheduled_time, is_sent, created_at
+                    FROM scheduled_broadcasts
                     WHERE is_sent = 0
                     ORDER BY scheduled_time
                 ''')
-            
+
             broadcasts = cursor.fetchall()
             return broadcasts
         finally:
             if conn:
                 conn.close()
     
-    def add_scheduled_broadcast(self, message_text, scheduled_time, photo_url=None):
+    def add_scheduled_broadcast(self, message_text, scheduled_time, photo_url=None, video_url=None):
         """Добавление запланированной массовой рассылки"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
-                INSERT INTO scheduled_broadcasts (message_text, photo_url, scheduled_time)
-                VALUES (?, ?, ?)
-            ''', (message_text, photo_url, scheduled_time))
-            
+                INSERT INTO scheduled_broadcasts (message_text, photo_url, video_url, scheduled_time)
+                VALUES (?, ?, ?, ?)
+            ''', (message_text, photo_url, video_url, scheduled_time))
+
             broadcast_id = cursor.lastrowid
             conn.commit()
             logger.info(f"Добавлена запланированная рассылка #{broadcast_id} на {scheduled_time}")
@@ -1944,16 +2088,16 @@ class Database:
         """Получение рассылок, готовых к отправке"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             current_time = datetime.now()
             cursor.execute('''
-                SELECT id, message_text, photo_url, scheduled_time
-                FROM scheduled_broadcasts 
+                SELECT id, message_text, photo_url, video_url, scheduled_time
+                FROM scheduled_broadcasts
                 WHERE is_sent = 0 AND scheduled_time <= ?
                 ORDER BY scheduled_time
             ''', (current_time,))
-            
+
             broadcasts = cursor.fetchall()
             return broadcasts
         finally:
@@ -2017,10 +2161,10 @@ class Database:
         """Получение сообщения рассылки по номеру"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
-                SELECT text, delay_hours, photo_url FROM broadcast_messages 
+                SELECT text, delay_hours, photo_url, video_url FROM broadcast_messages
                 WHERE message_number = ?
             ''', (message_number,))
             result = cursor.fetchone()
@@ -2042,22 +2186,22 @@ class Database:
             if conn:
                 conn.close()
     
-    def add_broadcast_message(self, text, delay_hours, photo_url=None):
+    def add_broadcast_message(self, text, delay_hours, photo_url=None, video_url=None):
         """Добавление нового сообщения рассылки"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             # Находим следующий доступный номер сообщения
             cursor.execute('SELECT MAX(message_number) FROM broadcast_messages')
             max_number = cursor.fetchone()[0]
             next_number = (max_number or 0) + 1
-            
+
             cursor.execute('''
-                INSERT INTO broadcast_messages (message_number, text, delay_hours, photo_url)
-                VALUES (?, ?, ?, ?)
-            ''', (next_number, text, delay_hours, photo_url))
-            
+                INSERT INTO broadcast_messages (message_number, text, delay_hours, photo_url, video_url)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (next_number, text, delay_hours, photo_url, video_url))
+
             conn.commit()
             logger.info(f"Добавлено сообщение рассылки #{next_number}")
             return next_number
@@ -2095,30 +2239,36 @@ class Database:
             if conn:
                 conn.close()
     
-    def update_broadcast_message(self, message_number, text=None, delay_hours=None, photo_url=None):
+    def update_broadcast_message(self, message_number, text=None, delay_hours=None, photo_url=None, video_url=None):
         """Обновление сообщения рассылки"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             if text is not None:
                 cursor.execute('''
-                    UPDATE broadcast_messages SET text = ? 
+                    UPDATE broadcast_messages SET text = ?
                     WHERE message_number = ?
                 ''', (text, message_number))
-            
+
             if delay_hours is not None:
                 cursor.execute('''
-                    UPDATE broadcast_messages SET delay_hours = ? 
+                    UPDATE broadcast_messages SET delay_hours = ?
                     WHERE message_number = ?
                 ''', (delay_hours, message_number))
-            
+
             if photo_url is not None:
                 cursor.execute('''
-                    UPDATE broadcast_messages SET photo_url = ? 
+                    UPDATE broadcast_messages SET photo_url = ?
                     WHERE message_number = ?
                 ''', (photo_url if photo_url else None, message_number))
-            
+
+            if video_url is not None:
+                cursor.execute('''
+                    UPDATE broadcast_messages SET video_url = ?
+                    WHERE message_number = ?
+                ''', (video_url if video_url else None, message_number))
+
             conn.commit()
         finally:
             if conn:
@@ -2316,16 +2466,16 @@ class Database:
         """Получение сообщений, готовых к отправке"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             current_time = datetime.now()
             cursor.execute('''
-                SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url
+                SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url, bm.video_url
                 FROM scheduled_messages sm
                 JOIN broadcast_messages bm ON sm.message_number = bm.message_number
                 WHERE sm.is_sent = 0 AND sm.scheduled_time <= ?
             ''', (current_time,))
-            
+
             messages = cursor.fetchall()
             return messages
         finally:
@@ -2363,28 +2513,28 @@ class Database:
             
             # Получаем сообщения готовые к отправке (ТОЛЬКО ДЛЯ НЕОПЛАТИВШИХ)
             cursor.execute('''
-                SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url, sm.scheduled_time
+                SELECT sm.id, sm.user_id, sm.message_number, bm.text, bm.photo_url, bm.video_url, sm.scheduled_time
                 FROM scheduled_messages sm
                 JOIN broadcast_messages bm ON sm.message_number = bm.message_number
                 JOIN users u ON sm.user_id = u.user_id
-                WHERE sm.is_sent = 0 
+                WHERE sm.is_sent = 0
                 AND sm.scheduled_time <= ?
                 AND u.is_active = 1
                 AND u.bot_started = 1
                 AND u.has_paid = 0
                 ORDER BY sm.scheduled_time ASC
             ''', (current_time,))
-            
+
             messages = cursor.fetchall()
-            
+
             # Логируем детали каждого сообщения
             for msg in messages:
-                message_id, user_id, message_number, text, photo_url, scheduled_time = msg
+                message_id, user_id, message_number, text, photo_url, video_url, scheduled_time = msg
                 scheduled_dt = datetime.fromisoformat(scheduled_time) if isinstance(scheduled_time, str) else scheduled_time
                 delay_minutes = int((current_time - scheduled_dt).total_seconds() / 60)
                 logger.debug(f"📬 Сообщение {message_number} для пользователя {user_id} (опоздание: {delay_minutes} мин)")
-            
-            return [(m[0], m[1], m[2], m[3], m[4]) for m in messages]  # Возвращаем без scheduled_time
+
+            return [(m[0], m[1], m[2], m[3], m[4], m[5]) for m in messages]  # Возвращаем без scheduled_time
         finally:
             if conn:
                 conn.close()
@@ -2681,10 +2831,10 @@ class Database:
         """Получение сообщения рассылки для оплативших по номеру"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
-                SELECT text, delay_hours, photo_url FROM paid_broadcast_messages 
+                SELECT text, delay_hours, photo_url, video_url FROM paid_broadcast_messages
                 WHERE message_number = ?
             ''', (message_number,))
             result = cursor.fetchone()
@@ -2706,22 +2856,22 @@ class Database:
             if conn:
                 conn.close()
 
-    def add_paid_broadcast_message(self, text, delay_hours, photo_url=None):
+    def add_paid_broadcast_message(self, text, delay_hours, photo_url=None, video_url=None):
         """Добавление нового сообщения рассылки для оплативших"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             # Находим следующий доступный номер сообщения
             cursor.execute('SELECT MAX(message_number) FROM paid_broadcast_messages')
             max_number = cursor.fetchone()[0]
             next_number = (max_number or 0) + 1
-            
+
             cursor.execute('''
-                INSERT INTO paid_broadcast_messages (message_number, text, delay_hours, photo_url)
-                VALUES (?, ?, ?, ?)
-            ''', (next_number, text, delay_hours, photo_url))
-            
+                INSERT INTO paid_broadcast_messages (message_number, text, delay_hours, photo_url, video_url)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (next_number, text, delay_hours, photo_url, video_url))
+
             conn.commit()
             logger.info(f"Добавлено сообщение рассылки для оплативших #{next_number}")
             return next_number
@@ -2759,30 +2909,36 @@ class Database:
             if conn:
                 conn.close()
 
-    def update_paid_broadcast_message(self, message_number, text=None, delay_hours=None, photo_url=None):
+    def update_paid_broadcast_message(self, message_number, text=None, delay_hours=None, photo_url=None, video_url=None):
         """Обновление сообщения рассылки для оплативших"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             if text is not None:
                 cursor.execute('''
-                    UPDATE paid_broadcast_messages SET text = ? 
+                    UPDATE paid_broadcast_messages SET text = ?
                     WHERE message_number = ?
                 ''', (text, message_number))
-            
+
             if delay_hours is not None:
                 cursor.execute('''
-                    UPDATE paid_broadcast_messages SET delay_hours = ? 
+                    UPDATE paid_broadcast_messages SET delay_hours = ?
                     WHERE message_number = ?
                 ''', (delay_hours, message_number))
-            
+
             if photo_url is not None:
                 cursor.execute('''
-                    UPDATE paid_broadcast_messages SET photo_url = ? 
+                    UPDATE paid_broadcast_messages SET photo_url = ?
                     WHERE message_number = ?
                 ''', (photo_url if photo_url else None, message_number))
-            
+
+            if video_url is not None:
+                cursor.execute('''
+                    UPDATE paid_broadcast_messages SET video_url = ?
+                    WHERE message_number = ?
+                ''', (video_url if video_url else None, message_number))
+
             conn.commit()
         finally:
             if conn:
@@ -2913,23 +3069,23 @@ class Database:
         """Получение платных сообщений, готовых к отправке"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             current_time = datetime.now()
             cursor.execute('''
-                SELECT psm.id, psm.user_id, psm.message_number, pbm.text, pbm.photo_url, psm.scheduled_time
+                SELECT psm.id, psm.user_id, psm.message_number, pbm.text, pbm.photo_url, pbm.video_url, psm.scheduled_time
                 FROM paid_scheduled_messages psm
                 JOIN paid_broadcast_messages pbm ON psm.message_number = pbm.message_number
                 JOIN users u ON psm.user_id = u.user_id
-                WHERE psm.is_sent = 0 
+                WHERE psm.is_sent = 0
                 AND psm.scheduled_time <= ?
                 AND u.is_active = 1
                 AND u.has_paid = 1
                 ORDER BY psm.scheduled_time ASC
             ''', (current_time,))
-            
+
             messages = cursor.fetchall()
-            return [(m[0], m[1], m[2], m[3], m[4]) for m in messages]  # Возвращаем без scheduled_time
+            return [(m[0], m[1], m[2], m[3], m[4], m[5]) for m in messages]  # Возвращаем без scheduled_time
         finally:
             if conn:
                 conn.close()
@@ -2969,17 +3125,17 @@ class Database:
                 conn.close()
 
     # Методы для массовых рассылок оплативших
-    def add_paid_scheduled_broadcast(self, message_text, scheduled_time, photo_url=None):
+    def add_paid_scheduled_broadcast(self, message_text, scheduled_time, photo_url=None, video_url=None):
         """Добавление запланированной массовой рассылки для оплативших"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('''
-                INSERT INTO paid_scheduled_broadcasts (message_text, photo_url, scheduled_time)
-                VALUES (?, ?, ?)
-            ''', (message_text, photo_url, scheduled_time))
-            
+                INSERT INTO paid_scheduled_broadcasts (message_text, photo_url, video_url, scheduled_time)
+                VALUES (?, ?, ?, ?)
+            ''', (message_text, photo_url, video_url, scheduled_time))
+
             broadcast_id = cursor.lastrowid
             conn.commit()
             logger.info(f"Добавлена запланированная рассылка для оплативших #{broadcast_id} на {scheduled_time}")
@@ -2992,22 +3148,22 @@ class Database:
         """Получение запланированных массовых рассылок для оплативших"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             if include_sent:
                 cursor.execute('''
-                    SELECT id, message_text, photo_url, scheduled_time, is_sent, created_at
-                    FROM paid_scheduled_broadcasts 
+                    SELECT id, message_text, photo_url, video_url, scheduled_time, is_sent, created_at
+                    FROM paid_scheduled_broadcasts
                     ORDER BY scheduled_time
                 ''')
             else:
                 cursor.execute('''
-                    SELECT id, message_text, photo_url, scheduled_time, is_sent, created_at
-                    FROM paid_scheduled_broadcasts 
+                    SELECT id, message_text, photo_url, video_url, scheduled_time, is_sent, created_at
+                    FROM paid_scheduled_broadcasts
                     WHERE is_sent = 0
                     ORDER BY scheduled_time
                 ''')
-            
+
             broadcasts = cursor.fetchall()
             return broadcasts
         finally:
@@ -3018,16 +3174,16 @@ class Database:
         """Получение рассылок для оплативших, готовых к отправке"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             current_time = datetime.now()
             cursor.execute('''
-                SELECT id, message_text, photo_url, scheduled_time
-                FROM paid_scheduled_broadcasts 
+                SELECT id, message_text, photo_url, video_url, scheduled_time
+                FROM paid_scheduled_broadcasts
                 WHERE is_sent = 0 AND scheduled_time <= ?
                 ORDER BY scheduled_time
             ''', (current_time,))
-            
+
             broadcasts = cursor.fetchall()
             return broadcasts
         finally:
@@ -3153,27 +3309,31 @@ class Database:
         """Получение сообщения о продлении подписки"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_message"')
             message = cursor.fetchone()
-            
+
             cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_photo_url"')
             photo = cursor.fetchone()
-            
+
+            cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_video_url"')
+            video = cursor.fetchone()
+
             cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_button_text"')
             button_text = cursor.fetchone()
-            
+
             cursor.execute('SELECT value FROM renewal_settings WHERE key = "renewal_button_url"')
             button_url = cursor.fetchone()
-            
+
             return {
                 'text': message[0] if message else None,
                 'photo_url': photo[0] if photo and photo[0] else None,
+                'video_url': video[0] if video and video[0] else None,
                 'button_text': button_text[0] if button_text else None,
                 'button_url': button_url[0] if button_url and button_url[0] else None
             }
-            
+
         except Exception as e:
             logger.error(f"❌ Ошибка при получении сообщения о продлении: {e}")
             return None
@@ -3181,39 +3341,45 @@ class Database:
             if conn:
                 conn.close()
     
-    def set_renewal_message(self, text=None, photo_url=None, button_text=None, button_url=None):
+    def set_renewal_message(self, text=None, photo_url=None, video_url=None, button_text=None, button_url=None):
         """Установка сообщения о продлении подписки"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             if text is not None:
                 cursor.execute('''
-                    INSERT OR REPLACE INTO renewal_settings (key, value) 
+                    INSERT OR REPLACE INTO renewal_settings (key, value)
                     VALUES ('renewal_message', ?)
                 ''', (text,))
-            
+
             if photo_url is not None:
                 cursor.execute('''
-                    INSERT OR REPLACE INTO renewal_settings (key, value) 
+                    INSERT OR REPLACE INTO renewal_settings (key, value)
                     VALUES ('renewal_photo_url', ?)
                 ''', (photo_url,))
-            
+
+            if video_url is not None:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO renewal_settings (key, value)
+                    VALUES ('renewal_video_url', ?)
+                ''', (video_url,))
+
             if button_text is not None:
                 cursor.execute('''
-                    INSERT OR REPLACE INTO renewal_settings (key, value) 
+                    INSERT OR REPLACE INTO renewal_settings (key, value)
                     VALUES ('renewal_button_text', ?)
                 ''', (button_text,))
-            
+
             if button_url is not None:
                 cursor.execute('''
-                    INSERT OR REPLACE INTO renewal_settings (key, value) 
+                    INSERT OR REPLACE INTO renewal_settings (key, value)
                     VALUES ('renewal_button_url', ?)
                 ''', (button_url,))
-            
+
             conn.commit()
             logger.info("✅ Сообщение о продлении подписки обновлено")
-            
+
         except Exception as e:
             logger.error(f"❌ Ошибка при установке сообщения о продлении: {e}")
         finally:
