@@ -16,6 +16,7 @@ from .payments import PaymentsMixin
 from .funnel import FunnelMixin
 from .settings import SettingsMixin
 from .utils import UtilsMixin
+from .media_albums import MediaAlbumsMixin
 
 
 class Database(
@@ -28,7 +29,8 @@ class Database(
     PaymentsMixin,
     FunnelMixin,
     SettingsMixin,
-    UtilsMixin
+    UtilsMixin,
+    MediaAlbumsMixin
 ):
     """
     Main Database class that combines all functionality from mixin classes.
@@ -44,8 +46,9 @@ class Database(
     - FunnelMixin: Analytics and funnel tracking (6 methods)
     - SettingsMixin: Bot configuration settings (6 methods)
     - UtilsMixin: Utility functions (2 methods)
+    - MediaAlbumsMixin: Media albums management (12 methods)
 
-    Total: 98 methods across all mixins
+    Total: 110 methods across all mixins
     """
 
     def __init__(self, db_path=None):
