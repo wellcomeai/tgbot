@@ -228,6 +228,34 @@ class DatabaseBase:
                 )
             ''')
 
+            # ========================================
+            # 🎬 ТАБЛИЦЫ ДЛЯ МЕДИА-АЛЬБОМОВ
+            # ========================================
+
+            # Таблица медиа-альбомов для сообщений рассылки
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS message_media_albums (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_number INTEGER NOT NULL,
+                    media_type TEXT NOT NULL CHECK(media_type IN ('photo', 'video')),
+                    media_url TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
+                )
+            ''')
+
+            # Таблица медиа-альбомов для массовых рассылок
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS scheduled_broadcast_media (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    broadcast_id INTEGER NOT NULL,
+                    media_type TEXT NOT NULL CHECK(media_type IN ('photo', 'video')),
+                    media_url TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    FOREIGN KEY (broadcast_id) REFERENCES scheduled_broadcasts(id)
+                )
+            ''')
+
             # НОВАЯ: Таблица кнопок для приветственного сообщения (механические кнопки)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS welcome_buttons (
@@ -522,6 +550,12 @@ class DatabaseBase:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_clicks_time ON button_clicks(clicked_at)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_clicks_type ON button_clicks(button_type)')
 
+            # 🎬 Индексы для медиа-альбомов
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_media_albums_message ON message_media_albums(message_number)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_media_albums_position ON message_media_albums(message_number, position)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_media_broadcast ON scheduled_broadcast_media(broadcast_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_media_position ON scheduled_broadcast_media(broadcast_id, position)')
+
             # ========================================
             # 🎥 ДОБАВЛЕНИЕ КОЛОНОК video_url В СУЩЕСТВУЮЩИЕ ТАБЛИЦЫ
             # ========================================
@@ -636,12 +670,21 @@ class DatabaseBase:
 
                 cursor.execute('SELECT COUNT(*) FROM button_clicks')
                 info['button_clicks_count'] = cursor.fetchone()[0]
+
+                # Добавляем статистику медиа-альбомов
+                cursor.execute('SELECT COUNT(*) FROM message_media_albums')
+                info['media_albums_count'] = cursor.fetchone()[0]
+
+                cursor.execute('SELECT COUNT(*) FROM scheduled_broadcast_media')
+                info['scheduled_broadcast_media_count'] = cursor.fetchone()[0]
             except:
                 info['users_count'] = 'N/A'
                 info['scheduled_messages_count'] = 'N/A'
                 info['payments_count'] = 'N/A'
                 info['message_deliveries_count'] = 'N/A'
                 info['button_clicks_count'] = 'N/A'
+                info['media_albums_count'] = 'N/A'
+                info['scheduled_broadcast_media_count'] = 'N/A'
 
             conn.close()
             return info
