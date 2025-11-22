@@ -226,7 +226,7 @@ class MassBroadcastsMixin:
             preview_text += "🚀 <b>Отправка:</b> Немедленно\n\n"
         
         # Получатели
-        users_count = len(self.db.get_users_with_bot_started())
+        users_count = len(self.db.get_users_completed_funnel())
         preview_text += f"👥 <b>Получателей:</b> {users_count} пользователей\n\n"
         
         # Фото
