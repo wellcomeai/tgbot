@@ -2,7 +2,7 @@
 Функциональность управления медиа-альбомами для админ-панели
 """
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ContextTypes
 from datetime import datetime
 import logging
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class MediaAlbumsMixin:
-    """Миксин для работы с медиа-альбомами"""
+    """Миксин для работы с медиа-альбомами в админке"""
     
     # === ОСНОВНЫЕ СООБЩЕНИЯ РАССЫЛКИ ===
     
@@ -65,6 +65,56 @@ class MediaAlbumsMixin:
         
         await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
+    async def show_manage_media_album_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
+        """Показать меню управления существующим медиа-альбомом"""
+        try:
+            media_album = self.db.get_message_media_album(message_number)
+            
+            # Считаем статистику вручную
+            total = len(media_album)
+            photos = sum(1 for item in media_album if item[1] == 'photo')
+            videos = sum(1 for item in media_album if item[1] == 'video')
+            
+            stats = {'total': total, 'photos': photos, 'videos': videos}
+        except Exception as e:
+            logger.error(f"❌ Ошибка при загрузке альбома: {e}")
+            stats = {'total': 0, 'photos': 0, 'videos': 0}
+        
+        text = (
+            f"🎬 <b>Управление медиа-альбомом</b>\n"
+            f"Сообщение #{message_number}\n\n"
+            f"📊 <b>Текущий альбом:</b> {stats['total']} файлов\n"
+            f"🖼 Фото: {stats['photos']}\n"
+            f"🎥 Видео: {stats['videos']}\n\n"
+        )
+        
+        if stats['total'] == 0:
+            text += "ℹ️ Альбом пустой. Создайте новый альбом."
+        else:
+            text += "✅ Альбом сохранен. Вы можете просмотреть, пересоздать или удалить его."
+        
+        keyboard = []
+        
+        if stats['total'] > 0:
+            keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data=f"preview_album_{message_number}")])
+            keyboard.append([InlineKeyboardButton("🔄 Пересоздать", callback_data=f"create_album_{message_number}")])
+            keyboard.append([InlineKeyboardButton("🗑 Удалить альбом", callback_data=f"delete_album_{message_number}")])
+        else:
+            keyboard.append([InlineKeyboardButton("➕ Создать альбом", callback_data=f"create_album_{message_number}")])
+        
+        keyboard.append([InlineKeyboardButton("❌ Назад", callback_data=f"edit_msg_{message_number}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_media_album_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
+        """
+        Показать предпросмотр медиа-альбома (alias для show_album_preview)
+        Этот метод вызывается из handlers.py
+        """
+        await self.show_album_preview(update, context, message_number)
+    
     async def handle_media_album_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка загруженных медиа или URL для альбома"""
         user_id = update.effective_user.id
@@ -84,7 +134,7 @@ class MediaAlbumsMixin:
         
         # Обработка фото
         if update.message.photo:
-            photo = update.message.photo[-1]  # Берем самое большое разрешение
+            photo = update.message.photo[-1]
             file_id = photo.file_id
             draft["media_list"].append(('photo', file_id))
             media_added.append("🖼 Фото")
@@ -98,9 +148,8 @@ class MediaAlbumsMixin:
             media_added.append("🎥 Видео")
             logger.info(f"Добавлено видео в черновик альбома для сообщения {message_number}")
         
-        # Обработка группы медиа (album)
+        # Обработка группы медиа
         elif update.message.media_group_id:
-            # Обрабатываем группу медиа
             if update.message.photo:
                 photo = update.message.photo[-1]
                 draft["media_list"].append(('photo', photo.file_id))
@@ -124,7 +173,6 @@ class MediaAlbumsMixin:
                     break
                 
                 if line.startswith('http://') or line.startswith('https://'):
-                    # Определяем тип по расширению
                     lower_url = line.lower()
                     if any(ext in lower_url for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
                         draft["media_list"].append(('photo', line))
@@ -133,7 +181,6 @@ class MediaAlbumsMixin:
                         draft["media_list"].append(('video', line))
                         media_added.append("🎥 Видео (URL)")
                     else:
-                        # По умолчанию считаем фото
                         draft["media_list"].append(('photo', line))
                         media_added.append("🖼 Фото (URL)")
         
@@ -142,26 +189,27 @@ class MediaAlbumsMixin:
             status += f"📊 Всего в альбоме: {len(draft['media_list'])}/10"
             await update.message.reply_text(status)
             
-            # Обновляем меню
             await self.show_create_media_album_menu_from_context(update, context, message_number)
     
     async def show_album_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
         """Показать предпросмотр медиа-альбома"""
         user_id = update.effective_user.id
         
-        if user_id not in self.media_album_drafts:
-            await update.callback_query.answer("❌ Черновик не найден!", show_alert=True)
-            return
-        
-        draft = self.media_album_drafts[user_id]
-        media_list = draft["media_list"]
+        # Проверяем сначала черновик, потом сохраненный альбом
+        if user_id in self.media_album_drafts:
+            draft = self.media_album_drafts[user_id]
+            media_list = draft["media_list"]
+            source = "черновика"
+        else:
+            media_album = self.db.get_message_media_album(message_number)
+            media_list = [(media_type, media_url) for _, media_type, media_url, _ in media_album]
+            source = "базы данных"
         
         if not media_list:
             await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
             return
         
         try:
-            # Отправляем предпросмотр списка
             preview_text = f"👁 <b>Предпросмотр альбома ({len(media_list)} файлов)</b>\n\n"
             for i, (media_type, media_url) in enumerate(media_list, 1):
                 icon = "🖼" if media_type == 'photo' else "🎥"
@@ -173,12 +221,9 @@ class MediaAlbumsMixin:
                 parse_mode='HTML'
             )
             
-            # Отправляем реальный альбом для предпросмотра
-            from telegram import InputMediaPhoto, InputMediaVideo
-            
             media_group = []
             for i, (media_type, media_url) in enumerate(media_list):
-                caption = "📸 Предпросмотр альбома" if i == 0 else None
+                caption = f"📸 Предпросмотр альбома (сообщение #{message_number})" if i == 0 else None
                 
                 if media_type == 'photo':
                     media_group.append(InputMediaPhoto(media=media_url, caption=caption, parse_mode='HTML'))
@@ -212,19 +257,14 @@ class MediaAlbumsMixin:
             return
         
         try:
-            # Удаляем старый альбом если был
             self.db.delete_message_media_album(message_number)
             
-            # Сохраняем новый альбом
             for position, (media_type, media_url) in enumerate(media_list, 1):
                 self.db.add_media_to_album(message_number, media_type, media_url, position)
             
-            # Очищаем черновик
             del self.media_album_drafts[user_id]
             
             await update.callback_query.answer("✅ Медиа-альбом сохранен!")
-            
-            # Возвращаемся в меню редактирования сообщения
             await self.show_message_edit(update, context, message_number)
             
         except Exception as e:
@@ -270,7 +310,6 @@ class MediaAlbumsMixin:
         draft = self.media_album_drafts[user_id]
         media_count = len(draft["media_list"])
         
-        # Статистика
         photo_count = sum(1 for m in draft["media_list"] if m[0] == 'photo')
         video_count = sum(1 for m in draft["media_list"] if m[0] == 'video')
         
@@ -311,7 +350,6 @@ class MediaAlbumsMixin:
         """Показать меню создания медиа-альбома для массовой рассылки"""
         user_id = update.effective_user.id
         
-        # Инициализируем временное хранилище для медиа
         if user_id not in self.mass_media_album_drafts:
             self.mass_media_album_drafts[user_id] = {
                 "media_list": [],
@@ -321,7 +359,6 @@ class MediaAlbumsMixin:
         draft = self.mass_media_album_drafts[user_id]
         media_count = len(draft["media_list"])
         
-        # Статистика
         photo_count = sum(1 for m in draft["media_list"] if m[0] == 'photo')
         video_count = sum(1 for m in draft["media_list"] if m[0] == 'video')
         
@@ -364,28 +401,24 @@ class MediaAlbumsMixin:
         
         draft = self.mass_media_album_drafts[user_id]
         
-        # Проверяем лимит
         if len(draft["media_list"]) >= 10:
             await update.message.reply_text("❌ Достигнут лимит в 10 файлов!")
             return
         
         media_added = []
         
-        # Обработка фото
         if update.message.photo:
             photo = update.message.photo[-1]
             file_id = photo.file_id
             draft["media_list"].append(('photo', file_id))
             media_added.append("🖼 Фото")
         
-        # Обработка видео
         elif update.message.video:
             video = update.message.video
             file_id = video.file_id
             draft["media_list"].append(('video', file_id))
             media_added.append("🎥 Видео")
         
-        # Обработка группы медиа
         elif update.message.media_group_id:
             if update.message.photo:
                 photo = update.message.photo[-1]
@@ -395,7 +428,6 @@ class MediaAlbumsMixin:
                 draft["media_list"].append(('video', update.message.video.file_id))
                 media_added.append("🎥 Видео")
         
-        # Обработка текста с URL
         elif update.message.text:
             text = update.message.text.strip()
             lines = text.split('\n')
@@ -426,7 +458,6 @@ class MediaAlbumsMixin:
             status += f"📊 Всего в альбоме: {len(draft['media_list'])}/10"
             await update.message.reply_text(status)
             
-            # Обновляем меню
             await self.show_create_mass_media_album_menu_from_context(update, context)
     
     async def show_mass_album_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -445,7 +476,6 @@ class MediaAlbumsMixin:
             return
         
         try:
-            # Отправляем предпросмотр списка
             preview_text = f"👁 <b>Предпросмотр альбома ({len(media_list)} файлов)</b>\n\n"
             for i, (media_type, media_url) in enumerate(media_list, 1):
                 icon = "🖼" if media_type == 'photo' else "🎥"
@@ -456,9 +486,6 @@ class MediaAlbumsMixin:
                 text=preview_text,
                 parse_mode='HTML'
             )
-            
-            # Отправляем реальный альбом
-            from telegram import InputMediaPhoto, InputMediaVideo
             
             media_group = []
             for i, (media_type, media_url) in enumerate(media_list):
@@ -495,7 +522,6 @@ class MediaAlbumsMixin:
             await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
             return
         
-        # Сохраняем в черновик массовой рассылки
         if user_id not in self.broadcast_drafts:
             self.broadcast_drafts[user_id] = {
                 "message_text": "",
@@ -508,12 +534,9 @@ class MediaAlbumsMixin:
         
         self.broadcast_drafts[user_id]["media_album"] = media_list.copy()
         
-        # Очищаем временный черновик медиа
         del self.mass_media_album_drafts[user_id]
         
         await update.callback_query.answer("✅ Медиа-альбом сохранен!")
-        
-        # Возвращаемся в меню массовой рассылки
         await self.show_send_all_menu(update, context)
     
     async def clear_mass_media_album_draft(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -542,7 +565,6 @@ class MediaAlbumsMixin:
         draft = self.mass_media_album_drafts[user_id]
         media_count = len(draft["media_list"])
         
-        # Статистика
         photo_count = sum(1 for m in draft["media_list"] if m[0] == 'photo')
         video_count = sum(1 for m in draft["media_list"] if m[0] == 'video')
         
