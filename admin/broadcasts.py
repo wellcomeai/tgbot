@@ -23,13 +23,20 @@ class BroadcastsMixin:
             # Получаем количество кнопок для сообщения
             buttons = self.db.get_message_buttons(msg_num)
             button_icon = f"🔘{len(buttons)}" if buttons else ""
-            photo_icon = "🖼" if photo_url else ""
-            video_icon = "🎥" if video_url else ""
+            
+            # Проверяем наличие медиа-альбома
+            album_stats = self.db.get_media_album_stats(msg_num)
+            if album_stats['total'] > 0:
+                album_icon = f"🎬{album_stats['total']}"
+            else:
+                photo_icon = "🖼" if photo_url else ""
+                video_icon = "🎥" if video_url else ""
+                album_icon = f"{photo_icon}{video_icon}"
 
             # Форматируем отображение времени
             delay_str = self.format_delay_display(delay_hours)
 
-            button_text = f"{photo_icon}{video_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
+            button_text = f"{album_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_msg_{msg_num}")])
         
         keyboard.append([InlineKeyboardButton("➕ Добавить сообщение", callback_data="add_message")])
@@ -42,6 +49,7 @@ class BroadcastsMixin:
             "В скобках указана задержка после регистрации.\n"
             "🖼 - сообщение содержит фото\n"
             "🎥 - сообщение содержит видео\n"
+            "🎬N - медиа-альбом (N файлов)\n"
             "🔘N - количество кнопок в сообщении\n\n"
             "💡 <i>Все ссылки в сообщениях автоматически получают UTM метки для отслеживания конверсий.</i>"
         )
@@ -58,12 +66,19 @@ class BroadcastsMixin:
         for msg_num, text, delay_hours, photo_url, video_url in messages:
             buttons = self.db.get_message_buttons(msg_num)
             button_icon = f"🔘{len(buttons)}" if buttons else ""
-            photo_icon = "🖼" if photo_url else ""
-            video_icon = "🎥" if video_url else ""
+            
+            # Проверяем наличие медиа-альбома
+            album_stats = self.db.get_media_album_stats(msg_num)
+            if album_stats['total'] > 0:
+                album_icon = f"🎬{album_stats['total']}"
+            else:
+                photo_icon = "🖼" if photo_url else ""
+                video_icon = "🎥" if video_url else ""
+                album_icon = f"{photo_icon}{video_icon}"
 
             delay_str = self.format_delay_display(delay_hours)
 
-            button_text = f"{photo_icon}{video_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
+            button_text = f"{album_icon}{button_icon} Сообщение {msg_num} ({delay_str})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"edit_msg_{msg_num}")])
         
         keyboard.append([InlineKeyboardButton("➕ Добавить сообщение", callback_data="add_message")])
@@ -76,6 +91,7 @@ class BroadcastsMixin:
             "В скобках указана задержка после регистрации.\n"
             "🖼 - сообщение содержит фото\n"
             "🎥 - сообщение содержит видео\n"
+            "🎬N - медиа-альбом (N файлов)\n"
             "🔘N - количество кнопок в сообщении\n\n"
             "💡 <i>Все ссылки в сообщениях автоматически получают UTM метки для отслеживания конверсий.</i>"
         )
@@ -116,19 +132,32 @@ class BroadcastsMixin:
 
         text, delay_hours, photo_url, video_url = msg_data
         buttons = self.db.get_message_buttons(message_number)
+        
+        # Проверяем наличие медиа-альбома
+        album_stats = self.db.get_media_album_stats(message_number)
+        has_album = album_stats['total'] > 0
 
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_text_{message_number}")],
-            [InlineKeyboardButton("⏰ Изменить задержку", callback_data=f"edit_delay_{message_number}")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_photo_{message_number}")],
-            [InlineKeyboardButton("🎥 Изменить видео", callback_data=f"edit_video_{message_number}")]
+            [InlineKeyboardButton("⏰ Изменить задержку", callback_data=f"edit_delay_{message_number}")]
         ]
+        
+        # Если есть медиа-альбом - показываем управление альбомом
+        if has_album:
+            keyboard.append([InlineKeyboardButton("🎬 Управление медиа-альбомом", callback_data=f"manage_album_{message_number}")])
+        else:
+            # Если альбома нет - показываем старые кнопки фото/видео
+            keyboard.append([InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_photo_{message_number}")])
+            keyboard.append([InlineKeyboardButton("🎥 Изменить видео", callback_data=f"edit_video_{message_number}")])
+            
+            if photo_url:
+                keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data=f"remove_photo_{message_number}")])
 
-        if photo_url:
-            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data=f"remove_photo_{message_number}")])
-
-        if video_url:
-            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data=f"remove_video_{message_number}")])
+            if video_url:
+                keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data=f"remove_video_{message_number}")])
+            
+            # Кнопка создания альбома
+            keyboard.append([InlineKeyboardButton("🎬 Создать медиа-альбом", callback_data=f"create_album_{message_number}")])
         
         keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data=f"manage_buttons_{message_number}")])
         keyboard.append([InlineKeyboardButton("🗑 Удалить сообщение", callback_data=f"delete_msg_{message_number}")])
@@ -142,14 +171,25 @@ class BroadcastsMixin:
                 buttons_info += f"{i}. {button_text} → {button_url}\n"
         
         delay_str = self.format_delay_display_full(delay_hours)
+        
+        # Информация о медиа
+        if has_album:
+            media_info = (
+                f"<b>Медиа-альбом:</b> {album_stats['total']} файлов "
+                f"({album_stats['photos']} фото, {album_stats['videos']} видео)\n"
+            )
+        else:
+            media_info = (
+                f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}\n"
+                f"<b>Видео:</b> {'Есть' if video_url else 'Нет'}\n"
+            )
 
         message_text = (
             f"📝 <b>Сообщение {message_number}</b>\n\n"
             f"<b>Текущий текст:</b>\n{text}\n\n"
             f"<b>Задержка:</b> {delay_str} после регистрации\n"
-            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}\n"
-            f"<b>Видео:</b> {'Есть' if video_url else 'Нет'}"
-            f"{buttons_info}\n\n"
+            f"{media_info}"
+            f"{buttons_info}\n"
             f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
         )
 
@@ -166,19 +206,32 @@ class BroadcastsMixin:
 
         text, delay_hours, photo_url, video_url = msg_data
         buttons = self.db.get_message_buttons(message_number)
+        
+        # Проверяем наличие медиа-альбома
+        album_stats = self.db.get_media_album_stats(message_number)
+        has_album = album_stats['total'] > 0
 
         keyboard = [
             [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_text_{message_number}")],
-            [InlineKeyboardButton("⏰ Изменить задержку", callback_data=f"edit_delay_{message_number}")],
-            [InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_photo_{message_number}")],
-            [InlineKeyboardButton("🎥 Изменить видео", callback_data=f"edit_video_{message_number}")]
+            [InlineKeyboardButton("⏰ Изменить задержку", callback_data=f"edit_delay_{message_number}")]
         ]
+        
+        # Если есть медиа-альбом - показываем управление альбомом
+        if has_album:
+            keyboard.append([InlineKeyboardButton("🎬 Управление медиа-альбомом", callback_data=f"manage_album_{message_number}")])
+        else:
+            # Если альбома нет - показываем старые кнопки фото/видео
+            keyboard.append([InlineKeyboardButton("🖼 Изменить фото", callback_data=f"edit_photo_{message_number}")])
+            keyboard.append([InlineKeyboardButton("🎥 Изменить видео", callback_data=f"edit_video_{message_number}")])
+            
+            if photo_url:
+                keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data=f"remove_photo_{message_number}")])
 
-        if photo_url:
-            keyboard.append([InlineKeyboardButton("❌ Удалить фото", callback_data=f"remove_photo_{message_number}")])
-
-        if video_url:
-            keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data=f"remove_video_{message_number}")])
+            if video_url:
+                keyboard.append([InlineKeyboardButton("❌ Удалить видео", callback_data=f"remove_video_{message_number}")])
+            
+            # Кнопка создания альбома
+            keyboard.append([InlineKeyboardButton("🎬 Создать медиа-альбом", callback_data=f"create_album_{message_number}")])
         
         keyboard.append([InlineKeyboardButton("🔘 Управление кнопками", callback_data=f"manage_buttons_{message_number}")])
         keyboard.append([InlineKeyboardButton("🗑 Удалить сообщение", callback_data=f"delete_msg_{message_number}")])
@@ -192,18 +245,97 @@ class BroadcastsMixin:
                 buttons_info += f"{i}. {button_text} → {button_url}\n"
         
         delay_str = self.format_delay_display_full(delay_hours)
+        
+        # Информация о медиа
+        if has_album:
+            media_info = (
+                f"<b>Медиа-альбом:</b> {album_stats['total']} файлов "
+                f"({album_stats['photos']} фото, {album_stats['videos']} видео)\n"
+            )
+        else:
+            media_info = (
+                f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}\n"
+                f"<b>Видео:</b> {'Есть' if video_url else 'Нет'}\n"
+            )
 
         message_text = (
             f"📝 <b>Сообщение {message_number}</b>\n\n"
             f"<b>Текущий текст:</b>\n{text}\n\n"
             f"<b>Задержка:</b> {delay_str} после регистрации\n"
-            f"<b>Фото:</b> {'Есть' if photo_url else 'Нет'}\n"
-            f"<b>Видео:</b> {'Есть' if video_url else 'Нет'}"
-            f"{buttons_info}\n\n"
+            f"{media_info}"
+            f"{buttons_info}\n"
             f"💡 <i>Все ссылки автоматически получают UTM метки для отслеживания.</i>"
         )
 
         await self.send_new_menu_message(context, user_id, message_text, reply_markup)
+    
+    async def show_album_management_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
+        """Показать меню управления медиа-альбомом"""
+        album_media = self.db.get_message_media_album(message_number)
+        
+        if not album_media:
+            await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
+            return
+        
+        album_stats = self.db.get_media_album_stats(message_number)
+        
+        text = (
+            f"🎬 <b>Медиа-альбом сообщения {message_number}</b>\n\n"
+            f"📊 <b>Всего файлов:</b> {album_stats['total']}\n"
+            f"🖼 <b>Фото:</b> {album_stats['photos']}\n"
+            f"🎥 <b>Видео:</b> {album_stats['videos']}\n\n"
+            f"<b>Список медиа:</b>\n"
+        )
+        
+        for i, (media_id, media_type, media_url, position) in enumerate(album_media, 1):
+            icon = "🖼" if media_type == 'photo' else "🎥"
+            text += f"{i}. {icon} {media_type.capitalize()}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("👁 Предпросмотр альбома", callback_data=f"preview_saved_album_{message_number}")],
+            [InlineKeyboardButton("🔄 Пересоздать альбом", callback_data=f"recreate_album_{message_number}")],
+            [InlineKeyboardButton("🗑 Удалить альбом", callback_data=f"delete_album_{message_number}")],
+            [InlineKeyboardButton("« Назад", callback_data=f"edit_msg_{message_number}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_saved_album_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number):
+        """Показать предпросмотр сохраненного медиа-альбома"""
+        user_id = update.effective_user.id
+        album_media = self.db.get_message_media_album(message_number)
+        
+        if not album_media:
+            await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
+            return
+        
+        try:
+            from telegram import InputMediaPhoto, InputMediaVideo
+            
+            # Получаем текст сообщения
+            msg_data = self.db.get_broadcast_message(message_number)
+            message_text = msg_data[0] if msg_data else "Предпросмотр медиа-альбома"
+            
+            media_group = []
+            for i, (media_id, media_type, media_url, position) in enumerate(album_media):
+                caption = f"📸 {message_text}" if i == 0 else None
+                
+                if media_type == 'photo':
+                    media_group.append(InputMediaPhoto(media=media_url, caption=caption, parse_mode='HTML'))
+                else:
+                    media_group.append(InputMediaVideo(media=media_url, caption=caption, parse_mode='HTML'))
+            
+            await context.bot.send_media_group(
+                chat_id=user_id,
+                media=media_group
+            )
+            
+            await update.callback_query.answer("✅ Предпросмотр отправлен!")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отправке предпросмотра сохраненного альбома: {e}")
+            await update.callback_query.answer("❌ Ошибка при отправке предпросмотра!", show_alert=True)
 
     async def show_scheduled_broadcasts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать запланированные рассылки"""
@@ -212,17 +344,23 @@ class BroadcastsMixin:
         keyboard = []
         
         if broadcasts:
-            for broadcast_id, message_text, photo_url, scheduled_time, is_sent, created_at in broadcasts:
+            for broadcast_id, message_text, photo_url, video_url, scheduled_time, is_sent, created_at in broadcasts:
                 scheduled_dt = datetime.fromisoformat(scheduled_time)
                 time_str = scheduled_dt.strftime("%d.%m %H:%M")
                 
                 # Получаем количество кнопок
                 buttons = self.db.get_scheduled_broadcast_buttons(broadcast_id)
                 button_icon = f"🔘{len(buttons)}" if buttons else ""
-                photo_icon = "🖼" if photo_url else ""
+                
+                # Проверяем медиа-альбом
+                album_stats = self.db.get_scheduled_broadcast_media_stats(broadcast_id)
+                if album_stats['total'] > 0:
+                    media_icon = f"🎬{album_stats['total']}"
+                else:
+                    media_icon = "🖼" if photo_url else ""
                 
                 short_text = message_text[:20] + "..." if len(message_text) > 20 else message_text
-                button_display = f"{photo_icon}{button_icon} {time_str}: {short_text}"
+                button_display = f"{media_icon}{button_icon} {time_str}: {short_text}"
                 keyboard.append([InlineKeyboardButton(button_display, callback_data=f"edit_scheduled_broadcast_{broadcast_id}")])
         
         keyboard.append([InlineKeyboardButton("« Назад", callback_data="admin_back")])
@@ -232,6 +370,7 @@ class BroadcastsMixin:
             "⏰ <b>Запланированные рассылки</b>\n\n"
             f"Активных рассылок: {len(broadcasts)}\n\n"
             "🖼 - сообщение с фото\n"
+            "🎬N - медиа-альбом (N файлов)\n"
             "🔘N - количество кнопок\n\n"
             "💡 <i>Все ссылки получат UTM метки для отслеживания.</i>\n\n"
             "Выберите рассылку для редактирования:"
@@ -341,6 +480,42 @@ class BroadcastsMixin:
             message_number = int(data.split("_")[2])
             self.db.update_broadcast_message(message_number, photo_url="")
             await self.show_message_edit(update, context, message_number)
+        elif data.startswith("edit_video_"):
+            message_number = int(data.split("_")[2])
+            await self.request_text_input(update, context, "broadcast_video", message_number=message_number)
+        elif data.startswith("remove_video_"):
+            message_number = int(data.split("_")[2])
+            self.db.update_broadcast_message(message_number, video_url="")
+            await self.show_message_edit(update, context, message_number)
+        
+        # Медиа-альбомы
+        elif data.startswith("create_album_"):
+            message_number = int(data.split("_")[2])
+            await self.show_create_media_album_menu(update, context, message_number)
+        elif data.startswith("manage_album_"):
+            message_number = int(data.split("_")[2])
+            await self.show_album_management_menu(update, context, message_number)
+        elif data.startswith("preview_saved_album_"):
+            message_number = int(data.split("_")[3])
+            await self.show_saved_album_preview(update, context, message_number)
+        elif data.startswith("recreate_album_"):
+            message_number = int(data.split("_")[2])
+            # Удаляем старый альбом и открываем меню создания
+            self.db.delete_message_media_album(message_number)
+            await self.show_create_media_album_menu(update, context, message_number)
+        elif data.startswith("delete_album_"):
+            message_number = int(data.split("_")[2])
+            await self.delete_saved_media_album(update, context, message_number)
+        elif data.startswith("preview_album_"):
+            message_number = int(data.split("_")[2])
+            await self.show_album_preview(update, context, message_number)
+        elif data.startswith("save_album_"):
+            message_number = int(data.split("_")[2])
+            await self.save_media_album(update, context, message_number)
+        elif data.startswith("clear_album_"):
+            message_number = int(data.split("_")[2])
+            await self.clear_media_album_draft(update, context, message_number)
+        
         elif data.startswith("delete_msg_"):
             message_number = int(data.split("_")[2])
             # Подтверждение удаления
@@ -358,6 +533,8 @@ class BroadcastsMixin:
         elif data.startswith("confirm_delete_"):
             message_number = int(data.split("_")[2])
             self.db.delete_broadcast_message(message_number)
+            # Удаляем и медиа-альбом если есть
+            self.db.delete_message_media_album(message_number)
             await self.show_broadcast_menu(update, context)
         elif data == "add_message":
             # Инициализация для добавления сообщения
