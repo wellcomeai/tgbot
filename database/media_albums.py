@@ -1,822 +1,335 @@
 """
-Функциональность управления медиа-альбомами для админ-панели
+Media albums module for database operations
 """
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
-from datetime import datetime
+import sqlite3
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class MediaAlbumsMixin:
-    """Миксин для работы с медиа-альбомами"""
-    
+    """Mixin for media albums database operations"""
+
     # === ОСНОВНЫЕ СООБЩЕНИЯ РАССЫЛКИ ===
-    
-    async def show_create_media_album_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
-        """Показать меню создания медиа-альбома для сообщения"""
-        user_id = update.effective_user.id
-        
-        # Инициализируем временное хранилище для медиа
-        if user_id not in self.media_album_drafts:
-            self.media_album_drafts[user_id] = {
-                "message_number": message_number,
-                "media_list": [],  # [(media_type, media_url), ...]
-                "created_at": datetime.now()
-            }
-        
-        draft = self.media_album_drafts[user_id]
-        media_count = len(draft["media_list"])
-        
-        # Статистика
-        photo_count = sum(1 for m in draft["media_list"] if m[0] == 'photo')
-        video_count = sum(1 for m in draft["media_list"] if m[0] == 'video')
-        
-        text = (
-            f"🎬 <b>Создание медиа-альбома</b>\n"
-            f"Сообщение #{message_number}\n\n"
-            f"📊 <b>Текущий альбом:</b> {media_count}/10 файлов\n"
-            f"🖼 Фото: {photo_count}\n"
-            f"🎥 Видео: {video_count}\n\n"
-        )
-        
-        if media_count == 0:
-            text += (
-                "📸 <b>Отправьте файлы для альбома:</b>\n\n"
-                "• Загрузите фото/видео напрямую в бота\n"
-                "• Или отправьте ссылки (по одной на строку)\n\n"
-                "💡 <i>Можно миксовать фото и видео (до 10 файлов)</i>"
-            )
-        else:
-            text += "✅ <b>Медиа добавлены!</b>\n\nДобавьте еще или сохраните альбом."
-        
-        keyboard = []
-        
-        if media_count > 0:
-            keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data=f"preview_album_{message_number}")])
-            keyboard.append([InlineKeyboardButton("✅ Сохранить альбом", callback_data=f"save_album_{message_number}")])
-            keyboard.append([InlineKeyboardButton("🗑 Очистить всё", callback_data=f"clear_album_{message_number}")])
-        
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data=f"edit_msg_{message_number}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await self.safe_edit_or_send_message(update, context, text, reply_markup)
-    
-    async def show_manage_media_album_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
-        """Показать меню управления существующим медиа-альбомом"""
-        # Получаем сохраненный альбом из БД
-        media_album = self.db.get_message_media_album(message_number)
-        stats = self.db.get_media_album_stats(message_number)
-        
-        text = (
-            f"🎬 <b>Управление медиа-альбомом</b>\n"
-            f"Сообщение #{message_number}\n\n"
-            f"📊 <b>Текущий альбом:</b> {stats['total']} файлов\n"
-            f"🖼 Фото: {stats['photos']}\n"
-            f"🎥 Видео: {stats['videos']}\n\n"
-        )
-        
-        if stats['total'] == 0:
-            text += "ℹ️ Альбом пустой. Создайте новый альбом."
-        else:
-            text += "✅ Альбом сохранен. Вы можете просмотреть, пересоздать или удалить его."
-        
-        keyboard = []
-        
-        if stats['total'] > 0:
-            keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data=f"preview_album_{message_number}")])
-            keyboard.append([InlineKeyboardButton("🔄 Пересоздать", callback_data=f"create_album_{message_number}")])
-            keyboard.append([InlineKeyboardButton("🗑 Удалить альбом", callback_data=f"delete_album_{message_number}")])
-        else:
-            keyboard.append([InlineKeyboardButton("➕ Создать альбом", callback_data=f"create_album_{message_number}")])
-        
-        keyboard.append([InlineKeyboardButton("❌ Назад", callback_data=f"edit_msg_{message_number}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await self.safe_edit_or_send_message(update, context, text, reply_markup)
-    
-    async def show_media_album_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
+
+    def get_message_media_album(self, message_number):
         """
-        Показать предпросмотр медиа-альбома (alias для show_album_preview)
-        Этот метод вызывается из handlers.py
+        Получение медиа-альбома для сообщения рассылки
+        
+        Returns:
+            List[Tuple]: [(id, media_type, media_url, position), ...]
+            Отсортировано по position
         """
-        await self.show_album_preview(update, context, message_number)
-    
-    async def handle_media_album_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка загруженных медиа или URL для альбома"""
-        user_id = update.effective_user.id
-        
-        if user_id not in self.media_album_drafts:
-            return
-        
-        draft = self.media_album_drafts[user_id]
-        message_number = draft["message_number"]
-        
-        # Проверяем лимит
-        if len(draft["media_list"]) >= 10:
-            await update.message.reply_text("❌ Достигнут лимит в 10 файлов!")
-            return
-        
-        media_added = []
-        
-        # Обработка фото
-        if update.message.photo:
-            photo = update.message.photo[-1]  # Берем самое большое разрешение
-            file_id = photo.file_id
-            draft["media_list"].append(('photo', file_id))
-            media_added.append("🖼 Фото")
-            logger.info(f"Добавлено фото в черновик альбома для сообщения {message_number}")
-        
-        # Обработка видео
-        elif update.message.video:
-            video = update.message.video
-            file_id = video.file_id
-            draft["media_list"].append(('video', file_id))
-            media_added.append("🎥 Видео")
-            logger.info(f"Добавлено видео в черновик альбома для сообщения {message_number}")
-        
-        # Обработка группы медиа (album)
-        elif update.message.media_group_id:
-            # Обрабатываем группу медиа
-            if update.message.photo:
-                photo = update.message.photo[-1]
-                draft["media_list"].append(('photo', photo.file_id))
-                media_added.append("🖼 Фото")
-            elif update.message.video:
-                draft["media_list"].append(('video', update.message.video.file_id))
-                media_added.append("🎥 Видео")
-        
-        # Обработка текста с URL
-        elif update.message.text:
-            text = update.message.text.strip()
-            lines = text.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                if len(draft["media_list"]) >= 10:
-                    await update.message.reply_text("❌ Достигнут лимит в 10 файлов!")
-                    break
-                
-                if line.startswith('http://') or line.startswith('https://'):
-                    # Определяем тип по расширению
-                    lower_url = line.lower()
-                    if any(ext in lower_url for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
-                        draft["media_list"].append(('photo', line))
-                        media_added.append("🖼 Фото (URL)")
-                    elif any(ext in lower_url for ext in ['.mp4', '.mov', '.avi', '.mkv']):
-                        draft["media_list"].append(('video', line))
-                        media_added.append("🎥 Видео (URL)")
-                    else:
-                        # По умолчанию считаем фото
-                        draft["media_list"].append(('photo', line))
-                        media_added.append("🖼 Фото (URL)")
-        
-        if media_added:
-            status = f"✅ Добавлено: {', '.join(media_added)}\n\n"
-            status += f"📊 Всего в альбоме: {len(draft['media_list'])}/10"
-            await update.message.reply_text(status)
-            
-            # Обновляем меню
-            await self.show_create_media_album_menu_from_context(update, context, message_number)
-    
-    async def show_album_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
-        """Показать предпросмотр медиа-альбома"""
-        user_id = update.effective_user.id
-        
-        # Проверяем сначала черновик, потом сохраненный альбом
-        if user_id in self.media_album_drafts:
-            draft = self.media_album_drafts[user_id]
-            media_list = draft["media_list"]
-            source = "черновика"
-        else:
-            # Загружаем из БД
-            media_album = self.db.get_message_media_album(message_number)
-            media_list = [(media_type, media_url) for _, media_type, media_url, _ in media_album]
-            source = "базы данных"
-        
-        if not media_list:
-            await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
-            return
-        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
         try:
-            # Отправляем предпросмотр списка
-            preview_text = f"👁 <b>Предпросмотр альбома ({len(media_list)} файлов из {source})</b>\n\n"
-            for i, (media_type, media_url) in enumerate(media_list, 1):
-                icon = "🖼" if media_type == 'photo' else "🎥"
-                preview_text += f"{i}. {icon} {media_type.capitalize()}\n"
+            cursor.execute('''
+                SELECT id, media_type, media_url, position
+                FROM message_media_albums
+                WHERE message_number = ?
+                ORDER BY position ASC
+            ''', (message_number,))
             
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=preview_text,
-                parse_mode='HTML'
-            )
-            
-            # Отправляем реальный альбом для предпросмотра
-            from telegram import InputMediaPhoto, InputMediaVideo
-            
-            media_group = []
-            for i, (media_type, media_url) in enumerate(media_list):
-                caption = f"📸 Предпросмотр альбома (сообщение #{message_number})" if i == 0 else None
-                
-                if media_type == 'photo':
-                    media_group.append(InputMediaPhoto(media=media_url, caption=caption, parse_mode='HTML'))
-                else:
-                    media_group.append(InputMediaVideo(media=media_url, caption=caption, parse_mode='HTML'))
-            
-            await context.bot.send_media_group(
-                chat_id=user_id,
-                media=media_group
-            )
-            
-            await update.callback_query.answer("✅ Предпросмотр отправлен!")
-            
+            media_list = cursor.fetchall()
+            return media_list
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке предпросмотра альбома: {e}")
-            await update.callback_query.answer("❌ Ошибка при отправке предпросмотра!", show_alert=True)
-    
-    async def save_media_album(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
-        """Сохранение медиа-альбома в базу данных"""
-        user_id = update.effective_user.id
+            logger.error(f"❌ Ошибка при получении медиа-альбома для сообщения {message_number}: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
+    def add_media_to_album(self, message_number, media_type, media_url, position):
+        """
+        Добавление медиа в альбом сообщения
         
-        if user_id not in self.media_album_drafts:
-            await update.callback_query.answer("❌ Черновик не найден!", show_alert=True)
-            return
+        Args:
+            message_number: номер сообщения
+            media_type: 'photo' или 'video'
+            media_url: URL или file_id медиа
+            position: порядковый номер (1-10)
         
-        draft = self.media_album_drafts[user_id]
-        media_list = draft["media_list"]
-        
-        if not media_list:
-            await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
-            return
-        
+        Returns:
+            int: id добавленного медиа или None при ошибке
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
         try:
-            # Удаляем старый альбом если был
-            self.db.delete_message_media_album(message_number)
-            
-            # Сохраняем новый альбом
-            for position, (media_type, media_url) in enumerate(media_list, 1):
-                self.db.add_media_to_album(message_number, media_type, media_url, position)
-            
-            # Очищаем черновик
-            del self.media_album_drafts[user_id]
-            
-            await update.callback_query.answer("✅ Медиа-альбом сохранен!")
-            
-            # Возвращаемся в меню редактирования сообщения
-            await self.show_message_edit(update, context, message_number)
-            
+            cursor.execute('''
+                INSERT INTO message_media_albums (message_number, media_type, media_url, position)
+                VALUES (?, ?, ?, ?)
+            ''', (message_number, media_type, media_url, position))
+
+            media_id = cursor.lastrowid
+            conn.commit()
+            logger.info(f"✅ Добавлено медиа #{media_id} ({media_type}) в альбом сообщения {message_number}")
+            return media_id
         except Exception as e:
-            logger.error(f"❌ Ошибка при сохранении медиа-альбома: {e}")
-            await update.callback_query.answer("❌ Ошибка при сохранении!", show_alert=True)
-    
-    async def clear_media_album_draft(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
-        """Очистить черновик медиа-альбома"""
-        user_id = update.effective_user.id
+            logger.error(f"❌ Ошибка при добавлении медиа в альбом сообщения {message_number}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return None
+        finally:
+            if conn:
+                conn.close()
+
+    def delete_message_media_album(self, message_number):
+        """
+        Удаление всего медиа-альбома сообщения
         
-        if user_id in self.media_album_drafts:
-            self.media_album_drafts[user_id] = {
-                "message_number": message_number,
-                "media_list": [],
-                "created_at": datetime.now()
+        Args:
+            message_number: номер сообщения
+        
+        Returns:
+            int: количество удаленных медиа
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                DELETE FROM message_media_albums
+                WHERE message_number = ?
+            ''', (message_number,))
+
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                logger.info(f"🗑️ Удален медиа-альбом сообщения {message_number} ({deleted_count} файлов)")
+            
+            return deleted_count
+        except Exception as e:
+            logger.error(f"❌ Ошибка при удалении медиа-альбома сообщения {message_number}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return 0
+        finally:
+            if conn:
+                conn.close()
+
+    def has_media_album(self, message_number):
+        """
+        Проверка наличия медиа-альбома у сообщения
+        
+        Returns:
+            bool: True если есть хотя бы одно медиа
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT COUNT(*) FROM message_media_albums
+                WHERE message_number = ?
+            ''', (message_number,))
+            
+            count = cursor.fetchone()[0]
+            return count > 0
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке медиа-альбома сообщения {message_number}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
+
+    def get_media_album_stats(self, message_number):
+        """
+        Получение статистики по медиа-альбому
+        
+        Returns:
+            dict: {'total': int, 'photos': int, 'videos': int}
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN media_type = 'photo' THEN 1 ELSE 0 END) as photos,
+                    SUM(CASE WHEN media_type = 'video' THEN 1 ELSE 0 END) as videos
+                FROM message_media_albums
+                WHERE message_number = ?
+            ''', (message_number,))
+            
+            result = cursor.fetchone()
+            return {
+                'total': result[0] or 0,
+                'photos': result[1] or 0,
+                'videos': result[2] or 0
             }
-        
-        await update.callback_query.answer("✅ Альбом очищен!")
-        await self.show_create_media_album_menu(update, context, message_number)
-    
-    async def delete_saved_media_album(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
-        """Удалить сохраненный медиа-альбом из базы"""
-        deleted_count = self.db.delete_message_media_album(message_number)
-        
-        if deleted_count > 0:
-            await update.callback_query.answer(f"✅ Удалено {deleted_count} файлов из альбома!")
-        else:
-            await update.callback_query.answer("ℹ️ Альбом уже пуст")
-        
-        await self.show_message_edit(update, context, message_number)
-    
-    async def show_create_media_album_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, message_number: int):
-        """Отправить НОВОЕ сообщение меню создания медиа-альбома"""
-        user_id = update.effective_user.id
-        
-        if user_id not in self.media_album_drafts:
-            self.media_album_drafts[user_id] = {
-                "message_number": message_number,
-                "media_list": [],
-                "created_at": datetime.now()
-            }
-        
-        draft = self.media_album_drafts[user_id]
-        media_count = len(draft["media_list"])
-        
-        # Статистика
-        photo_count = sum(1 for m in draft["media_list"] if m[0] == 'photo')
-        video_count = sum(1 for m in draft["media_list"] if m[0] == 'video')
-        
-        text = (
-            f"🎬 <b>Создание медиа-альбома</b>\n"
-            f"Сообщение #{message_number}\n\n"
-            f"📊 <b>Текущий альбом:</b> {media_count}/10 файлов\n"
-            f"🖼 Фото: {photo_count}\n"
-            f"🎥 Видео: {video_count}\n\n"
-        )
-        
-        if media_count == 0:
-            text += (
-                "📸 <b>Отправьте файлы для альбома:</b>\n\n"
-                "• Загрузите фото/видео напрямую в бота\n"
-                "• Или отправьте ссылки (по одной на строку)\n\n"
-                "💡 <i>Можно миксовать фото и видео (до 10 файлов)</i>"
-            )
-        else:
-            text += "✅ <b>Медиа добавлены!</b>\n\nДобавьте еще или сохраните альбом."
-        
-        keyboard = []
-        
-        if media_count > 0:
-            keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data=f"preview_album_{message_number}")])
-            keyboard.append([InlineKeyboardButton("✅ Сохранить альбом", callback_data=f"save_album_{message_number}")])
-            keyboard.append([InlineKeyboardButton("🗑 Очистить всё", callback_data=f"clear_album_{message_number}")])
-        
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data=f"edit_msg_{message_number}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await self.send_new_menu_message(context, user_id, text, reply_markup)
-    
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении статистики медиа-альбома сообщения {message_number}: {e}")
+            return {'total': 0, 'photos': 0, 'videos': 0}
+        finally:
+            if conn:
+                conn.close()
+
     # === МАССОВЫЕ РАССЫЛКИ ===
-    
-    async def show_create_mass_media_album_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE, is_paid: bool = False):
-        """Показать меню создания медиа-альбома для массовой рассылки"""
-        user_id = update.effective_user.id
+
+    def get_scheduled_broadcast_media_album(self, broadcast_id):
+        """
+        Получение медиа-альбома для запланированной массовой рассылки
         
-        # Инициализируем временное хранилище для медиа
-        if user_id not in self.mass_media_album_drafts:
-            self.mass_media_album_drafts[user_id] = {
-                "media_list": [],
-                "created_at": datetime.now(),
-                "is_paid": is_paid
-            }
-        
-        draft = self.mass_media_album_drafts[user_id]
-        draft["is_paid"] = is_paid  # Обновляем флаг
-        media_count = len(draft["media_list"])
-        
-        # Статистика
-        photo_count = sum(1 for m in draft["media_list"] if m[0] == 'photo')
-        video_count = sum(1 for m in draft["media_list"] if m[0] == 'video')
-        
-        broadcast_type = "платной рассылки" if is_paid else "рассылки"
-        
-        text = (
-            f"🎬 <b>Создание медиа-альбома для {broadcast_type}</b>\n\n"
-            f"📊 <b>Текущий альбом:</b> {media_count}/10 файлов\n"
-            f"🖼 Фото: {photo_count}\n"
-            f"🎥 Видео: {video_count}\n\n"
-        )
-        
-        if media_count == 0:
-            text += (
-                "📸 <b>Отправьте файлы для альбома:</b>\n\n"
-                "• Загрузите фото/видео напрямую в бота\n"
-                "• Или отправьте ссылки (по одной на строку)\n\n"
-                "💡 <i>Можно миксовать фото и видео (до 10 файлов)</i>"
-            )
-        else:
-            text += "✅ <b>Медиа добавлены!</b>\n\nДобавьте еще или сохраните альбом."
-        
-        keyboard = []
-        
-        if media_count > 0:
-            if is_paid:
-                keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data="preview_paid_mass_album")])
-                keyboard.append([InlineKeyboardButton("✅ Сохранить альбом", callback_data="save_paid_mass_album")])
-                keyboard.append([InlineKeyboardButton("🗑 Очистить всё", callback_data="clear_paid_mass_album")])
-            else:
-                keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data="preview_mass_album")])
-                keyboard.append([InlineKeyboardButton("✅ Сохранить альбом", callback_data="save_mass_album")])
-                keyboard.append([InlineKeyboardButton("🗑 Очистить всё", callback_data="clear_mass_album")])
-        
-        cancel_callback = "paid_send_all" if is_paid else "admin_send_all"
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data=cancel_callback)])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await self.safe_edit_or_send_message(update, context, text, reply_markup)
-    
-    async def show_mass_album_management_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню управления медиа-альбомом для массовой рассылки"""
-        user_id = update.effective_user.id
-        
-        # Проверяем наличие альбома в черновике
-        has_album = (user_id in self.broadcast_drafts and 
-                    self.broadcast_drafts[user_id].get("media_album"))
-        
-        text = "🎬 <b>Управление медиа-альбомом рассылки</b>\n\n"
-        
-        if has_album:
-            media_count = len(self.broadcast_drafts[user_id]["media_album"])
-            text += f"📊 Альбом содержит: {media_count} файлов\n\n"
-            text += "Вы можете просмотреть, пересоздать или удалить альбом."
-        else:
-            text += "ℹ️ Альбом не создан. Создайте новый альбом для рассылки."
-        
-        keyboard = []
-        
-        if has_album:
-            keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data="preview_mass_album")])
-            keyboard.append([InlineKeyboardButton("🔄 Пересоздать", callback_data="mass_recreate_album")])
-            keyboard.append([InlineKeyboardButton("🗑 Удалить альбом", callback_data="mass_delete_album")])
-        else:
-            keyboard.append([InlineKeyboardButton("➕ Создать альбом", callback_data="mass_create_album")])
-        
-        keyboard.append([InlineKeyboardButton("❌ Назад", callback_data="admin_send_all")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await self.safe_edit_or_send_message(update, context, text, reply_markup)
-    
-    async def show_paid_mass_album_management_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать меню управления медиа-альбомом для платной массовой рассылки"""
-        user_id = update.effective_user.id
-        
-        # Проверяем наличие альбома в черновике
-        has_album = (user_id in self.broadcast_drafts and 
-                    self.broadcast_drafts[user_id].get("media_album") and
-                    self.broadcast_drafts[user_id].get("is_paid_broadcast"))
-        
-        text = "🎬 <b>Управление медиа-альбомом платной рассылки</b>\n\n"
-        
-        if has_album:
-            media_count = len(self.broadcast_drafts[user_id]["media_album"])
-            text += f"📊 Альбом содержит: {media_count} файлов\n\n"
-            text += "Вы можете просмотреть, пересоздать или удалить альбом."
-        else:
-            text += "ℹ️ Альбом не создан. Создайте новый альбом для платной рассылки."
-        
-        keyboard = []
-        
-        if has_album:
-            keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data="preview_paid_mass_album")])
-            keyboard.append([InlineKeyboardButton("🔄 Пересоздать", callback_data="paid_mass_recreate_album")])
-            keyboard.append([InlineKeyboardButton("🗑 Удалить альбом", callback_data="paid_mass_delete_album")])
-        else:
-            keyboard.append([InlineKeyboardButton("➕ Создать альбом", callback_data="paid_mass_create_album")])
-        
-        keyboard.append([InlineKeyboardButton("❌ Назад", callback_data="paid_send_all")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await self.safe_edit_or_send_message(update, context, text, reply_markup)
-    
-    async def show_paid_mass_album_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать предпросмотр медиа-альбома для платной массовой рассылки"""
-        user_id = update.effective_user.id
-        
-        # Проверяем сначала черновик, потом временное хранилище
-        if user_id in self.broadcast_drafts and self.broadcast_drafts[user_id].get("media_album"):
-            media_list = self.broadcast_drafts[user_id]["media_album"]
-            source = "черновика рассылки"
-        elif user_id in self.mass_media_album_drafts:
-            draft = self.mass_media_album_drafts[user_id]
-            media_list = draft["media_list"]
-            source = "временного хранилища"
-        else:
-            await update.callback_query.answer("❌ Альбом не найден!", show_alert=True)
-            return
-        
-        if not media_list:
-            await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
-            return
-        
+        Returns:
+            List[Tuple]: [(id, media_type, media_url, position), ...]
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
         try:
-            # Отправляем предпросмотр списка
-            preview_text = f"👁 <b>Предпросмотр альбома платной рассылки ({len(media_list)} файлов)</b>\n\n"
-            for i, (media_type, media_url) in enumerate(media_list, 1):
-                icon = "🖼" if media_type == 'photo' else "🎥"
-                preview_text += f"{i}. {icon} {media_type.capitalize()}\n"
+            cursor.execute('''
+                SELECT id, media_type, media_url, position
+                FROM scheduled_broadcast_media
+                WHERE broadcast_id = ?
+                ORDER BY position ASC
+            ''', (broadcast_id,))
             
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=preview_text,
-                parse_mode='HTML'
-            )
-            
-            # Отправляем реальный альбом
-            from telegram import InputMediaPhoto, InputMediaVideo
-            
-            media_group = []
-            for i, (media_type, media_url) in enumerate(media_list):
-                caption = "📸 Предпросмотр альбома платной рассылки" if i == 0 else None
-                
-                if media_type == 'photo':
-                    media_group.append(InputMediaPhoto(media=media_url, caption=caption, parse_mode='HTML'))
-                else:
-                    media_group.append(InputMediaVideo(media=media_url, caption=caption, parse_mode='HTML'))
-            
-            await context.bot.send_media_group(
-                chat_id=user_id,
-                media=media_group
-            )
-            
-            await update.callback_query.answer("✅ Предпросмотр отправлен!")
-            
+            media_list = cursor.fetchall()
+            return media_list
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке предпросмотра альбома: {e}")
-            await update.callback_query.answer("❌ Ошибка при отправке предпросмотра!", show_alert=True)
-    
-    async def save_paid_mass_media_album(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Сохранение медиа-альбома для платной массовой рассылки"""
-        user_id = update.effective_user.id
+            logger.error(f"❌ Ошибка при получении медиа-альбома для рассылки {broadcast_id}: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
+
+    def add_scheduled_broadcast_media(self, broadcast_id, media_type, media_url, position):
+        """
+        Добавление медиа в альбом запланированной рассылки
         
-        if user_id not in self.mass_media_album_drafts:
-            await update.callback_query.answer("❌ Черновик не найден!", show_alert=True)
-            return
+        Args:
+            broadcast_id: id рассылки
+            media_type: 'photo' или 'video'
+            media_url: URL или file_id медиа
+            position: порядковый номер (1-10)
         
-        draft = self.mass_media_album_drafts[user_id]
-        media_list = draft["media_list"]
-        
-        if not media_list:
-            await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
-            return
-        
-        # Сохраняем в черновик платной рассылки
-        if user_id not in self.broadcast_drafts:
-            self.broadcast_drafts[user_id] = {
-                "message_text": "",
-                "photo_data": None,
-                "video_data": None,
-                "buttons": [],
-                "scheduled_hours": None,
-                "created_at": datetime.now(),
-                "is_paid_broadcast": True
-            }
-        
-        self.broadcast_drafts[user_id]["media_album"] = media_list.copy()
-        self.broadcast_drafts[user_id]["is_paid_broadcast"] = True
-        
-        # Очищаем временный черновик медиа
-        del self.mass_media_album_drafts[user_id]
-        
-        await update.callback_query.answer("✅ Медиа-альбом сохранен!")
-        
-        # Возвращаемся в меню платной массовой рассылки
-        await self.show_paid_send_all_menu(update, context)
-    
-    async def clear_paid_mass_media_album_draft(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Очистить черновик медиа-альбома для платной массовой рассылки"""
-        user_id = update.effective_user.id
-        
-        if user_id in self.mass_media_album_drafts:
-            self.mass_media_album_drafts[user_id] = {
-                "media_list": [],
-                "created_at": datetime.now(),
-                "is_paid": True
-            }
-        
-        await update.callback_query.answer("✅ Альбом очищен!")
-        await self.show_create_mass_media_album_menu(update, context, is_paid=True)
-    
-    async def handle_mass_media_album_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка загруженных медиа или URL для массовой рассылки"""
-        user_id = update.effective_user.id
-        
-        if user_id not in self.mass_media_album_drafts:
-            return
-        
-        draft = self.mass_media_album_drafts[user_id]
-        is_paid = draft.get("is_paid", False)
-        
-        # Проверяем лимит
-        if len(draft["media_list"]) >= 10:
-            await update.message.reply_text("❌ Достигнут лимит в 10 файлов!")
-            return
-        
-        media_added = []
-        
-        # Обработка фото
-        if update.message.photo:
-            photo = update.message.photo[-1]
-            file_id = photo.file_id
-            draft["media_list"].append(('photo', file_id))
-            media_added.append("🖼 Фото")
-        
-        # Обработка видео
-        elif update.message.video:
-            video = update.message.video
-            file_id = video.file_id
-            draft["media_list"].append(('video', file_id))
-            media_added.append("🎥 Видео")
-        
-        # Обработка группы медиа
-        elif update.message.media_group_id:
-            if update.message.photo:
-                photo = update.message.photo[-1]
-                draft["media_list"].append(('photo', photo.file_id))
-                media_added.append("🖼 Фото")
-            elif update.message.video:
-                draft["media_list"].append(('video', update.message.video.file_id))
-                media_added.append("🎥 Видео")
-        
-        # Обработка текста с URL
-        elif update.message.text:
-            text = update.message.text.strip()
-            lines = text.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                if len(draft["media_list"]) >= 10:
-                    await update.message.reply_text("❌ Достигнут лимит в 10 файлов!")
-                    break
-                
-                if line.startswith('http://') or line.startswith('https://'):
-                    lower_url = line.lower()
-                    if any(ext in lower_url for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
-                        draft["media_list"].append(('photo', line))
-                        media_added.append("🖼 Фото (URL)")
-                    elif any(ext in lower_url for ext in ['.mp4', '.mov', '.avi', '.mkv']):
-                        draft["media_list"].append(('video', line))
-                        media_added.append("🎥 Видео (URL)")
-                    else:
-                        draft["media_list"].append(('photo', line))
-                        media_added.append("🖼 Фото (URL)")
-        
-        if media_added:
-            status = f"✅ Добавлено: {', '.join(media_added)}\n\n"
-            status += f"📊 Всего в альбоме: {len(draft['media_list'])}/10"
-            await update.message.reply_text(status)
-            
-            # Обновляем меню
-            await self.show_create_mass_media_album_menu_from_context(update, context, is_paid)
-    
-    async def show_mass_album_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать предпросмотр медиа-альбома для массовой рассылки"""
-        user_id = update.effective_user.id
-        
-        # Проверяем сначала черновик, потом временное хранилище
-        if user_id in self.broadcast_drafts and self.broadcast_drafts[user_id].get("media_album"):
-            media_list = self.broadcast_drafts[user_id]["media_album"]
-            source = "черновика рассылки"
-        elif user_id in self.mass_media_album_drafts:
-            draft = self.mass_media_album_drafts[user_id]
-            media_list = draft["media_list"]
-            source = "временного хранилища"
-        else:
-            await update.callback_query.answer("❌ Альбом не найден!", show_alert=True)
-            return
-        
-        if not media_list:
-            await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
-            return
-        
+        Returns:
+            int: id добавленного медиа или None при ошибке
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
         try:
-            # Отправляем предпросмотр списка
-            preview_text = f"👁 <b>Предпросмотр альбома ({len(media_list)} файлов)</b>\n\n"
-            for i, (media_type, media_url) in enumerate(media_list, 1):
-                icon = "🖼" if media_type == 'photo' else "🎥"
-                preview_text += f"{i}. {icon} {media_type.capitalize()}\n"
-            
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=preview_text,
-                parse_mode='HTML'
-            )
-            
-            # Отправляем реальный альбом
-            from telegram import InputMediaPhoto, InputMediaVideo
-            
-            media_group = []
-            for i, (media_type, media_url) in enumerate(media_list):
-                caption = "📸 Предпросмотр альбома рассылки" if i == 0 else None
-                
-                if media_type == 'photo':
-                    media_group.append(InputMediaPhoto(media=media_url, caption=caption, parse_mode='HTML'))
-                else:
-                    media_group.append(InputMediaVideo(media=media_url, caption=caption, parse_mode='HTML'))
-            
-            await context.bot.send_media_group(
-                chat_id=user_id,
-                media=media_group
-            )
-            
-            await update.callback_query.answer("✅ Предпросмотр отправлен!")
-            
+            cursor.execute('''
+                INSERT INTO scheduled_broadcast_media (broadcast_id, media_type, media_url, position)
+                VALUES (?, ?, ?, ?)
+            ''', (broadcast_id, media_type, media_url, position))
+
+            media_id = cursor.lastrowid
+            conn.commit()
+            logger.info(f"✅ Добавлено медиа #{media_id} ({media_type}) в альбом рассылки {broadcast_id}")
+            return media_id
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке предпросмотра альбома: {e}")
-            await update.callback_query.answer("❌ Ошибка при отправке предпросмотра!", show_alert=True)
-    
-    async def save_mass_media_album(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Сохранение медиа-альбома для массовой рассылки в черновик"""
-        user_id = update.effective_user.id
+            logger.error(f"❌ Ошибка при добавлении медиа в альбом рассылки {broadcast_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return None
+        finally:
+            if conn:
+                conn.close()
+
+    def delete_scheduled_broadcast_media_album(self, broadcast_id):
+        """
+        Удаление всего медиа-альбома запланированной рассылки
         
-        if user_id not in self.mass_media_album_drafts:
-            await update.callback_query.answer("❌ Черновик не найден!", show_alert=True)
-            return
+        Args:
+            broadcast_id: id рассылки
         
-        draft = self.mass_media_album_drafts[user_id]
-        media_list = draft["media_list"]
+        Returns:
+            int: количество удаленных медиа
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                DELETE FROM scheduled_broadcast_media
+                WHERE broadcast_id = ?
+            ''', (broadcast_id,))
+
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                logger.info(f"🗑️ Удален медиа-альбом рассылки {broadcast_id} ({deleted_count} файлов)")
+            
+            return deleted_count
+        except Exception as e:
+            logger.error(f"❌ Ошибка при удалении медиа-альбома рассылки {broadcast_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return 0
+        finally:
+            if conn:
+                conn.close()
+
+    def has_scheduled_broadcast_media_album(self, broadcast_id):
+        """
+        Проверка наличия медиа-альбома у запланированной рассылки
         
-        if not media_list:
-            await update.callback_query.answer("❌ Альбом пустой!", show_alert=True)
-            return
+        Returns:
+            bool: True если есть хотя бы одно медиа
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT COUNT(*) FROM scheduled_broadcast_media
+                WHERE broadcast_id = ?
+            ''', (broadcast_id,))
+            
+            count = cursor.fetchone()[0]
+            return count > 0
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке медиа-альбома рассылки {broadcast_id}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
+
+    def get_scheduled_broadcast_media_stats(self, broadcast_id):
+        """
+        Получение статистики по медиа-альбому запланированной рассылки
         
-        # Сохраняем в черновик массовой рассылки
-        if user_id not in self.broadcast_drafts:
-            self.broadcast_drafts[user_id] = {
-                "message_text": "",
-                "photo_data": None,
-                "video_data": None,
-                "buttons": [],
-                "scheduled_hours": None,
-                "created_at": datetime.now()
+        Returns:
+            dict: {'total': int, 'photos': int, 'videos': int}
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN media_type = 'photo' THEN 1 ELSE 0 END) as photos,
+                    SUM(CASE WHEN media_type = 'video' THEN 1 ELSE 0 END) as videos
+                FROM scheduled_broadcast_media
+                WHERE broadcast_id = ?
+            ''', (broadcast_id,))
+            
+            result = cursor.fetchone()
+            return {
+                'total': result[0] or 0,
+                'photos': result[1] or 0,
+                'videos': result[2] or 0
             }
-        
-        self.broadcast_drafts[user_id]["media_album"] = media_list.copy()
-        
-        # Очищаем временный черновик медиа
-        del self.mass_media_album_drafts[user_id]
-        
-        await update.callback_query.answer("✅ Медиа-альбом сохранен!")
-        
-        # Возвращаемся в меню массовой рассылки
-        await self.show_send_all_menu(update, context)
-    
-    async def clear_mass_media_album_draft(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Очистить черновик медиа-альбома для массовой рассылки"""
-        user_id = update.effective_user.id
-        
-        if user_id in self.mass_media_album_drafts:
-            is_paid = self.mass_media_album_drafts[user_id].get("is_paid", False)
-            self.mass_media_album_drafts[user_id] = {
-                "media_list": [],
-                "created_at": datetime.now(),
-                "is_paid": is_paid
-            }
-        
-        await update.callback_query.answer("✅ Альбом очищен!")
-        await self.show_create_mass_media_album_menu(update, context, is_paid=is_paid if user_id in self.mass_media_album_drafts else False)
-    
-    async def show_create_mass_media_album_menu_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, is_paid: bool = False):
-        """Отправить НОВОЕ сообщение меню создания медиа-альбома для массовой рассылки"""
-        user_id = update.effective_user.id
-        
-        if user_id not in self.mass_media_album_drafts:
-            self.mass_media_album_drafts[user_id] = {
-                "media_list": [],
-                "created_at": datetime.now(),
-                "is_paid": is_paid
-            }
-        
-        draft = self.mass_media_album_drafts[user_id]
-        media_count = len(draft["media_list"])
-        
-        # Статистика
-        photo_count = sum(1 for m in draft["media_list"] if m[0] == 'photo')
-        video_count = sum(1 for m in draft["media_list"] if m[0] == 'video')
-        
-        broadcast_type = "платной рассылки" if is_paid else "рассылки"
-        
-        text = (
-            f"🎬 <b>Создание медиа-альбома для {broadcast_type}</b>\n\n"
-            f"📊 <b>Текущий альбом:</b> {media_count}/10 файлов\n"
-            f"🖼 Фото: {photo_count}\n"
-            f"🎥 Видео: {video_count}\n\n"
-        )
-        
-        if media_count == 0:
-            text += (
-                "📸 <b>Отправьте файлы для альбома:</b>\n\n"
-                "• Загрузите фото/видео напрямую в бота\n"
-                "• Или отправьте ссылки (по одной на строку)\n\n"
-                "💡 <i>Можно миксовать фото и видео (до 10 файлов)</i>"
-            )
-        else:
-            text += "✅ <b>Медиа добавлены!</b>\n\nДобавьте еще или сохраните альбом."
-        
-        keyboard = []
-        
-        if media_count > 0:
-            if is_paid:
-                keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data="preview_paid_mass_album")])
-                keyboard.append([InlineKeyboardButton("✅ Сохранить альбом", callback_data="save_paid_mass_album")])
-                keyboard.append([InlineKeyboardButton("🗑 Очистить всё", callback_data="clear_paid_mass_album")])
-            else:
-                keyboard.append([InlineKeyboardButton("👁 Показать предпросмотр", callback_data="preview_mass_album")])
-                keyboard.append([InlineKeyboardButton("✅ Сохранить альбом", callback_data="save_mass_album")])
-                keyboard.append([InlineKeyboardButton("🗑 Очистить всё", callback_data="clear_mass_album")])
-        
-        cancel_callback = "paid_send_all" if is_paid else "admin_send_all"
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data=cancel_callback)])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await self.send_new_menu_message(context, user_id, text, reply_markup)
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении статистики медиа-альбома рассылки {broadcast_id}: {e}")
+            return {'total': 0, 'photos': 0, 'videos': 0}
+        finally:
+            if conn:
+                conn.close()
