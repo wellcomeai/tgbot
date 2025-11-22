@@ -144,6 +144,10 @@ class HandlersMixin:
             # === 🎬 НОВОЕ: Медиа-альбомы для массовых рассылок ===
             elif data == "mass_create_album":
                 await self.show_create_mass_media_album_menu(update, context)
+            elif data == "mass_manage_album":
+                await self.show_mass_album_management_menu(update, context)
+            elif data == "mass_recreate_album":
+                await self.show_create_mass_media_album_menu(update, context)
             elif data == "preview_mass_album":
                 await self.show_mass_album_preview(update, context)
             elif data == "save_mass_album":
