@@ -14,6 +14,7 @@ from .paid_buttons import PaidButtonsMixin
 from .paid_mass_broadcasts import PaidMassBroadcastsMixin
 from .buttons import ButtonsMixin
 from .utils import UtilsMixin
+from .media_albums import MediaAlbumsMixin
 
 # Проверяем наличие дополнительных миксинов
 try:
@@ -35,6 +36,7 @@ class AdminPanel(
     PaidMassBroadcastsMixin,
     ButtonsMixin,
     UtilsMixin,
+    MediaAlbumsMixin,
     *([MenuMixin, InputMixin, NavigationMixin] if MIXINS_AVAILABLE else [])
 ):
     """
@@ -53,6 +55,7 @@ class AdminPanel(
     - PaidMassBroadcastsMixin: массовые рассылки для оплативших
     - ButtonsMixin: управление кнопками всех типов
     - UtilsMixin: вспомогательные методы
+    - MediaAlbumsMixin: управление медиа-альбомами
     - MenuMixin, InputMixin, NavigationMixin: дополнительные миксины (если доступны)
     """
     
@@ -73,6 +76,10 @@ class AdminPanel(
                 NavigationMixin.__init__(self)
             except:
                 pass
+        
+        # Инициализируем хранилища для медиа-альбомов
+        self.media_album_drafts = {}  # Для основных сообщений рассылки
+        self.mass_media_album_drafts = {}  # Для массовых рассылок
         
         # Остальные миксины не требуют отдельной инициализации,
         # так как они не содержат __init__ методов
