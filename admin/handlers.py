@@ -181,6 +181,36 @@ class HandlersMixin:
             elif data == "paid_mass_confirm_send":
                 await self.execute_paid_mass_broadcast(update, context)
             
+            # === 🎬 НОВОЕ: Медиа-альбомы для платных рассылок ===
+            elif data == "paid_mass_create_album":
+                # Переключаем на платный режим
+                user_id = update.callback_query.from_user.id
+                if user_id not in self.broadcast_drafts:
+                    self.broadcast_drafts[user_id] = {
+                        "message_text": "",
+                        "photo_data": None,
+                        "video_data": None,
+                        "media_album": None,
+                        "buttons": [],
+                        "scheduled_hours": None,
+                        "created_at": datetime.now(),
+                        "is_paid_broadcast": True
+                    }
+                self.broadcast_drafts[user_id]["is_paid_broadcast"] = True
+                await self.show_create_mass_media_album_menu(update, context, is_paid=True)
+            elif data == "paid_mass_manage_album":
+                await self.show_paid_mass_album_management_menu(update, context)
+            elif data == "paid_mass_recreate_album":
+                await self.show_create_mass_media_album_menu(update, context, is_paid=True)
+            elif data == "preview_paid_mass_album":
+                await self.show_paid_mass_album_preview(update, context)
+            elif data == "save_paid_mass_album":
+                await self.save_paid_mass_media_album(update, context)
+            elif data == "clear_paid_mass_album":
+                await self.clear_paid_mass_media_album_draft(update, context)
+            elif data == "paid_mass_delete_album":
+                await self._handle_paid_mass_delete_album(update, context)
+            
             # === Остальные обработчики ===
             elif await self.handle_specific_callbacks(update, context):
                 pass
@@ -205,6 +235,27 @@ class HandlersMixin:
         elif data.startswith("edit_msg_"):
             message_number = int(data.split("_")[2])
             await self.show_message_edit(update, context, message_number)
+        
+        # === 🎬 НОВОЕ: Медиа-альбом для воронки ===
+        elif data.startswith("create_album_"):
+            message_number = int(data.split("_")[2])
+            await self.show_create_media_album_menu(update, context, message_number)
+        elif data.startswith("manage_album_"):
+            message_number = int(data.split("_")[2])
+            await self.show_manage_media_album_menu(update, context, message_number)
+        elif data.startswith("preview_album_"):
+            message_number = int(data.split("_")[2])
+            await self.show_media_album_preview(update, context, message_number)
+        elif data.startswith("save_album_"):
+            message_number = int(data.split("_")[2])
+            await self.save_media_album(update, context, message_number)
+        elif data.startswith("clear_album_"):
+            message_number = int(data.split("_")[2])
+            await self.clear_media_album_draft(update, context, message_number)
+        elif data.startswith("delete_album_"):
+            message_number = int(data.split("_")[2])
+            await self.delete_saved_media_album(update, context, message_number)
+        
         elif data.startswith("manage_buttons_"):
             message_number = int(data.split("_")[2])
             await self.show_message_buttons(update, context, message_number)
@@ -748,6 +799,14 @@ class HandlersMixin:
         if user_id in self.broadcast_drafts:
             self.broadcast_drafts[user_id]["scheduled_hours"] = None
             await self.show_mass_broadcast_preview(update, context)
+    
+    async def _handle_paid_mass_delete_album(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаление медиа-альбома из платной массовой рассылки"""
+        user_id = update.effective_user.id
+        if user_id in self.broadcast_drafts:
+            self.broadcast_drafts[user_id]["media_album"] = None
+            await update.callback_query.answer("✅ Медиа-альбом удален!")
+            await self.show_paid_send_all_menu(update, context)
     
     async def _handle_mass_delete_album(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Удаление медиа-альбома из массовой рассылки"""
