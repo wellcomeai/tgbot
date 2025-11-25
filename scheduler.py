@@ -134,9 +134,9 @@ class MessageScheduler:
             # Возвращаем оригинальный контент в случае ошибки
             return text, buttons
 
-    async def send_message_with_media(self, context, user_id, text, photo_url, video_url, reply_markup):
+    async def send_message_with_media(self, context, user_id, text, photo_url, video_url, reply_markup, message_number=None, broadcast_id=None):
         """
-        Универсальная отправка сообщения с медиа (фото/видео/оба)
+        Универсальная отправка сообщения с медиа (фото/видео/альбом)
 
         Args:
             context: Контекст бота
@@ -145,8 +145,71 @@ class MessageScheduler:
             photo_url: URL или file_id фото (может быть None)
             video_url: URL или file_id видео (может быть None)
             reply_markup: Клавиатура с кнопками (может быть None)
+            message_number: Номер сообщения воронки для проверки медиа-альбома (может быть None)
+            broadcast_id: ID массовой рассылки для проверки медиа-альбома (может быть None)
         """
         try:
+            # 🎬 ПРОВЕРЯЕМ МЕДИА-АЛЬБОМ
+            media_album = None
+            
+            # Для сообщений воронки
+            if message_number is not None:
+                media_album = self.db.get_message_media_album(message_number)
+                if media_album and len(media_album) > 0:
+                    logger.info(f"🎬 Найден медиа-альбом для сообщения {message_number}: {len(media_album)} файлов")
+            
+            # Для массовых рассылок
+            elif broadcast_id is not None:
+                media_album = self.db.get_scheduled_broadcast_media_album(broadcast_id)
+                if media_album and len(media_album) > 0:
+                    logger.info(f"🎬 Найден медиа-альбом для рассылки #{broadcast_id}: {len(media_album)} файлов")
+            
+            # Если есть медиа-альбом - отправляем его
+            if media_album and len(media_album) > 0:
+                # ⚠️ ВАЖНО: Telegram ограничивает caption медиа-группы до 1024 символов
+                caption_text = text
+                if len(text) > 1024:
+                    caption_text = text[:1020] + "..."
+                    logger.warning(f"⚠️ Текст обрезан до 1024 символов для медиа-альбома")
+                
+                # Собираем медиа-группу
+                media_group = []
+                for i, (media_id, media_type, media_url, position) in enumerate(media_album):
+                    # Caption только к первому элементу
+                    caption = caption_text if i == 0 else None
+                    
+                    if media_type == 'photo':
+                        media_group.append(InputMediaPhoto(
+                            media=media_url,
+                            caption=caption,
+                            parse_mode='HTML' if caption else None
+                        ))
+                    elif media_type == 'video':
+                        media_group.append(InputMediaVideo(
+                            media=media_url,
+                            caption=caption,
+                            parse_mode='HTML' if caption else None
+                        ))
+                
+                # Отправляем медиа-группу
+                await context.bot.send_media_group(
+                    chat_id=user_id,
+                    media=media_group
+                )
+                logger.info(f"🎬 Отправлен медиа-альбом ({len(media_group)} файлов) пользователю {user_id}")
+                
+                # Кнопки отправляем отдельным сообщением
+                if reply_markup:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="👇 Выберите действие:",
+                        reply_markup=reply_markup
+                    )
+                    logger.debug(f"🔘 Отправлены кнопки после медиа-альбома")
+                
+                return  # ✅ Готово!
+            
+            # Если медиа-альбома нет - используем одиночные фото/видео
             if photo_url and video_url:
                 # Отправляем медиагруппу (фото + видео)
                 media_group = [
@@ -228,7 +291,7 @@ class MessageScheduler:
                     logger.debug("❌ Рассылка отключена без таймера")
                     return
             
-            # Получаем сообщения, готовые к отправке (только для пользователей с bot_started = 1 и has_paid = 0)
+            # Получаем сообщения, готовые к отправке
             pending_messages = self.db.get_pending_messages_for_active_users()
             
             if not pending_messages:
@@ -244,20 +307,20 @@ class MessageScheduler:
                 try:
                     logger.debug(f"📤 Отправляем сообщение {message_number} пользователю {user_id}")
                     
-                    # НОВАЯ ПРОВЕРКА: Убеждаемся, что пользователь не оплатил за время ожидания
+                    # Проверяем, что пользователь не оплатил
                     user_info = self.db.get_user(user_id)
                     if user_info and user_info[6]:  # has_paid = True
                         logger.info(f"💰 Пользователь {user_id} оплатил, пропускаем сообщение {message_number}")
                         self.db.mark_message_sent(message_id)
                         continue
                     
-                    # Небольшая задержка между отправками для избежания лимитов
+                    # Небольшая задержка между отправками
                     await asyncio.sleep(0.1)
                     
-                    # Получаем кнопки для этого сообщения
+                    # Получаем кнопки
                     buttons = self.db.get_message_buttons(message_number)
                     
-                    # НОВОЕ: Обрабатываем контент с UTM метками
+                    # Обрабатываем контент с UTM метками
                     processed_text, processed_buttons = self.process_message_content(text, buttons, user_id)
                     
                     reply_markup = None
@@ -266,29 +329,28 @@ class MessageScheduler:
                         
                         for button_id, button_text, button_url, position in processed_buttons:
                             if button_url and button_url.strip():
-                                # Есть URL - создаем URL кнопку
                                 keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                             else:
-                                # Нет URL - создаем callback кнопку для следующего сообщения
                                 keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(processed_buttons)} кнопок")
 
-                    # Отправляем сообщение с медиа
+                    # ✅ Отправляем с проверкой медиа-альбома
                     await self.send_message_with_media(
                         context,
                         user_id,
                         processed_text,
                         photo_url,
                         video_url,
-                        reply_markup
+                        reply_markup,
+                        message_number=message_number
                     )
 
                     # Отмечаем как отправленное
                     self.db.mark_message_sent(message_id)
                     
-                    # 📊 НОВОЕ: Логируем отправку для воронки
+                    # 📊 Логируем отправку для воронки
                     self.db.log_message_delivery(user_id, message_number)
                     
                     sent_count += 1
@@ -296,34 +358,22 @@ class MessageScheduler:
                     logger.info(f"✅ Отправлено сообщение {message_number} пользователю {user_id} с UTM метками")
                     
                 except Forbidden as e:
-                    # Пользователь заблокировал бота
                     logger.warning(f"❌ Пользователь {user_id} заблокировал бота: {e}")
-                    # Отмечаем сообщение как отправленное, чтобы не пытаться снова
                     self.db.mark_message_sent(message_id)
-                    # Деактивируем пользователя
                     self.db.deactivate_user(user_id)
                     failed_count += 1
                     
                 except BadRequest as e:
-                    # Неверный chat_id или другая ошибка
                     logger.error(f"❌ BadRequest для пользователя {user_id}: {e}")
-                    # Отмечаем как отправленное, чтобы не зацикливаться
                     self.db.mark_message_sent(message_id)
                     failed_count += 1
                     
                 except Exception as e:
                     logger.error(f"❌ Не удалось отправить сообщение {message_id} пользователю {user_id}: {e}")
                     failed_count += 1
-                    # Не отмечаем как отправленное - попробуем еще раз позже
             
             if sent_count > 0 or failed_count > 0:
                 logger.info(f"📊 Результаты рассылки: отправлено {sent_count}, ошибок {failed_count}")
-            
-            # Проверяем, есть ли еще запланированные сообщения
-            remaining_messages = self.db.get_pending_messages_for_active_users()
-            if remaining_messages:
-                next_time = min([datetime.fromisoformat(msg[3]) for msg in remaining_messages if len(msg) > 3])
-                logger.debug(f"⏳ Следующее сообщение запланировано на {next_time.strftime('%Y-%m-%d %H:%M:%S')}")
                         
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в send_scheduled_messages: {e}", exc_info=True)
@@ -347,11 +397,11 @@ class MessageScheduler:
             conn.close()
 
             if not result:
-                return False  # Нет запланированных сообщений
+                return False
 
             message_id, message_number, text, photo_url, video_url = result
             
-            # Отправляем сообщение (используем существующую логику)
+            # Получаем кнопки
             buttons = self.db.get_message_buttons(message_number)
             processed_text, processed_buttons = self.process_message_content(text, buttons, user_id)
             
@@ -361,28 +411,27 @@ class MessageScheduler:
                 
                 for button_id, button_text, button_url, position in processed_buttons:
                     if button_url and button_url.strip():
-                        # URL кнопка
                         keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                     else:
-                        # Callback кнопка
                         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
 
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
-            # Отправляем сообщение с медиа
+            # ✅ Отправляем с проверкой медиа-альбома
             await self.send_message_with_media(
                 context,
                 user_id,
                 processed_text,
                 photo_url,
                 video_url,
-                reply_markup
+                reply_markup,
+                message_number=message_number
             )
 
             # Отмечаем как отправленное
             self.db.mark_message_sent(message_id)
 
-            # 📊 НОВОЕ: Логируем отправку для воронки
+            # 📊 Логируем отправку для воронки
             self.db.log_message_delivery(user_id, message_number)
             
             logger.info(f"✅ Принудительно отправлено сообщение {message_number} пользователю {user_id}")
@@ -401,7 +450,6 @@ class MessageScheduler:
             # Проверяем статус рассылки
             broadcast_status = self.db.get_broadcast_status()
             
-            # Если рассылка отключена, пропускаем
             if not broadcast_status['enabled']:
                 logger.debug("❌ Массовые рассылки отключены")
                 return
@@ -415,12 +463,11 @@ class MessageScheduler:
             
             logger.info(f"📡 Найдено {len(pending_broadcasts)} запланированных рассылок для отправки")
 
-            # Получаем пользователей, завершивших воронку (получивших последнее сообщение)
+            # Получаем пользователей, завершивших воронку
             users_with_bot = self.db.get_users_completed_funnel()
 
             if not users_with_bot:
                 logger.debug("📭 Нет пользователей, завершивших воронку - отменяем рассылки")
-                # Отмечаем рассылки как отправленные
                 for broadcast_id, message_text, photo_url, video_url, scheduled_time in pending_broadcasts:
                     self.db.mark_broadcast_sent(broadcast_id)
                     logger.debug(f"✅ Рассылка #{broadcast_id} отменена (нет завершивших воронку)")
@@ -441,13 +488,11 @@ class MessageScheduler:
                     # Отправляем всем пользователям
                     for user in users_with_bot:
                         user_id = user[0]
-                        has_paid = user[6] if len(user) > 6 else False
                         
                         try:
-                            # Небольшая задержка между отправками
                             await asyncio.sleep(0.1)
                             
-                            # НОВОЕ: Обрабатываем контент с UTM метками для каждого пользователя
+                            # Обрабатываем контент с UTM метками
                             processed_text, processed_buttons = self.process_message_content(message_text, buttons, user_id)
                             
                             reply_markup = None
@@ -456,40 +501,35 @@ class MessageScheduler:
                                 
                                 for button_id, button_text, button_url, position in processed_buttons:
                                     if button_url and button_url.strip():
-                                        # URL кнопка
                                         keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                                     else:
-                                        # Callback кнопка
                                         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
                                 
                                 reply_markup = InlineKeyboardMarkup(keyboard)
-                                logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок")
+                                logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id} для пользователя {user_id}")
 
-                            # Отправляем сообщение с медиа
+                            # ✅ Отправляем с проверкой медиа-альбома рассылки
                             await self.send_message_with_media(
                                 context,
                                 user_id,
                                 processed_text,
                                 photo_url,
                                 video_url,
-                                reply_markup
+                                reply_markup,
+                                broadcast_id=broadcast_id
                             )
 
-                            # 📊 НОВОЕ: Логируем отправку массовой рассылки для воронки
-                            # Используем отрицательный ID для отличия от обычных сообщений
+                            # 📊 Логируем отправку массовой рассылки
                             self.db.log_message_delivery(user_id, -broadcast_id)
                             
                             sent_count += 1
                             
                         except Forbidden as e:
-                            # Пользователь заблокировал бота
                             logger.warning(f"❌ Пользователь {user_id} заблокировал бота при рассылке #{broadcast_id}: {e}")
-                            # Деактивируем пользователя
                             self.db.deactivate_user(user_id)
                             failed_count += 1
                             
                         except BadRequest as e:
-                            # Неверный chat_id или другая ошибка
                             logger.error(f"❌ BadRequest для пользователя {user_id} при рассылке #{broadcast_id}: {e}")
                             failed_count += 1
                             
@@ -502,13 +542,12 @@ class MessageScheduler:
                     
                     logger.info(f"✅ Рассылка #{broadcast_id} завершена с UTM метками: отправлено {sent_count}, ошибок {failed_count}")
                     
-                    # Пауза между разными рассылками
+                    # Пауза между рассылками
                     if len(pending_broadcasts) > 1:
                         await asyncio.sleep(2)
                     
                 except Exception as e:
                     logger.error(f"❌ Критическая ошибка при отправке рассылки #{broadcast_id}: {e}")
-                    # Отмечаем как отправленную, чтобы не зацикливаться
                     self.db.mark_broadcast_sent(broadcast_id)
             
             logger.info(f"📊 Обработка запланированных рассылок завершена")
@@ -533,14 +572,13 @@ class MessageScheduler:
             logger.error(f"❌ Ошибка при отмене сообщений для пользователя {user_id}: {e}")
             return 0
 
-    # ===== НОВЫЕ МЕТОДЫ ДЛЯ ПЛАТНЫХ РАССЫЛОК =====
+    # ===== ПЛАТНЫЕ РАССЫЛКИ =====
 
     async def schedule_paid_user_messages(self, context: ContextTypes.DEFAULT_TYPE, user_id):
         """Запланировать отправку всех сообщений для оплатившего пользователя"""
         try:
             logger.info(f"💰 Начинаем планирование платных сообщений для пользователя {user_id}")
             
-            # Получаем актуальную информацию о пользователе
             user_info = self.db.get_user(user_id)
             if not user_info:
                 logger.error(f"❌ Пользователь {user_id} не найден в базе данных")
@@ -548,14 +586,12 @@ class MessageScheduler:
                 
             user_id_db, username, first_name, joined_at, is_active, bot_started, has_paid, paid_at = user_info
             
-            # Проверяем, что пользователь активен
             if not is_active:
-                logger.warning(f"⚠️ Пользователь {user_id} неактивен (is_active = {is_active})")
+                logger.warning(f"⚠️ Пользователь {user_id} неактивен")
                 return False
             
-            # Проверяем, что пользователь оплатил
             if not has_paid:
-                logger.warning(f"⚠️ Пользователь {user_id} не оплатил (has_paid = {has_paid})")
+                logger.warning(f"⚠️ Пользователь {user_id} не оплатил")
                 return False
             
             # Проверяем, есть ли уже запланированные платные сообщения
@@ -568,7 +604,7 @@ class MessageScheduler:
             messages = self.db.get_all_paid_broadcast_messages()
             if not messages:
                 logger.warning("⚠️ Нет сообщений платной рассылки в базе данных")
-                return True  # Это не ошибка, просто нет настроенных сообщений
+                return True
             
             logger.info(f"📋 Найдено {len(messages)} платных сообщений рассылки для планирования")
             
@@ -578,38 +614,35 @@ class MessageScheduler:
             scheduled_count = 0
             for message_number, text, delay_hours, photo_url, video_url in messages:
                 try:
-                    # Вычисляем время отправки от момента оплаты
                     scheduled_time = current_time + timedelta(hours=delay_hours)
                     
-                    # Добавляем в расписание
                     success = self.db.schedule_paid_message(user_id, message_number, scheduled_time)
                     if success:
                         scheduled_count += 1
                         
-                        # Форматируем время для логов
                         time_diff = scheduled_time - current_time
-                        if time_diff.total_seconds() < 3600:  # Меньше часа
+                        if time_diff.total_seconds() < 3600:
                             time_str = f"{int(time_diff.total_seconds() / 60)} минут"
                         else:
                             time_str = f"{delay_hours} часов"
                         
                         logger.info(f"✅ Запланировано платное сообщение {message_number} для пользователя {user_id} на {scheduled_time.strftime('%Y-%m-%d %H:%M:%S')} (через {time_str})")
                     else:
-                        logger.error(f"❌ Не удалось запланировать платное сообщение {message_number} для пользователя {user_id}")
+                        logger.error(f"❌ Не удалось запланировать платное сообщение {message_number}")
                     
                 except Exception as e:
-                    logger.error(f"❌ Ошибка при планировании платного сообщения {message_number} для пользователя {user_id}: {e}")
+                    logger.error(f"❌ Ошибка при планировании платного сообщения {message_number}: {e}")
                     continue
             
             if scheduled_count > 0:
                 logger.info(f"💰 🎉 Всего запланировано {scheduled_count} платных сообщений для пользователя {user_id}")
                 return True
             else:
-                logger.warning(f"⚠️ Не удалось запланировать ни одного платного сообщения для пользователя {user_id}")
+                logger.warning(f"⚠️ Не удалось запланировать ни одного платного сообщения")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Критическая ошибка при планировании платных сообщений для пользователя {user_id}: {e}", exc_info=True)
+            logger.error(f"❌ Критическая ошибка при планировании платных сообщений: {e}", exc_info=True)
             return False
 
     async def send_scheduled_paid_messages(self, context: ContextTypes.DEFAULT_TYPE):
@@ -618,15 +651,12 @@ class MessageScheduler:
             current_time = datetime.now()
             logger.debug(f"💰 🔄 Проверка запланированных платных сообщений на {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # Проверяем статус рассылки
             broadcast_status = self.db.get_broadcast_status()
             
-            # Если рассылка отключена, пропускаем
             if not broadcast_status['enabled']:
                 logger.debug("❌ Платные рассылки отключены")
                 return
             
-            # Получаем платные сообщения, готовые к отправке
             pending_messages = self.db.get_pending_paid_messages()
             
             if not pending_messages:
@@ -644,15 +674,14 @@ class MessageScheduler:
                     
                     # Убеждаемся, что пользователь еще оплачен и активен
                     user_info = self.db.get_user(user_id)
-                    if not user_info or not user_info[4] or not user_info[6]:  # is_active, has_paid
-                        logger.warning(f"💰 ⚠️ Пользователь {user_id} больше не активен или не оплачен, пропускаем платное сообщение {message_number}")
+                    if not user_info or not user_info[4] or not user_info[6]:
+                        logger.warning(f"💰 ⚠️ Пользователь {user_id} больше не активен или не оплачен")
                         self.db.mark_paid_message_sent(message_id)
                         continue
                     
-                    # Небольшая задержка между отправками
                     await asyncio.sleep(0.1)
                     
-                    # Получаем кнопки для этого сообщения
+                    # Получаем кнопки
                     buttons = self.db.get_paid_message_buttons(message_number)
                     
                     # Обрабатываем контент с UTM метками
@@ -664,51 +693,46 @@ class MessageScheduler:
                         
                         for button_id, button_text, button_url, position in processed_buttons:
                             if button_url and button_url.strip():
-                                # URL кнопка
                                 keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                             else:
-                                # Callback кнопка
                                 keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
-                        logger.debug(f"💰 🔘 Добавлены кнопки к платному сообщению {message_number}: {len(processed_buttons)} кнопок")
+                        logger.debug(f"💰 🔘 Добавлены кнопки к платному сообщению {message_number}")
 
-                    # Отправляем сообщение с медиа
+                    # ✅ Отправляем платное сообщение (без медиа-альбома для платных пока)
                     await self.send_message_with_media(
                         context,
                         user_id,
                         processed_text,
                         photo_url,
                         video_url,
-                        reply_markup
+                        reply_markup,
+                        message_number=None  # Для платных сообщений медиа-альбомы в другой таблице
                     )
 
-                    # Отмечаем как отправленное
                     self.db.mark_paid_message_sent(message_id)
                     
-                    # 📊 НОВОЕ: Логируем отправку платного сообщения для воронки
-                    # Используем положительный номер сообщения для платных сообщений
+                    # 📊 Логируем отправку платного сообщения
                     self.db.log_message_delivery(user_id, message_number)
                     
                     sent_count += 1
                     
-                    logger.info(f"✅ Отправлено платное сообщение {message_number} пользователю {user_id} с UTM метками")
+                    logger.info(f"✅ Отправлено платное сообщение {message_number} пользователю {user_id}")
                     
                 except Forbidden as e:
-                    # Пользователь заблокировал бота
-                    logger.warning(f"❌ Пользователь {user_id} заблокировал бота при отправке платного сообщения: {e}")
+                    logger.warning(f"❌ Пользователь {user_id} заблокировал бота: {e}")
                     self.db.mark_paid_message_sent(message_id)
                     self.db.deactivate_user(user_id)
                     failed_count += 1
                     
                 except BadRequest as e:
-                    # Неверный chat_id или другая ошибка
-                    logger.error(f"❌ BadRequest для пользователя {user_id} при отправке платного сообщения: {e}")
+                    logger.error(f"❌ BadRequest для пользователя {user_id}: {e}")
                     self.db.mark_paid_message_sent(message_id)
                     failed_count += 1
                     
                 except Exception as e:
-                    logger.error(f"❌ Не удалось отправить платное сообщение {message_id} пользователю {user_id}: {e}")
+                    logger.error(f"❌ Не удалось отправить платное сообщение {message_id}: {e}")
                     failed_count += 1
             
             if sent_count > 0 or failed_count > 0:
@@ -723,15 +747,12 @@ class MessageScheduler:
             current_time = datetime.now()
             logger.debug(f"💰 📡 Проверка запланированных рассылок для оплативших на {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # Проверяем статус рассылки
             broadcast_status = self.db.get_broadcast_status()
             
-            # Если рассылка отключена, пропускаем
             if not broadcast_status['enabled']:
                 logger.debug("❌ Массовые рассылки для оплативших отключены")
                 return
             
-            # Получаем рассылки для оплативших, готовые к отправке
             pending_broadcasts = self.db.get_pending_paid_broadcasts()
             
             if not pending_broadcasts:
@@ -740,12 +761,10 @@ class MessageScheduler:
             
             logger.info(f"💰 📡 Найдено {len(pending_broadcasts)} запланированных рассылок для оплативших")
             
-            # Получаем пользователей, которые оплатили
             paid_users = self.db.get_users_with_payment()
             
             if not paid_users:
                 logger.warning("⚠️ Нет оплативших пользователей для массовой рассылки")
-                # Отмечаем рассылки как отправленные
                 for broadcast_id, message_text, photo_url, video_url, scheduled_time in pending_broadcasts:
                     self.db.mark_paid_broadcast_sent(broadcast_id)
                 return
@@ -756,21 +775,17 @@ class MessageScheduler:
                 try:
                     logger.info(f"💰 📤 Начинаем отправку рассылки для оплативших #{broadcast_id}")
                     
-                    # Получаем кнопки для этой рассылки
                     buttons = self.db.get_paid_scheduled_broadcast_buttons(broadcast_id)
                     
                     sent_count = 0
                     failed_count = 0
                     
-                    # Отправляем всем оплатившим пользователям
                     for user in paid_users:
                         user_id = user[0]
                         
                         try:
-                            # Небольшая задержка между отправками
                             await asyncio.sleep(0.1)
                             
-                            # Обрабатываем контент с UTM метками для каждого пользователя
                             processed_text, processed_buttons = self.process_message_content(message_text, buttons, user_id)
                             
                             reply_markup = None
@@ -779,16 +794,13 @@ class MessageScheduler:
                                 
                                 for button_id, button_text, button_url, position in processed_buttons:
                                     if button_url and button_url.strip():
-                                        # URL кнопка
                                         keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                                     else:
-                                        # Callback кнопка
                                         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
                                 
                                 reply_markup = InlineKeyboardMarkup(keyboard)
-                                logger.debug(f"💰 🔘 Добавлены кнопки к рассылке для оплативших #{broadcast_id} для пользователя {user_id}: {len(processed_buttons)} кнопок")
 
-                            # Отправляем сообщение с медиа
+                            # Отправляем (без медиа-альбома для платных массовых пока)
                             await self.send_message_with_media(
                                 context,
                                 user_id,
@@ -798,40 +810,33 @@ class MessageScheduler:
                                 reply_markup
                             )
 
-                            # 📊 НОВОЕ: Логируем отправку платной массовой рассылки для воронки
-                            # Используем отрицательный ID с префиксом для отличия от обычных рассылок
-                            # Умножаем на 10000 чтобы не пересекаться с обычными рассылками
+                            # 📊 Логируем отправку платной массовой рассылки
                             self.db.log_message_delivery(user_id, -(broadcast_id + 10000))
                             
                             sent_count += 1
                             
                         except Forbidden as e:
-                            # Пользователь заблокировал бота
-                            logger.warning(f"❌ Пользователь {user_id} заблокировал бота при рассылке для оплативших #{broadcast_id}: {e}")
+                            logger.warning(f"❌ Пользователь {user_id} заблокировал бота: {e}")
                             self.db.deactivate_user(user_id)
                             failed_count += 1
                             
                         except BadRequest as e:
-                            # Неверный chat_id или другая ошибка
-                            logger.error(f"❌ BadRequest для пользователя {user_id} при рассылке для оплативших #{broadcast_id}: {e}")
+                            logger.error(f"❌ BadRequest для пользователя {user_id}: {e}")
                             failed_count += 1
                             
                         except Exception as e:
-                            logger.error(f"❌ Не удалось отправить рассылку для оплативших #{broadcast_id} пользователю {user_id}: {e}")
+                            logger.error(f"❌ Не удалось отправить рассылку #{broadcast_id} пользователю {user_id}: {e}")
                             failed_count += 1
                     
-                    # Отмечаем рассылку как отправленную
                     self.db.mark_paid_broadcast_sent(broadcast_id)
                     
-                    logger.info(f"✅ Рассылка для оплативших #{broadcast_id} завершена с UTM метками: отправлено {sent_count}, ошибок {failed_count}")
+                    logger.info(f"✅ Рассылка для оплативших #{broadcast_id} завершена: отправлено {sent_count}, ошибок {failed_count}")
                     
-                    # Пауза между разными рассылками
                     if len(pending_broadcasts) > 1:
                         await asyncio.sleep(2)
                     
                 except Exception as e:
-                    logger.error(f"❌ Критическая ошибка при отправке рассылки для оплативших #{broadcast_id}: {e}")
-                    # Отмечаем как отправленную, чтобы не зацикливаться
+                    logger.error(f"❌ Критическая ошибка при отправке рассылки #{broadcast_id}: {e}")
                     self.db.mark_paid_broadcast_sent(broadcast_id)
             
             logger.info(f"💰 📊 Обработка запланированных рассылок для оплативших завершена")
@@ -848,7 +853,6 @@ class MessageScheduler:
             current_time = datetime.now()
             logger.info(f"🔄 Проверка истекших подписок на {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # Получаем пользователей с истекшей подпиской
             expired_users = self.db.get_expired_subscriptions()
             
             if not expired_users:
@@ -857,7 +861,6 @@ class MessageScheduler:
             
             logger.info(f"⏰ Найдено {len(expired_users)} пользователей с истекшими подписками")
             
-            # Получаем настройки сообщения продления
             renewal_data = self.db.get_renewal_message()
             
             if not renewal_data or not renewal_data.get('text'):
@@ -871,13 +874,10 @@ class MessageScheduler:
                 try:
                     logger.info(f"📤 Отправляем уведомление о продлении пользователю {user_id} (@{username})")
                     
-                    # Обрабатываем текст с UTM метками
                     processed_text = utm_utils.process_text_links(renewal_data['text'], user_id)
                     
-                    # Создаем клавиатуру с кнопкой продления
                     reply_markup = None
                     if renewal_data.get('button_text') and renewal_data.get('button_url'):
-                        # Добавляем UTM метки к URL кнопки
                         processed_url = utm_utils.add_utm_to_url(renewal_data['button_url'], user_id)
                         
                         keyboard = [[InlineKeyboardButton(
@@ -887,7 +887,6 @@ class MessageScheduler:
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         logger.debug(f"🔘 Добавлена кнопка продления с UTM метками")
 
-                    # Отправляем сообщение
                     photo_url = renewal_data.get('photo_url')
                     video_url = renewal_data.get('video_url')
 
@@ -900,11 +899,9 @@ class MessageScheduler:
                         reply_markup
                     )
 
-                    # Завершаем подписку пользователя
                     expire_success = self.db.expire_user_subscription(user_id)
                     
                     if expire_success:
-                        # Запланируем обычные сообщения рассылки
                         schedule_success = await self.schedule_user_messages(context, user_id)
                         
                         if schedule_success:
@@ -916,21 +913,16 @@ class MessageScheduler:
                     
                     sent_count += 1
                     
-                    # Небольшая задержка между отправками
                     await asyncio.sleep(0.2)
                     
                 except Forbidden as e:
-                    # Пользователь заблокировал бота
-                    logger.warning(f"❌ Пользователь {user_id} заблокировал бота при уведомлении о продлении: {e}")
-                    # Все равно завершаем подписку
+                    logger.warning(f"❌ Пользователь {user_id} заблокировал бота: {e}")
                     self.db.expire_user_subscription(user_id)
                     self.db.deactivate_user(user_id)
                     failed_count += 1
                     
                 except BadRequest as e:
-                    # Неверный chat_id или другая ошибка
-                    logger.error(f"❌ BadRequest для пользователя {user_id} при уведомлении о продлении: {e}")
-                    # Все равно завершаем подписку
+                    logger.error(f"❌ BadRequest для пользователя {user_id}: {e}")
                     self.db.expire_user_subscription(user_id)
                     failed_count += 1
                     
