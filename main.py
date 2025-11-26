@@ -614,18 +614,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Персонализируем текст
         success_text = personalize_message(success_text, user)
         
-        # Отправляем настраиваемое приветственное сообщение и убираем клавиатуру
-        await update.message.reply_text(
-            success_text,
-            parse_mode='HTML',
-            reply_markup=ReplyKeyboardRemove()
-        )
+        # Отправляем настраиваемое приветственное сообщение
+        await update.message.reply_text(success_text, parse_mode='HTML')
         logger.info(f"✅ Команда /start успешно выполнена для пользователя {user.id}")
     else:
         await update.message.reply_text(
             "❌ Произошла ошибка при подписке на уведомления. "
-            "Попробуйте еще раз или обратитесь к администратору.",
-            reply_markup=ReplyKeyboardRemove()
+            "Попробуйте еще раз или обратитесь к администратору."
         )
 
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -637,6 +632,9 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Одобряем заявку
         await chat_join_request.approve()
         logger.info(f"✅ Одобрена заявка от пользователя {user.id} (@{user.username})")
+        
+        # ✅ КРИТИЧНО: Задержка 2 секунды для обработки Telegram'ом
+        await asyncio.sleep(2)
         
         # Добавляем пользователя в базу данных
         db.add_user(user.id, user.username, user.first_name)
@@ -908,6 +906,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_text in admin_button_texts:
         # Обрабатываем нажатие на кнопку, настроенную админом
         try:
+            # ✅ ТИХО убираем клавиатуру
+            try:
+                temp_msg = await update.message.reply_text(".", reply_markup=ReplyKeyboardRemove())
+                await temp_msg.delete()
+            except:
+                pass
+            
             success = await callback_handler.handle_welcome_button_press(
                 user_id, message_text, context
             )
@@ -952,25 +957,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 success_text = personalize_message(success_text, update.effective_user)
                 
                 # Убираем клавиатуру и отправляем подтверждение
-                await update.message.reply_text(
-                    success_text,
-                    parse_mode='HTML',
-                    reply_markup=ReplyKeyboardRemove()
-                )
+                await update.message.reply_text(success_text, parse_mode='HTML')
                 logger.info(f"✅ Пользователь {user_id} успешно подписан через кнопку '{message_text}'")
             else:
                 await update.message.reply_text(
                     "❌ Произошла ошибка при подписке на уведомления. "
-                    "Попробуйте еще раз или обратитесь к администратору.",
-                    reply_markup=ReplyKeyboardRemove()
+                    "Попробуйте еще раз или обратитесь к администратору."
                 )
                 
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке кнопки '{message_text}' от пользователя {user_id}: {e}")
-            await update.message.reply_text(
-                "❌ Произошла техническая ошибка. Попробуйте позже.",
-                reply_markup=ReplyKeyboardRemove()
-            )
+            await update.message.reply_text("❌ Произошла техническая ошибка. Попробуйте позже.")
         return
     
     # Затем обрабатываем стандартные кнопки
@@ -992,6 +989,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Если это обычное сообщение от пользователя
     else:
+        # ✅ ТИХО убираем клавиатуру если она есть
+        try:
+            temp_msg = await update.message.reply_text(".", reply_markup=ReplyKeyboardRemove())
+            await temp_msg.delete()
+        except:
+            pass
+        
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
@@ -1034,17 +1038,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Персонализируем текст
             success_text = personalize_message(success_text, update.effective_user)
             
-            # Убираем клавиатуру
-            await update.message.reply_text(
-                success_text,
-                parse_mode='HTML',
-                reply_markup=ReplyKeyboardRemove()
-            )
+            await update.message.reply_text(success_text, parse_mode='HTML')
         else:
             await update.message.reply_text(
                 "❌ Произошла ошибка при подписке на уведомления. "
-                "Попробуйте еще раз или обратитесь к администратору.",
-                reply_markup=ReplyKeyboardRemove()
+                "Попробуйте еще раз или обратитесь к администратору."
             )
 
 # ===== ОБРАБОТЧИКИ КНОПОК =====
@@ -1055,6 +1053,13 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.effective_user
     
     try:
+        # ✅ ТИХО убираем клавиатуру
+        try:
+            temp_msg = await update.message.reply_text(".", reply_markup=ReplyKeyboardRemove())
+            await temp_msg.delete()
+        except:
+            pass  # Игнорируем ошибки
+        
         logger.info(f"🔘 Пользователь {user_id} нажал кнопку согласия")
         
         # Убеждаемся, что пользователь существует и активен
@@ -1066,10 +1071,7 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
         
         if not user_exists:
             logger.error(f"❌ Не удалось обеспечить существование пользователя {user_id}")
-            await update.message.reply_text(
-                "❌ Произошла ошибка. Попробуйте позже.",
-                reply_markup=ReplyKeyboardRemove()
-            )
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
             return
         
         # Проверяем, есть ли уже запланированные сообщения
@@ -1084,8 +1086,7 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
                 "• Настройки уведомлений в Telegram\n\n"
                 "💡 Если проблемы продолжаются, обратитесь к администратору канала.\n\n"
                 "🙏 Спасибо, что остаетесь с нами!",
-                parse_mode='HTML',
-                reply_markup=ReplyKeyboardRemove()
+                parse_mode='HTML'
             )
             return
         
@@ -1131,25 +1132,17 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
             # Персонализируем текст
             success_text = personalize_message(success_text, user)
             
-            await update.message.reply_text(
-                success_text,
-                parse_mode='HTML',
-                reply_markup=ReplyKeyboardRemove()
-            )
+            await update.message.reply_text(success_text, parse_mode='HTML')
             logger.info(f"✅ Пользователь {user_id} успешно подписан")
         else:
             await update.message.reply_text(
                 "❌ Произошла ошибка при подписке на уведомления. "
-                "Попробуйте еще раз или обратитесь к администратору.",
-                reply_markup=ReplyKeyboardRemove()
+                "Попробуйте еще раз или обратитесь к администратору."
             )
         
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке кнопки согласия от пользователя {user_id}: {e}")
-        await update.message.reply_text(
-            "❌ Произошла техническая ошибка. Попробуйте позже.",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text("❌ Произошла техническая ошибка. Попробуйте позже.")
 
 async def handle_bot_info_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка нажатия на кнопку информации о боте"""
