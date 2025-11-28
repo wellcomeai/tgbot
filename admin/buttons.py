@@ -21,30 +21,36 @@ class ButtonsMixin:
         
         keyboard = []
         
-        for button_id, button_text, button_url, position in buttons:
+        for button_id, button_text, button_url, position, messages_count in buttons:
             if button_url and button_url.strip():
                 # URL кнопка
                 display_text = f"🔗 {button_text}"
             else:
                 # Callback кнопка
-                display_text = f"📩 {button_text}"
-            
+                if messages_count and messages_count > 1:
+                    display_text = f"📩 {button_text} (×{messages_count})"
+                else:
+                    display_text = f"📩 {button_text}"
+
             keyboard.append([InlineKeyboardButton(display_text, callback_data=f"edit_button_{button_id}")])
-        
+
         if len(buttons) < 3:  # Максимум 3 кнопки
             keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data=f"add_button_{message_number}")])
-        
+
         keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"edit_msg_{message_number}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         # Формируем детальную информацию о кнопках
         buttons_info = ""
         if buttons:
-            for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
+            for i, (button_id, button_text, button_url, position, messages_count) in enumerate(buttons, 1):
                 if button_url and button_url.strip():
                     buttons_info += f"{i}. 🔗 {button_text} → {button_url}\n"
                 else:
-                    buttons_info += f"{i}. 📩 {button_text} (следующее сообщение)\n"
+                    if messages_count and messages_count > 1:
+                        buttons_info += f"{i}. 📩 {button_text} (×{messages_count} сообщений)\n"
+                    else:
+                        buttons_info += f"{i}. 📩 {button_text} (следующее сообщение)\n"
         
         text = (
             f"🔘 <b>Кнопки сообщения {message_number}</b>\n\n"
@@ -64,31 +70,37 @@ class ButtonsMixin:
         
         keyboard = []
         
-        for button_id, button_text, button_url, position in buttons:
+        for button_id, button_text, button_url, position, messages_count in buttons:
             if button_url and button_url.strip():
                 # URL кнопка
                 display_text = f"🔗 {button_text}"
             else:
                 # Callback кнопка
-                display_text = f"📩 {button_text}"
-            
+                if messages_count and messages_count > 1:
+                    display_text = f"📩 {button_text} (×{messages_count})"
+                else:
+                    display_text = f"📩 {button_text}"
+
             keyboard.append([InlineKeyboardButton(display_text, callback_data=f"edit_button_{button_id}")])
-        
+
         if len(buttons) < 3:
             keyboard.append([InlineKeyboardButton("➕ Добавить кнопку", callback_data=f"add_button_{message_number}")])
-        
+
         keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"edit_msg_{message_number}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         # Формируем детальную информацию о кнопках
         buttons_info = ""
         if buttons:
-            for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
+            for i, (button_id, button_text, button_url, position, messages_count) in enumerate(buttons, 1):
                 if button_url and button_url.strip():
                     buttons_info += f"{i}. 🔗 {button_text} → {button_url}\n"
                 else:
-                    buttons_info += f"{i}. 📩 {button_text} (следующее сообщение)\n"
-        
+                    if messages_count and messages_count > 1:
+                        buttons_info += f"{i}. 📩 {button_text} (×{messages_count} сообщений)\n"
+                    else:
+                        buttons_info += f"{i}. 📩 {button_text} (следующее сообщение)\n"
+
         message_text = (
             f"🔘 <b>Кнопки сообщения {message_number}</b>\n\n"
             f"Текущие кнопки: {len(buttons)}/3\n\n"
@@ -105,24 +117,24 @@ class ButtonsMixin:
         conn = self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT message_number, button_text, button_url 
-            FROM message_buttons 
+            SELECT message_number, button_text, button_url, messages_count
+            FROM message_buttons
             WHERE id = ?
         ''', (button_id,))
         button_data = cursor.fetchone()
         conn.close()
-        
+
         if not button_data:
             await update.callback_query.answer("Кнопка не найдена!", show_alert=True)
             return
-        
-        message_number, button_text, button_url = button_data
-        
+
+        message_number, button_text, button_url, messages_count = button_data
+
         # Определяем тип кнопки для отображения
         if button_url and button_url.strip():
             button_type_text = "🔗 URL кнопка"
             button_info = f"<b>URL:</b> {button_url}"
-            
+
             keyboard = [
                 [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
                 [InlineKeyboardButton("🔗 Изменить URL", callback_data=f"edit_button_url_{button_id}")],
@@ -131,10 +143,17 @@ class ButtonsMixin:
             ]
         else:
             button_type_text = "📩 Callback кнопка"
-            button_info = "<b>Действие:</b> Переход к следующему сообщению"
-            
+
+            # Формируем текст действия
+            if messages_count and messages_count > 1:
+                msg_word = "сообщение" if messages_count == 1 else ("сообщения" if 2 <= messages_count <= 4 else "сообщений")
+                button_info = f"<b>Действие:</b> Отправить {messages_count} следующих {msg_word}"
+            else:
+                button_info = "<b>Действие:</b> Переход к следующему сообщению"
+
             keyboard = [
                 [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
+                [InlineKeyboardButton("🔢 Количество сообщений", callback_data=f"edit_button_count_{button_id}")],
                 [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
                 [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
             ]
@@ -155,29 +174,29 @@ class ButtonsMixin:
     async def show_button_edit_from_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE, button_id):
         """Отправить НОВОЕ сообщение для редактирования кнопки"""
         user_id = update.effective_user.id
-        
+
         # Получаем информацию о кнопке
         conn = self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT message_number, button_text, button_url 
-            FROM message_buttons 
+            SELECT message_number, button_text, button_url, messages_count
+            FROM message_buttons
             WHERE id = ?
         ''', (button_id,))
         button_data = cursor.fetchone()
         conn.close()
-        
+
         if not button_data:
             await context.bot.send_message(chat_id=user_id, text="❌ Кнопка не найдена!")
             return
-        
-        message_number, button_text, button_url = button_data
-        
+
+        message_number, button_text, button_url, messages_count = button_data
+
         # Определяем тип кнопки для отображения
         if button_url and button_url.strip():
             button_type_text = "🔗 URL кнопка"
             button_info = f"<b>URL:</b> {button_url}"
-            
+
             keyboard = [
                 [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
                 [InlineKeyboardButton("🔗 Изменить URL", callback_data=f"edit_button_url_{button_id}")],
@@ -186,10 +205,17 @@ class ButtonsMixin:
             ]
         else:
             button_type_text = "📩 Callback кнопка"
-            button_info = "<b>Действие:</b> Переход к следующему сообщению"
-            
+
+            # Формируем текст действия
+            if messages_count and messages_count > 1:
+                msg_word = "сообщение" if messages_count == 1 else ("сообщения" if 2 <= messages_count <= 4 else "сообщений")
+                button_info = f"<b>Действие:</b> Отправить {messages_count} следующих {msg_word}"
+            else:
+                button_info = "<b>Действие:</b> Переход к следующему сообщению"
+
             keyboard = [
                 [InlineKeyboardButton("📝 Изменить текст", callback_data=f"edit_button_text_{button_id}")],
+                [InlineKeyboardButton("🔢 Количество сообщений", callback_data=f"edit_button_count_{button_id}")],
                 [InlineKeyboardButton("🗑 Удалить кнопку", callback_data=f"delete_button_{button_id}")],
                 [InlineKeyboardButton("« Назад", callback_data=f"manage_buttons_{message_number}")]
             ]
@@ -535,14 +561,15 @@ class ButtonsMixin:
             
             # Проверяем тип кнопки
             if text.strip() in ["-", "skip", "нет", ""] or not text.strip():
-                # Callback кнопка (следующее сообщение) - пустой URL
-                self.db.add_message_button(message_number, button_text, "", position)
-                
+                # Callback кнопка (следующее сообщение) - пустой URL, по умолчанию 1 сообщение
+                self.db.add_message_button(message_number, button_text, "", position, messages_count=1)
+
                 await update.message.reply_text(
                     f"✅ Callback кнопка успешно добавлена!\n\n"
                     f"📩 <b>Текст:</b> {button_text}\n"
                     f"<b>Действие:</b> Переход к следующему сообщению\n\n"
-                    f"💡 <i>При нажатии пользователь получит следующее запланированное сообщение.</i>",
+                    f"💡 <i>При нажатии пользователь получит следующее запланированное сообщение.</i>\n"
+                    f"🔢 <i>Вы можете изменить количество отправляемых сообщений в настройках кнопки.</i>",
                     parse_mode='HTML'
                 )
             elif text.startswith("http://") or text.startswith("https://"):

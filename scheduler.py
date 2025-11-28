@@ -319,20 +319,24 @@ class MessageScheduler:
                     
                     # Получаем кнопки
                     buttons = self.db.get_message_buttons(message_number)
-                    
+
                     # Обрабатываем контент с UTM метками
                     processed_text, processed_buttons = self.process_message_content(text, buttons, user_id)
-                    
+
                     reply_markup = None
                     if processed_buttons:
                         keyboard = []
-                        
-                        for button_id, button_text, button_url, position in processed_buttons:
+
+                        for button_id, button_text, button_url, position, messages_count in processed_buttons:
                             if button_url and button_url.strip():
                                 keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                             else:
-                                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
-                        
+                                # Передаем messages_count в callback_data
+                                keyboard.append([InlineKeyboardButton(
+                                    button_text,
+                                    callback_data=f"next_msg_{user_id}_{messages_count or 1}"
+                                )])
+
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(processed_buttons)} кнопок")
 
@@ -378,67 +382,110 @@ class MessageScheduler:
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в send_scheduled_messages: {e}", exc_info=True)
     
-    async def send_next_scheduled_message(self, context: ContextTypes.DEFAULT_TYPE, user_id):
-        """Отправить следующее запланированное сообщение для пользователя"""
+    async def send_next_scheduled_message(self, context: ContextTypes.DEFAULT_TYPE, user_id, count=1):
+        """
+        Отправить следующее(ие) запланированное(ые) сообщение(я) для пользователя
+
+        Args:
+            context: Контекст бота
+            user_id: ID пользователя
+            count: Количество сообщений для отправки (по умолчанию 1)
+        """
+        return await self.send_multiple_next_messages(context, user_id, count)
+
+    async def send_multiple_next_messages(self, context: ContextTypes.DEFAULT_TYPE, user_id, count=1):
+        """
+        Отправить N следующих запланированных сообщений подряд
+
+        Args:
+            context: Контекст бота
+            user_id: ID пользователя
+            count: Количество сообщений для отправки
+
+        Returns:
+            bool: True если отправлено хотя бы одно сообщение
+        """
         try:
-            # Получаем следующее неотправленное сообщение
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT sm.id, sm.message_number, bm.text, bm.photo_url, bm.video_url
-                FROM scheduled_messages sm
-                JOIN broadcast_messages bm ON sm.message_number = bm.message_number
-                WHERE sm.user_id = ? AND sm.is_sent = 0
-                ORDER BY sm.message_number ASC
-                LIMIT 1
-            ''', (user_id,))
-
-            result = cursor.fetchone()
-            conn.close()
-
-            if not result:
+            if count < 1:
+                logger.warning(f"⚠️ Некорректное количество сообщений: {count}")
                 return False
 
-            message_id, message_number, text, photo_url, video_url = result
-            
-            # Получаем кнопки
-            buttons = self.db.get_message_buttons(message_number)
-            processed_text, processed_buttons = self.process_message_content(text, buttons, user_id)
-            
-            reply_markup = None
-            if processed_buttons:
-                keyboard = []
-                
-                for button_id, button_text, button_url, position in processed_buttons:
-                    if button_url and button_url.strip():
-                        keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+            logger.info(f"📬 Отправляем {count} сообщений пользователю {user_id}")
+            sent_count = 0
+
+            for i in range(count):
+                # Получаем следующее неотправленное сообщение
+                conn = self.db._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT sm.id, sm.message_number, bm.text, bm.photo_url, bm.video_url
+                    FROM scheduled_messages sm
+                    JOIN broadcast_messages bm ON sm.message_number = bm.message_number
+                    WHERE sm.user_id = ? AND sm.is_sent = 0
+                    ORDER BY sm.message_number ASC
+                    LIMIT 1
+                ''', (user_id,))
+
+                result = cursor.fetchone()
+                conn.close()
+
+                if not result:
+                    if sent_count == 0:
+                        logger.info(f"ℹ️ Нет сообщений для отправки пользователю {user_id}")
                     else:
-                        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
+                        logger.info(f"ℹ️ Больше нет сообщений (отправлено {sent_count} из {count})")
+                    break
 
-                reply_markup = InlineKeyboardMarkup(keyboard)
+                message_id, message_number, text, photo_url, video_url = result
 
-            # ✅ Отправляем с проверкой медиа-альбома
-            await self.send_message_with_media(
-                context,
-                user_id,
-                processed_text,
-                photo_url,
-                video_url,
-                reply_markup,
-                message_number=message_number
-            )
+                # Получаем кнопки
+                buttons = self.db.get_message_buttons(message_number)
+                processed_text, processed_buttons = self.process_message_content(text, buttons, user_id)
 
-            # Отмечаем как отправленное
-            self.db.mark_message_sent(message_id)
+                # Формируем клавиатуру с учетом messages_count
+                reply_markup = None
+                if processed_buttons:
+                    keyboard = []
 
-            # 📊 Логируем отправку для воронки
-            self.db.log_message_delivery(user_id, message_number)
-            
-            logger.info(f"✅ Принудительно отправлено сообщение {message_number} пользователю {user_id}")
-            return True
-            
+                    for button_id, button_text, button_url, position, messages_count in processed_buttons:
+                        if button_url and button_url.strip():
+                            # URL кнопка
+                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                        else:
+                            # Callback кнопка - передаем messages_count в callback_data
+                            keyboard.append([InlineKeyboardButton(
+                                button_text,
+                                callback_data=f"next_msg_{user_id}_{messages_count or 1}"
+                            )])
+
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+
+                # Отправляем сообщение
+                await self.send_message_with_media(
+                    context,
+                    user_id,
+                    processed_text,
+                    photo_url,
+                    video_url,
+                    reply_markup,
+                    message_number=message_number
+                )
+
+                # Отмечаем как отправленное
+                self.db.mark_message_sent(message_id)
+                self.db.log_message_delivery(user_id, message_number)
+
+                sent_count += 1
+                logger.info(f"✅ Отправлено сообщение {message_number} ({sent_count}/{count}) пользователю {user_id}")
+
+                # Задержка между сообщениями (кроме последнего)
+                if i < count - 1:
+                    await asyncio.sleep(1)
+
+            return sent_count > 0
+
         except Exception as e:
-            logger.error(f"❌ Ошибка при принудительной отправке сообщения пользователю {user_id}: {e}")
+            logger.error(f"❌ Ошибка при множественной отправке сообщений пользователю {user_id}: {e}")
             return False
     
     async def send_scheduled_broadcasts(self, context: ContextTypes.DEFAULT_TYPE):

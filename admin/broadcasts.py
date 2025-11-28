@@ -403,62 +403,6 @@ class BroadcastsMixin:
         except ValueError:
             await update.message.reply_text("❌ Пожалуйста, введите корректное число часов (больше 0)")
     
-    async def handle_add_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Обработка добавления нового сообщения"""
-        user_id = update.effective_user.id
-        waiting_data = self.waiting_for[user_id]
-        
-        if len(text) > 4096:
-            await update.message.reply_text("❌ Текст слишком длинный. Максимум 4096 символов.")
-            return
-        
-        current_step = waiting_data.get("step", "text")
-        
-        if current_step == "text":
-            # Сохраняем текст и запрашиваем задержку
-            self.waiting_for[user_id]["text"] = text
-            self.waiting_for[user_id]["step"] = "delay"
-            await update.message.reply_text(
-                "⏰ Теперь отправьте задержку:\n\n"
-                "📝 <b>Форматы ввода:</b>\n"
-                "• <code>30м</code> или <code>30 минут</code> - для минут\n"
-                "• <code>2ч</code> или <code>2 часа</code> - для часов\n"
-                "• <code>1.5</code> - для 1.5 часов\n"
-                "• <code>0.05</code> - для 3 минут",
-                parse_mode='HTML'
-            )
-        elif current_step == "delay":
-            # Парсим задержку
-            delay_hours, delay_display = self.parse_delay_input(text)
-            
-            if delay_hours is not None and delay_hours > 0:
-                # Добавляем сообщение
-                message_text = waiting_data["text"]
-                new_number = self.db.add_broadcast_message(message_text, delay_hours)
-                
-                await update.message.reply_text(f"✅ Сообщение {new_number} добавлено с задержкой {delay_display}!")
-                del self.waiting_for[user_id]
-                await self.show_broadcast_menu_from_context(update, context)
-            else:
-                await update.message.reply_text(
-                    "❌ Неверный формат! Примеры правильного ввода:\n\n"
-                    "• <code>3м</code> или <code>3 минуты</code>\n"
-                    "• <code>2ч</code> или <code>2 часа</code>\n"
-                    "• <code>1.5</code> (для 1.5 часов)\n"
-                    "• <code>0.05</code> (для 3 минут)",
-                    parse_mode='HTML'
-                )
-        else:
-            # Неожиданное состояние - сбрасываем
-            logger.error(f"❌ Неожиданное состояние step='{current_step}' для пользователя {user_id}")
-            await update.message.reply_text(
-                "❌ Произошла ошибка. Попробуйте добавить сообщение заново."
-            )
-            
-            # Очищаем состояние
-            if user_id in self.waiting_for:
-                del self.waiting_for[user_id]
-    
     # === ДОПОЛНИТЕЛЬНЫЕ ОБРАБОТЧИКИ ===
     
     async def handle_additional_callbacks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -537,19 +481,10 @@ class BroadcastsMixin:
             self.db.delete_message_media_album(message_number)
             await self.show_broadcast_menu(update, context)
         elif data == "add_message":
-            # Инициализация для добавления сообщения
-            user_id = update.callback_query.from_user.id
-            self.waiting_for[user_id] = {
-                "type": "add_message", 
-                "created_at": datetime.now(), 
-                "step": "text"
-            }
-            
-            await self.safe_edit_or_send_message(
-                update, context,
-                "✏️ Отправьте текст нового сообщения:\n\n💡 После этого мы попросим задержку для отправки.",
-                InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_broadcast")]])
-            )
+            # Создаем пустое сообщение и сразу открываем меню редактирования
+            new_number = self.db.add_broadcast_message()
+            logger.info(f"✅ Создано новое пустое сообщение #{new_number}")
+            await self.show_message_edit(update, context, new_number)
         elif data.startswith("add_button_"):
             message_number = int(data.split("_")[2])
             # Проверяем лимит кнопок

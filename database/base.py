@@ -224,9 +224,20 @@ class DatabaseBase:
                     button_text TEXT NOT NULL,
                     button_url TEXT NOT NULL,
                     position INTEGER DEFAULT 1,
+                    messages_count INTEGER DEFAULT 1,
                     FOREIGN KEY (message_number) REFERENCES broadcast_messages(message_number)
                 )
             ''')
+
+            # Миграция: добавляем messages_count для существующих баз
+            try:
+                cursor.execute("SELECT messages_count FROM message_buttons LIMIT 1")
+            except sqlite3.OperationalError:
+                # Колонка не существует - добавляем
+                logger.info("🔄 Миграция: добавляем колонку messages_count в message_buttons")
+                cursor.execute("ALTER TABLE message_buttons ADD COLUMN messages_count INTEGER DEFAULT 1")
+                conn.commit()
+                logger.info("✅ Миграция завершена")
 
             # ========================================
             # 🎬 ТАБЛИЦЫ ДЛЯ МЕДИА-АЛЬБОМОВ

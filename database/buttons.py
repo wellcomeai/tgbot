@@ -20,7 +20,7 @@ class ButtonsMixin:
 
         try:
             cursor.execute('''
-                SELECT id, button_text, button_url, position
+                SELECT id, button_text, button_url, position, messages_count
                 FROM message_buttons
                 WHERE message_number = ?
                 ORDER BY position
@@ -32,16 +32,16 @@ class ButtonsMixin:
             if conn:
                 conn.close()
 
-    def add_message_button(self, message_number, button_text, button_url, position=1):
+    def add_message_button(self, message_number, button_text, button_url, position=1, messages_count=1):
         """Добавление кнопки к сообщению"""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
             cursor.execute('''
-                INSERT INTO message_buttons (message_number, button_text, button_url, position)
-                VALUES (?, ?, ?, ?)
-            ''', (message_number, button_text, button_url, position))
+                INSERT INTO message_buttons (message_number, button_text, button_url, position, messages_count)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (message_number, button_text, button_url, position, messages_count))
 
             conn.commit()
             logger.info(f"Добавлена кнопка к сообщению #{message_number}")
@@ -49,7 +49,7 @@ class ButtonsMixin:
             if conn:
                 conn.close()
 
-    def update_message_button(self, button_id, button_text=None, button_url=None):
+    def update_message_button(self, button_id, button_text=None, button_url=None, messages_count=None):
         """Обновление кнопки сообщения"""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -66,6 +66,12 @@ class ButtonsMixin:
                     UPDATE message_buttons SET button_url = ?
                     WHERE id = ?
                 ''', (button_url, button_id))
+
+            if messages_count is not None:
+                cursor.execute('''
+                    UPDATE message_buttons SET messages_count = ?
+                    WHERE id = ?
+                ''', (messages_count, button_id))
 
             conn.commit()
         finally:

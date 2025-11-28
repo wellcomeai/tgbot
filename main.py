@@ -783,53 +783,62 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_next_message_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка нажатия кнопки 'Следующее сообщение'"""
     query = update.callback_query
-    
+
     if query.data.startswith("next_msg_"):
-        user_id = int(query.data.split("_")[2])
-        
+        parts = query.data.split("_")
+        user_id = int(parts[2])
+
         # Проверяем права
         if query.from_user.id != user_id:
             await query.answer("❌ Это не ваша кнопка!")
             return
-            
-        await query.answer("📩 Отправляем следующее сообщение...")
-        
-        # 📊 НОВОЕ: Логируем клик по callback кнопке
-        # Нужно определить, из какого сообщения был клик
-        # Для этого получаем последнее отправленное сообщение пользователю
+
+        # Получаем количество сообщений (если передано)
+        messages_count = 1
+        if len(parts) >= 4:  # next_msg_{user_id}_{messages_count}
+            try:
+                messages_count = int(parts[3])
+            except (ValueError, IndexError):
+                messages_count = 1
+
+        # Отображаем соответствующее уведомление
+        if messages_count == 1:
+            await query.answer("📩 Отправляем следующее сообщение...")
+        else:
+            await query.answer(f"📩 Отправляем {messages_count} сообщений...")
+
+        # 📊 Логируем клик по callback кнопке
         try:
-            # Получаем последнее отправленное (но не следующее) сообщение
             conn = db._get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT message_number 
-                FROM scheduled_messages 
-                WHERE user_id = ? AND is_sent = 1 
-                ORDER BY id DESC 
+                SELECT message_number
+                FROM scheduled_messages
+                WHERE user_id = ? AND is_sent = 1
+                ORDER BY id DESC
                 LIMIT 1
             ''', (user_id,))
             result = cursor.fetchone()
             conn.close()
-            
+
             if result:
                 current_message_number = result[0]
-                
-                # Логируем клик
+
                 db.log_button_click(
                     user_id=user_id,
                     message_number=current_message_number,
-                    button_id=None,  # Для callback кнопок следующего сообщения
+                    button_id=None,
                     button_type='callback',
-                    button_text='Следующее сообщение'
+                    button_text=f'Следующее сообщение (×{messages_count})'
                 )
-                
-                logger.info(f"📊 Залогирован клик по callback кнопке в сообщении {current_message_number} от пользователя {user_id}")
+
+                logger.info(f"📊 Залогирован клик по callback кнопке в сообщении {current_message_number} от пользователя {user_id} (×{messages_count})")
         except Exception as e:
             logger.error(f"❌ Ошибка при логировании клика по кнопке: {e}")
-        
-        # Отправляем следующее сообщение
-        success = await scheduler.send_next_scheduled_message(context, user_id)
-        
+
+        # Отправляем N сообщений
+        success = await scheduler.send_next_scheduled_message(context, user_id, messages_count)
+
         if not success:
             await context.bot.send_message(
                 chat_id=user_id,

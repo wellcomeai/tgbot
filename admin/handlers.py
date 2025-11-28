@@ -268,6 +268,9 @@ class HandlersMixin:
         elif data.startswith("edit_button_url_"):
             button_id = int(data.split("_")[3])
             await self.request_text_input(update, context, "edit_button_url", button_id=button_id)
+        elif data.startswith("edit_button_count_"):
+            button_id = int(data.split("_")[3])
+            await self.request_text_input(update, context, "edit_button_count", button_id=button_id)
         elif data.startswith("delete_button_"):
             await self._handle_delete_button(update, context, data)
         
@@ -563,8 +566,6 @@ class HandlersMixin:
         # Остальные типы
         elif input_type == "broadcast_timer":
             await self.handle_broadcast_timer(update, context, text)
-        elif input_type == "add_message":
-            await self.handle_add_message(update, context, text)
         elif input_type == "add_button":
             await self.handle_add_button(update, context, text)
         
@@ -636,7 +637,10 @@ class HandlersMixin:
         
         elif input_type == "edit_button_url":
             await self._handle_edit_button_url_input(update, context, text, waiting_data)
-        
+
+        elif input_type == "edit_button_count":
+            await self._handle_edit_button_count_input(update, context, text, waiting_data)
+
         else:
             return False
         
@@ -948,7 +952,7 @@ class HandlersMixin:
         """Обработка изменения URL кнопки"""
         user_id = update.effective_user.id
         button_id = waiting_data["button_id"]
-        
+
         if not (text.startswith("http://") or text.startswith("https://")):
             await update.message.reply_text("❌ URL должен начинаться с http:// или https://")
             return
@@ -957,7 +961,39 @@ class HandlersMixin:
         await update.message.reply_text("✅ URL кнопки обновлен!")
         del self.waiting_for[user_id]
         await self.show_button_edit_from_context(update, context, button_id)
-    
+
+    async def _handle_edit_button_count_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                            text: str, waiting_data: dict):
+        """Обработка изменения количества сообщений для кнопки"""
+        user_id = update.effective_user.id
+        button_id = waiting_data["button_id"]
+
+        try:
+            count = int(text.strip())
+            if count < 1:
+                await update.message.reply_text("❌ Количество должно быть не меньше 1")
+                return
+            if count > 50:  # Разумный лимит
+                await update.message.reply_text("❌ Максимум 50 сообщений за раз")
+                return
+
+            self.db.update_message_button(button_id, messages_count=count)
+
+            # Правильное склонение
+            if count == 1:
+                msg_text = "сообщение"
+            elif 2 <= count <= 4:
+                msg_text = "сообщения"
+            else:
+                msg_text = "сообщений"
+
+            await update.message.reply_text(f"✅ Кнопка будет отправлять {count} {msg_text}")
+            del self.waiting_for[user_id]
+            await self.show_button_edit_from_context(update, context, button_id)
+
+        except ValueError:
+            await update.message.reply_text("❌ Введите целое число от 1 до 50")
+
     # Обработчики ввода для платных массовых рассылок
     async def handle_paid_mass_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
         """Обработка ввода текста для платной массовой рассылки"""
@@ -1163,19 +1199,10 @@ class HandlersMixin:
             self.db.delete_broadcast_message(message_number)
             await self.show_broadcast_menu(update, context)
         elif data == "add_message":
-            # Инициализация для добавления сообщения
-            user_id = update.callback_query.from_user.id
-            self.waiting_for[user_id] = {
-                "type": "add_message", 
-                "created_at": datetime.now(), 
-                "step": "text"
-            }
-            
-            await self.safe_edit_or_send_message(
-                update, context,
-                "✏️ Отправьте текст нового сообщения:\n\n💡 После этого мы попросим задержку для отправки.",
-                InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="admin_broadcast")]])
-            )
+            # Создаем пустое сообщение и сразу открываем меню редактирования
+            new_number = self.db.add_broadcast_message()
+            logger.info(f"✅ Создано новое пустое сообщение #{new_number}")
+            await self.show_message_edit(update, context, new_number)
         elif data.startswith("add_button_"):
             message_number = int(data.split("_")[2])
             # Проверяем лимит кнопок

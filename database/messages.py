@@ -41,7 +41,7 @@ class MessagesMixin:
             if conn:
                 conn.close()
 
-    def add_broadcast_message(self, text, delay_hours, photo_url=None, video_url=None):
+    def add_broadcast_message(self, text="", delay_hours=0.05, photo_url=None, video_url=None):
         """Добавление нового сообщения рассылки"""
         conn = self._get_connection()
         cursor = conn.cursor()
