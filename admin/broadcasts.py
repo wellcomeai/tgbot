@@ -167,8 +167,15 @@ class BroadcastsMixin:
         buttons_info = ""
         if buttons:
             buttons_info = f"\n<b>Кнопки ({len(buttons)}):</b>\n"
-            for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
-                buttons_info += f"{i}. {button_text} → {button_url}\n"
+            # ✅ ИСПРАВЛЕНО: Добавлен messages_count (5 значений вместо 4)
+            for i, (button_id, button_text, button_url, position, messages_count) in enumerate(buttons, 1):
+                if button_url and button_url.strip():
+                    buttons_info += f"{i}. 🔗 {button_text} → {button_url}\n"
+                else:
+                    if messages_count and messages_count > 1:
+                        buttons_info += f"{i}. 📩 {button_text} (×{messages_count})\n"
+                    else:
+                        buttons_info += f"{i}. 📩 {button_text}\n"
         
         delay_str = self.format_delay_display_full(delay_hours)
         
@@ -241,8 +248,15 @@ class BroadcastsMixin:
         buttons_info = ""
         if buttons:
             buttons_info = f"\n<b>Кнопки ({len(buttons)}):</b>\n"
-            for i, (button_id, button_text, button_url, position) in enumerate(buttons, 1):
-                buttons_info += f"{i}. {button_text} → {button_url}\n"
+            # ✅ ИСПРАВЛЕНО: Добавлен messages_count (5 значений вместо 4)
+            for i, (button_id, button_text, button_url, position, messages_count) in enumerate(buttons, 1):
+                if button_url and button_url.strip():
+                    buttons_info += f"{i}. 🔗 {button_text} → {button_url}\n"
+                else:
+                    if messages_count and messages_count > 1:
+                        buttons_info += f"{i}. 📩 {button_text} (×{messages_count})\n"
+                    else:
+                        buttons_info += f"{i}. 📩 {button_text}\n"
         
         delay_str = self.format_delay_display_full(delay_hours)
         
