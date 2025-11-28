@@ -57,7 +57,7 @@ def process_text_links(text: str, user_id: int) -> str:
         return text
 
 def process_message_buttons(buttons: list, user_id: int) -> list:
-    """Обработка кнопок с URL"""
+    """Обработка кнопок с URL и поддержкой messages_count"""
     try:
         if not buttons:
             return buttons
@@ -65,25 +65,34 @@ def process_message_buttons(buttons: list, user_id: int) -> list:
         processed_buttons = []
         
         for button in buttons:
-            # Кнопка может быть кортежем (id, text, url, position) или словарем
+            # Кнопка может быть кортежем (id, text, url, position, messages_count) или словарем
             if isinstance(button, (tuple, list)) and len(button) >= 3:
                 button_id, button_text, button_url = button[0], button[1], button[2]
                 position = button[3] if len(button) > 3 else 1
+                messages_count = button[4] if len(button) > 4 else 1  # ✅ НОВОЕ
                 
                 # Обрабатываем URL
                 processed_url = add_utm_to_url(button_url, user_id)
                 
-                # Сохраняем структуру
-                if len(button) > 3:
-                    processed_buttons.append((button_id, button_text, processed_url, position))
+                # ✅ ИСПРАВЛЕНО: Сохраняем структуру с messages_count
+                if len(button) > 4:
+                    # Кнопка с messages_count (5 значений)
+                    processed_buttons.append((button_id, button_text, processed_url, position, messages_count))
+                elif len(button) > 3:
+                    # Кнопка без messages_count (4 значения) - добавляем 1 по умолчанию
+                    processed_buttons.append((button_id, button_text, processed_url, position, 1))
                 else:
-                    processed_buttons.append((button_id, button_text, processed_url))
+                    # Старый формат (3 значения) - добавляем position и messages_count
+                    processed_buttons.append((button_id, button_text, processed_url, 1, 1))
                     
             elif isinstance(button, dict):
                 # Если кнопка в виде словаря
                 processed_button = button.copy()
                 if 'url' in processed_button:
                     processed_button['url'] = add_utm_to_url(processed_button['url'], user_id)
+                # Добавляем messages_count если его нет
+                if 'messages_count' not in processed_button:
+                    processed_button['messages_count'] = 1
                 processed_buttons.append(processed_button)
                 
             else:
