@@ -259,7 +259,7 @@ class HandlersMixin:
         elif data.startswith("manage_buttons_"):
             message_number = int(data.split("_")[2])
             await self.show_message_buttons(update, context, message_number)
-        elif data.startswith("edit_button_") and not data.startswith("edit_button_text_") and not data.startswith("edit_button_url_"):
+        elif data.startswith("edit_button_") and not data.startswith("edit_button_text_") and not data.startswith("edit_button_url_") and not data.startswith("edit_button_count_"):
             button_id = int(data.split("_")[2])
             await self.show_button_edit(update, context, button_id)
         elif data.startswith("edit_button_text_"):
