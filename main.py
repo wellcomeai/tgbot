@@ -912,13 +912,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_text in admin_button_texts:
         # Обрабатываем нажатие на кнопку, настроенную админом
         try:
-            # ✅ ТИХО убираем клавиатуру
-            try:
-                temp_msg = await update.message.reply_text(".", reply_markup=ReplyKeyboardRemove())
-                await temp_msg.delete()
-            except:
-                pass
-            
             success = await callback_handler.handle_welcome_button_press(
                 user_id, message_text, context
             )
@@ -995,13 +988,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Если это обычное сообщение от пользователя
     else:
-        # ✅ ТИХО убираем клавиатуру если она есть
-        try:
-            temp_msg = await update.message.reply_text(".", reply_markup=ReplyKeyboardRemove())
-            await temp_msg.delete()
-        except:
-            pass
-        
         success = await callback_handler.execute_start_logic(user_id, context, update.effective_user)
         
         if success:
@@ -1059,13 +1045,6 @@ async def handle_consent_button(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.effective_user
     
     try:
-        # ✅ ТИХО убираем клавиатуру
-        try:
-            temp_msg = await update.message.reply_text(".", reply_markup=ReplyKeyboardRemove())
-            await temp_msg.delete()
-        except:
-            pass  # Игнорируем ошибки
-        
         logger.info(f"🔘 Пользователь {user_id} нажал кнопку согласия")
         
         # Убеждаемся, что пользователь существует и активен
