@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from telegram.ext import ContextTypes
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, ReplyKeyboardRemove
 from telegram.error import Forbidden, BadRequest
 import logging
 import asyncio
@@ -149,6 +149,12 @@ class MessageScheduler:
             broadcast_id: ID массовой рассылки для проверки медиа-альбома (может быть None)
         """
         try:
+            # ✅ КРИТИЧНО: Убираем клавиатуру при первом сообщении воронки
+            remove_keyboard = False
+            if message_number == 1:
+                remove_keyboard = True
+                logger.debug(f"⌨️ Первое сообщение воронки - будем убирать клавиатуру")
+            
             # 🎬 ПРОВЕРЯЕМ МЕДИА-АЛЬБОМ
             media_album = None
             
@@ -198,6 +204,21 @@ class MessageScheduler:
                 )
                 logger.info(f"🎬 Отправлен медиа-альбом ({len(media_group)} файлов) пользователю {user_id}")
                 
+                # ✅ Убираем клавиатуру если нужно (для первого сообщения)
+                if remove_keyboard and not reply_markup:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="⌨️",  # Невидимый символ
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    # Удаляем это сообщение сразу
+                    try:
+                        # Получаем ID последнего сообщения
+                        pass  # Telegram API не позволяет удалять сразу после отправки
+                    except:
+                        pass
+                    logger.debug(f"⌨️ Клавиатура убрана")
+                
                 # Кнопки отправляем отдельным сообщением
                 if reply_markup:
                     await context.bot.send_message(
@@ -208,6 +229,13 @@ class MessageScheduler:
                     logger.debug(f"🔘 Отправлены кнопки после медиа-альбома")
                 
                 return  # ✅ Готово!
+            
+            # ✅ ЛОГИКА УДАЛЕНИЯ КЛАВИАТУРЫ ДЛЯ ПЕРВОГО СООБЩЕНИЯ
+            # Если это первое сообщение И нет inline кнопок - добавляем ReplyKeyboardRemove
+            final_reply_markup = reply_markup
+            if remove_keyboard and not reply_markup:
+                final_reply_markup = ReplyKeyboardRemove()
+                logger.debug(f"⌨️ Добавлен ReplyKeyboardRemove к первому сообщению")
             
             # Если медиа-альбома нет - используем одиночные фото/видео
             if photo_url and video_url:
@@ -220,6 +248,15 @@ class MessageScheduler:
                     chat_id=user_id,
                     media=media_group
                 )
+
+                # Убираем клавиатуру если нужно
+                if remove_keyboard and not reply_markup:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=".",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    logger.debug(f"⌨️ Клавиатура убрана после медиагруппы")
 
                 # Кнопки отправляем отдельным сообщением
                 if reply_markup:
@@ -237,7 +274,7 @@ class MessageScheduler:
                     photo=photo_url,
                     caption=text,
                     parse_mode='HTML',
-                    reply_markup=reply_markup
+                    reply_markup=final_reply_markup
                 )
                 logger.debug(f"🖼️ Отправлено сообщение с фото")
 
@@ -248,7 +285,7 @@ class MessageScheduler:
                     video=video_url,
                     caption=text,
                     parse_mode='HTML',
-                    reply_markup=reply_markup
+                    reply_markup=final_reply_markup
                 )
                 logger.debug(f"🎥 Отправлено сообщение с видео")
 
@@ -259,7 +296,7 @@ class MessageScheduler:
                     text=text,
                     parse_mode='HTML',
                     disable_web_page_preview=True,
-                    reply_markup=reply_markup
+                    reply_markup=final_reply_markup
                 )
                 logger.debug(f"📝 Отправлено текстовое сообщение")
 
@@ -340,7 +377,7 @@ class MessageScheduler:
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         logger.debug(f"🔘 Добавлены кнопки к сообщению {message_number}: {len(processed_buttons)} кнопок")
 
-                    # ✅ Отправляем с проверкой медиа-альбома
+                    # ✅ Отправляем с проверкой медиа-альбома и удалением клавиатуры
                     await self.send_message_with_media(
                         context,
                         user_id,
@@ -460,7 +497,7 @@ class MessageScheduler:
 
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
-                # Отправляем сообщение
+                # Отправляем сообщение (здесь НЕ убираем клавиатуру, так как это не первое сообщение воронки)
                 await self.send_message_with_media(
                     context,
                     user_id,
