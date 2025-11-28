@@ -837,10 +837,7 @@ async def handle_next_message_callback(update: Update, context: ContextTypes.DEF
         success = await scheduler.send_next_scheduled_message(context, user_id, messages_count)
 
         if not success:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="🎉 Это было последнее сообщение! Спасибо за внимание."
-            )
+            pass
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на инлайн-кнопки"""
