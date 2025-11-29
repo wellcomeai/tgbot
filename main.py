@@ -793,18 +793,25 @@ async def handle_next_message_callback(update: Update, context: ContextTypes.DEF
             await query.answer("❌ Это не ваша кнопка!")
             return
 
-        # Получаем количество сообщений (если передано)
+        # Получаем количество сообщений
         messages_count = 1
-        if len(parts) >= 4:  # next_msg_{user_id}_{messages_count}
+        if len(parts) >= 4:
             try:
                 messages_count = int(parts[3])
             except (ValueError, IndexError):
                 messages_count = 1
 
-        # ✅ ИСПРАВЛЕНО: Убрано уведомление, только подтверждение нажатия
+        # ✅ Подтверждаем нажатие
         await query.answer()
 
-        # 📊 Логируем клик по callback кнопке
+        # ✅ НОВОЕ: Убираем кнопки из старого сообщения ПЕРЕД отправкой нового
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+            logger.debug(f"🔘 Кнопки удалены из старого сообщения для пользователя {user_id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось убрать кнопки: {e}")
+
+        # 📊 Логируем клик
         try:
             conn = db._get_connection()
             cursor = conn.cursor()
@@ -820,7 +827,6 @@ async def handle_next_message_callback(update: Update, context: ContextTypes.DEF
 
             if result:
                 current_message_number = result[0]
-
                 db.log_button_click(
                     user_id=user_id,
                     message_number=current_message_number,
@@ -828,7 +834,6 @@ async def handle_next_message_callback(update: Update, context: ContextTypes.DEF
                     button_type='callback',
                     button_text=f'Следующее сообщение (×{messages_count})'
                 )
-
                 logger.info(f"📊 Залогирован клик по callback кнопке в сообщении {current_message_number} от пользователя {user_id} (×{messages_count})")
         except Exception as e:
             logger.error(f"❌ Ошибка при логировании клика по кнопке: {e}")
