@@ -357,17 +357,22 @@ class StatisticsMixin:
                         text += "└─ ⏳ Еще не отправлялось\n\n"
                         continue
                     
-                    # Статистика
+                    # ОБНОВЛЕНО: Статистика по ВСЕМ кликам
+                    total_clicks = clicked_callback + clicked_url
+                    click_rate = (total_clicks / delivered * 100) if delivered > 0 else 0
+                    
                     text += f"├─ 📬 Получили: <b>{delivered}</b> чел.\n"
-                    text += f"├─ 🔘 Нажали кнопку: <b>{clicked_callback}</b> ({conversion_rate}%)\n"
+                    text += f"├─ ✅ Кликнули кнопки: <b>{total_clicks}</b> ({click_rate:.1f}%)\n"
+                    text += f"│  ├─ 📩 Callback: {clicked_callback}\n"
+                    text += f"│  └─ 🔗 URL: {clicked_url}\n"
                     
                     # Предупреждение о большом отвале
                     if drop_rate >= 30:
-                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate}%) ⚠️ <b>БОЛЬШОЙ ОТВАЛ!</b>\n\n"
+                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate:.1f}%) ⚠️ <b>БОЛЬШОЙ ОТВАЛ!</b>\n\n"
                     elif drop_rate >= 20:
-                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate}%) ⚠️\n\n"
+                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate:.1f}%) ⚠️\n\n"
                     else:
-                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate}%)\n\n"
+                        text += f"└─ 📉 Отвалилось: <b>{dropped}</b> ({drop_rate:.1f}%)\n\n"
                 
                 # Добавляем рекомендацию если есть проблемное сообщение
                 if biggest_drop and biggest_drop['drop_rate'] >= 20:
