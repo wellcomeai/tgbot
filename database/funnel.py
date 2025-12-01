@@ -318,6 +318,55 @@ class FunnelMixin:
 
         return biggest_drop
 
+    def get_biggest_drop_summary(self):
+        """
+        Получение краткой сводки о проблемах воронки для дашборда
+        
+        Returns:
+            dict или None: {
+                'has_problems': bool - есть ли проблемы (отвал > 30%),
+                'message_number': int - номер проблемного сообщения,
+                'drop_rate': float - процент отвала,
+                'message_text': str - краткий текст сообщения (30 символов),
+                'total_messages_with_data': int - сколько сообщений имеют данные
+            }
+        """
+        try:
+            funnel_data = self.get_funnel_data()
+            
+            if not funnel_data:
+                return None
+            
+            # Фильтруем сообщения с отправками
+            messages_with_deliveries = [msg for msg in funnel_data if msg['delivered'] > 0]
+            
+            if not messages_with_deliveries:
+                return {
+                    'has_problems': False,
+                    'message_number': None,
+                    'drop_rate': 0.0,
+                    'message_text': 'Нет данных',
+                    'total_messages_with_data': 0
+                }
+            
+            # Находим сообщение с максимальным отвалом
+            biggest_drop = max(messages_with_deliveries, key=lambda x: x['drop_rate'])
+            
+            # Считаем проблемным, если отвал > 30%
+            has_problems = biggest_drop['drop_rate'] >= 30.0
+            
+            return {
+                'has_problems': has_problems,
+                'message_number': biggest_drop['message_number'],
+                'drop_rate': biggest_drop['drop_rate'],
+                'message_text': biggest_drop['message_text'][:30] + ('...' if len(biggest_drop['message_text']) > 30 else ''),
+                'total_messages_with_data': len(messages_with_deliveries)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении краткой сводки воронки: {e}")
+            return None
+
     def cleanup_old_funnel_data(self, days_old=30):
         """
         Очистка старых данных воронки (старше X дней)
