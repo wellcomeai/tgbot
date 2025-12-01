@@ -85,8 +85,9 @@ class FunnelMixin:
                 'delivered': int (кол-во получивших),
                 'clicked_callback': int (кол-во кликнувших callback кнопку),
                 'clicked_url': int (кол-во кликнувших URL кнопку),
+                'clicked_any_button': int (кол-во кликнувших ЛЮБУЮ кнопку),
                 'conversion_rate': float (% кликнувших callback),
-                'dropped': int (кол-во отвалившихся),
+                'dropped': int (кол-во отвалившихся - не кликнули НИ ОДНУ кнопку),
                 'drop_rate': float (% отвалившихся)
             }
         """
@@ -120,6 +121,7 @@ class FunnelMixin:
                         'delivered': 0,
                         'clicked_callback': 0,
                         'clicked_url': 0,
+                        'clicked_any_button': 0,
                         'conversion_rate': 0.0,
                         'dropped': 0,
                         'drop_rate': 0.0
@@ -148,11 +150,21 @@ class FunnelMixin:
                 ''', (message_number,))
                 clicked_url = cursor.fetchone()[0]
 
-                # Конверсия по callback кнопкам (основная метрика)
+                # НОВОЕ: Количество кликнувших ЛЮБУЮ кнопку (callback ИЛИ url)
+                cursor.execute('''
+                    SELECT COUNT(DISTINCT bc.user_id)
+                    FROM button_clicks bc
+                    JOIN message_deliveries md ON bc.user_id = md.user_id AND bc.message_number = md.message_number
+                    WHERE bc.message_number = ?
+                    AND (julianday(bc.clicked_at) - julianday(md.delivered_at)) * 24 * 60 <= 10
+                ''', (message_number,))
+                clicked_any_button = cursor.fetchone()[0]
+
+                # Конверсия по callback кнопкам (для совместимости)
                 conversion_rate = (clicked_callback / delivered * 100) if delivered > 0 else 0
 
-                # Отвалившиеся = не кликнули callback кнопку в течение 10 минут
-                dropped = delivered - clicked_callback
+                # ОБНОВЛЕНО: Отвалившиеся = не кликнули НИ ОДНУ кнопку в течение 10 минут
+                dropped = delivered - clicked_any_button
                 drop_rate = (dropped / delivered * 100) if delivered > 0 else 0
 
                 funnel_data.append({
@@ -161,6 +173,7 @@ class FunnelMixin:
                     'delivered': delivered,
                     'clicked_callback': clicked_callback,
                     'clicked_url': clicked_url,
+                    'clicked_any_button': clicked_any_button,
                     'conversion_rate': round(conversion_rate, 2),
                     'dropped': dropped,
                     'drop_rate': round(drop_rate, 2)
