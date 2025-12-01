@@ -33,6 +33,30 @@ class HandlersMixin:
                 await self.show_main_menu(update, context)
             elif data == "admin_stats":
                 await self.show_statistics(update, context)
+            
+            # ===== 📊 НОВОЕ: Дашборд и очистка =====
+            elif data == "admin_dashboard":
+                await self.show_dashboard(update, context)
+            elif data == "admin_cleanup":
+                await self.show_cleanup_menu(update, context)
+            elif data == "admin_cleanup_funnel_menu":
+                await self.show_cleanup_funnel_menu(update, context)
+            elif data == "admin_cleanup_messages_menu":
+                await self.show_cleanup_messages_menu(update, context)
+            elif data == "admin_cleanup_funnel_30":
+                await self.perform_cleanup_funnel(update, context, 30)
+            elif data == "admin_cleanup_funnel_60":
+                await self.perform_cleanup_funnel(update, context, 60)
+            elif data == "admin_cleanup_funnel_90":
+                await self.perform_cleanup_funnel(update, context, 90)
+            elif data == "admin_cleanup_messages_7":
+                await self.perform_cleanup_messages(update, context, 7)
+            elif data == "admin_cleanup_messages_14":
+                await self.perform_cleanup_messages(update, context, 14)
+            elif data == "admin_cleanup_messages_30":
+                await self.perform_cleanup_messages(update, context, 30)
+            # ===== Конец новых обработчиков =====
+            
             elif data == "admin_broadcast":
                 await self.show_broadcast_menu(update, context)
             elif data == "admin_paid_broadcast":
