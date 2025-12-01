@@ -15,40 +15,265 @@ logger = logging.getLogger(__name__)
 class StatisticsMixin:
     """Миксин для работы со статистикой"""
     
+    async def show_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Показать главный дашборд со сводкой
+        """
+        try:
+            stats = self.db.get_user_statistics()
+            funnel_summary = self.db.get_biggest_drop_summary()
+            
+            # ===== СВОДКА ЗА СЕГОДНЯ =====
+            text = "📊 <b>СВОДКА ЗА СЕГОДНЯ</b>\n\n"
+            
+            new_today = stats['new_users_today']
+            change_percent = stats['new_users_change_percent']
+            
+            # Иконка изменения
+            if change_percent > 0:
+                change_icon = "📈"
+                change_text = f"+{change_percent}%"
+            elif change_percent < 0:
+                change_icon = "📉"
+                change_text = f"{change_percent}%"
+            else:
+                change_icon = "➡️"
+                change_text = "0%"
+            
+            text += f"🆕 Новых: <b>{new_today}</b> {change_icon} ({change_text} к вчера)\n"
+            text += f"💬 Начали разговор: <b>{stats['bot_started_today']}</b>\n"
+            text += f"💰 Оплатили: <b>{stats['paid_today']}</b>\n"
+            text += f"🚪 Отписались: <b>{stats['unsubscribed_today']}</b>\n\n"
+            
+            # ===== ДИНАМИКА =====
+            text += "📅 <b>ДИНАМИКА</b>\n\n"
+            text += f"За 7 дней: <b>{stats['new_users_7d']}</b> новых\n"
+            text += f"За 30 дней: <b>{stats['new_users_30d']}</b> новых\n\n"
+            
+            # ===== ОБЩИЕ ПОКАЗАТЕЛИ =====
+            text += "📈 <b>ОБЩИЕ ПОКАЗАТЕЛИ</b>\n\n"
+            text += f"👥 Всего активных: <b>{stats['total_users']}</b>\n"
+            text += f"💬 С ботом: <b>{stats['bot_started_users']}</b>\n"
+            text += f"💰 Оплатили: <b>{stats['paid_users']}</b> ({stats['conversion_rate']}% конверсия)\n"
+            text += f"✉️ Отправлено сообщений: <b>{stats['sent_messages']}</b>\n\n"
+            
+            # ===== ВОРОНКА (проблемы) =====
+            if funnel_summary and funnel_summary['has_problems']:
+                text += "⚠️ <b>ПРОБЛЕМЫ ВОРОНКИ</b>\n\n"
+                text += (
+                    f"Сообщение {funnel_summary['message_number']}: "
+                    f"<b>{funnel_summary['drop_rate']}%</b> отвал\n"
+                    f"<i>{html.escape(funnel_summary['message_text'])}</i>\n\n"
+                    f"💡 Рекомендуем пересмотреть это сообщение"
+                )
+            elif funnel_summary and funnel_summary['total_messages_with_data'] > 0:
+                text += "✅ <b>ВОРОНКА В НОРМЕ</b>\n\n"
+                text += f"Проблем не обнаружено (проверено {funnel_summary['total_messages_with_data']} сообщений)"
+            else:
+                text += "💡 <b>ВОРОНКА</b>\n\n"
+                text += "Данных пока нет. Начните рассылку для анализа."
+            
+            # Кнопки навигации
+            keyboard = [
+                [InlineKeyboardButton("🔄 Воронка (детали)", callback_data="admin_funnel_stats")],
+                [InlineKeyboardButton("💰 Платежи (детали)", callback_data="admin_payment_stats")],
+                [
+                    InlineKeyboardButton("👥 Пользователи", callback_data="admin_users"),
+                    InlineKeyboardButton("🗑️ Очистка", callback_data="admin_cleanup")
+                ],
+                [InlineKeyboardButton("🔄 Обновить", callback_data="admin_dashboard")],
+                [InlineKeyboardButton("« Назад в меню", callback_data="admin_back")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе дашборда: {e}")
+            text = "❌ <b>Ошибка при загрузке дашборда</b>"
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_back")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
     async def show_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать расширенную статистику"""
-        stats = self.db.get_user_statistics()
-        payment_stats = self.db.get_payment_statistics()
-        
+        """Показать расширенную статистику (старая версия, перенаправляет на дашборд)"""
+        await self.show_dashboard(update, context)
+    
+    async def show_cleanup_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Показать меню управления очисткой данных
+        """
+        try:
+            # Получаем информацию о количестве данных
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            
+            # Считаем записи в таблицах воронки
+            cursor.execute('SELECT COUNT(*) FROM message_deliveries')
+            deliveries_count = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(*) FROM button_clicks')
+            clicks_count = cursor.fetchone()[0]
+            
+            # Считаем запланированные сообщения
+            cursor.execute('SELECT COUNT(*) FROM scheduled_messages WHERE is_sent = 1')
+            sent_messages_count = cursor.fetchone()[0]
+            
+            conn.close()
+            
+            text = "🗑️ <b>ОЧИСТКА ДАННЫХ</b>\n\n"
+            text += "Управление хранением данных в базе.\n\n"
+            
+            # Воронка
+            text += "📊 <b>Данные воронки</b>\n"
+            text += f"├─ Отправок: <b>{deliveries_count}</b>\n"
+            text += f"└─ Кликов: <b>{clicks_count}</b>\n\n"
+            
+            if deliveries_count > 0 or clicks_count > 0:
+                text += "Рекомендуется хранить данные воронки за последние 30-90 дней.\n\n"
+            
+            # Запланированные сообщения
+            text += "📅 <b>Отправленные сообщения</b>\n"
+            text += f"└─ Записей: <b>{sent_messages_count}</b>\n\n"
+            
+            if sent_messages_count > 0:
+                text += "Рекомендуется хранить записи за последние 7-30 дней.\n\n"
+            
+            text += "⚠️ <b>Важно:</b> Очистка необратима!\nВосстановить данные будет невозможно."
+            
+            # Кнопки управления
+            keyboard = []
+            
+            # Очистка воронки
+            if deliveries_count > 0 or clicks_count > 0:
+                keyboard.append([InlineKeyboardButton("📊 Очистить воронку", callback_data="admin_cleanup_funnel_menu")])
+            
+            # Очистка сообщений
+            if sent_messages_count > 0:
+                keyboard.append([InlineKeyboardButton("📅 Очистить сообщения", callback_data="admin_cleanup_messages_menu")])
+            
+            keyboard.append([InlineKeyboardButton("« Назад к сводке", callback_data="admin_dashboard")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при показе меню очистки: {e}")
+            text = "❌ <b>Ошибка при загрузке меню очистки</b>"
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_dashboard")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_cleanup_funnel_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Показать меню выбора периода очистки воронки
+        """
         text = (
-            "📊 <b>Статистика бота</b>\n\n"
-            f"👥 Всего активных пользователей: {stats['total_users']}\n"
-            f"💬 Начали разговор с ботом: {stats['bot_started_users']}\n"
-            f"🆕 Новых за 24 часа: {stats['new_users_24h']}\n"
-            f"✉️ Отправлено сообщений: {stats['sent_messages']}\n"
-            f"🚪 Отписалось пользователей: {stats['unsubscribed']}\n"
-            f"💰 Оплатило пользователей: {stats['paid_users']}\n\n"
+            "📊 <b>ОЧИСТКА ДАННЫХ ВОРОНКИ</b>\n\n"
+            "Выберите период, данные старше которого будут удалены:\n\n"
+            "⚠️ <b>Будут удалены:</b>\n"
+            "• Записи об отправке сообщений\n"
+            "• Записи о кликах по кнопкам\n\n"
+            "<b>Это необратимо!</b>"
         )
         
-        if payment_stats:
-            conversion_rate = payment_stats['conversion_rate']
-            avg_amount = payment_stats['avg_amount']
-            text += (
-                f"💸 <b>Платежи:</b>\n"
-                f"• Конверсия: {conversion_rate}%\n"
-                f"• Средний чек: {avg_amount} руб.\n\n"
-            )
-        
-        text += f"💡 <b>Массовая рассылка:</b> доступна для {stats['bot_started_users']} пользователей"
-        
         keyboard = [
-            [InlineKeyboardButton("📊 Детали платежей", callback_data="admin_payment_stats")],
-            [InlineKeyboardButton("🔄 Статистика воронки", callback_data="admin_funnel_stats")],
-            [InlineKeyboardButton("« Назад", callback_data="admin_back")]
+            [InlineKeyboardButton("🗑️ Старше 30 дней", callback_data="admin_cleanup_funnel_30")],
+            [InlineKeyboardButton("🗑️ Старше 60 дней", callback_data="admin_cleanup_funnel_60")],
+            [InlineKeyboardButton("🗑️ Старше 90 дней", callback_data="admin_cleanup_funnel_90")],
+            [InlineKeyboardButton("« Отмена", callback_data="admin_cleanup")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def show_cleanup_messages_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Показать меню выбора периода очистки отправленных сообщений
+        """
+        text = (
+            "📅 <b>ОЧИСТКА ОТПРАВЛЕННЫХ СООБЩЕНИЙ</b>\n\n"
+            "Выберите период, данные старше которого будут удалены:\n\n"
+            "⚠️ <b>Будут удалены:</b>\n"
+            "• Записи об отправленных сообщениях из таблицы scheduled_messages\n\n"
+            "<b>Это необратимо!</b>"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("🗑️ Старше 7 дней", callback_data="admin_cleanup_messages_7")],
+            [InlineKeyboardButton("🗑️ Старше 14 дней", callback_data="admin_cleanup_messages_14")],
+            [InlineKeyboardButton("🗑️ Старше 30 дней", callback_data="admin_cleanup_messages_30")],
+            [InlineKeyboardButton("« Отмена", callback_data="admin_cleanup")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def perform_cleanup_funnel(self, update: Update, context: ContextTypes.DEFAULT_TYPE, days: int):
+        """
+        Выполнить очистку данных воронки
+        """
+        try:
+            await update.callback_query.answer("⏳ Выполняется очистка...", show_alert=False)
+            
+            # Выполняем очистку
+            deliveries_deleted, clicks_deleted = self.db.cleanup_old_funnel_data(days_old=days)
+            
+            text = (
+                f"✅ <b>ОЧИСТКА ЗАВЕРШЕНА</b>\n\n"
+                f"📊 Удалено данных воронки старше {days} дней:\n"
+                f"├─ Отправок: <b>{deliveries_deleted}</b>\n"
+                f"└─ Кликов: <b>{clicks_deleted}</b>\n\n"
+                f"💾 Место в базе данных освобождено."
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton("« Назад к очистке", callback_data="admin_cleanup")],
+                [InlineKeyboardButton("« К сводке", callback_data="admin_dashboard")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при очистке воронки: {e}")
+            text = f"❌ <b>Ошибка при очистке</b>\n\n{str(e)}"
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_cleanup")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+    
+    async def perform_cleanup_messages(self, update: Update, context: ContextTypes.DEFAULT_TYPE, days: int):
+        """
+        Выполнить очистку старых отправленных сообщений
+        """
+        try:
+            await update.callback_query.answer("⏳ Выполняется очистка...", show_alert=False)
+            
+            # Выполняем очистку
+            deleted_count = self.db.cleanup_old_scheduled_messages(days_old=days)
+            
+            text = (
+                f"✅ <b>ОЧИСТКА ЗАВЕРШЕНА</b>\n\n"
+                f"📅 Удалено записей старше {days} дней:\n"
+                f"└─ Отправленных сообщений: <b>{deleted_count}</b>\n\n"
+                f"💾 Место в базе данных освобождено."
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton("« Назад к очистке", callback_data="admin_cleanup")],
+                [InlineKeyboardButton("« К сводке", callback_data="admin_dashboard")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при очистке сообщений: {e}")
+            text = f"❌ <b>Ошибка при очистке</b>\n\n{str(e)}"
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_cleanup")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
     async def show_payment_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать статистику платежей"""
@@ -56,7 +281,7 @@ class StatisticsMixin:
         
         if not stats:
             text = "❌ <b>Ошибка при получении статистики платежей</b>"
-            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_back")]]
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_dashboard")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await self.safe_edit_or_send_message(update, context, text, reply_markup)
             return
@@ -88,7 +313,7 @@ class StatisticsMixin:
         
         keyboard = [
             [InlineKeyboardButton("🔄 Обновить", callback_data="admin_payment_stats")],
-            [InlineKeyboardButton("« Назад", callback_data="admin_back")]
+            [InlineKeyboardButton("« Назад к сводке", callback_data="admin_dashboard")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -168,7 +393,7 @@ class StatisticsMixin:
                         ])
             
             keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="admin_funnel_stats")])
-            keyboard.append([InlineKeyboardButton("« Назад к статистике", callback_data="admin_stats")])
+            keyboard.append([InlineKeyboardButton("« Назад к сводке", callback_data="admin_dashboard")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -177,7 +402,7 @@ class StatisticsMixin:
         except Exception as e:
             logger.error(f"❌ Ошибка при показе статистики воронки: {e}")
             text = "❌ <b>Ошибка при загрузке статистики воронки</b>"
-            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_back")]]
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_dashboard")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await self.safe_edit_or_send_message(update, context, text, reply_markup)
     
@@ -311,7 +536,7 @@ class StatisticsMixin:
         
         keyboard = [
             [InlineKeyboardButton("📊 Скачать CSV", callback_data="download_csv")],
-            [InlineKeyboardButton("« Назад", callback_data="admin_back")]
+            [InlineKeyboardButton("« Назад к сводке", callback_data="admin_dashboard")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
