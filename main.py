@@ -634,7 +634,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.info(f"✅ Одобрена заявка от пользователя {user.id} (@{user.username})")
         
         # ✅ КРИТИЧНО: Задержка 2 секунды для обработки Telegram'ом
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.1)
         
         # Добавляем пользователя в базу данных
         db.add_user(user.id, user.username, user.first_name)
