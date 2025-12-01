@@ -292,11 +292,19 @@ class UsersMixin:
 
         try:
             cursor.execute('''
-                UPDATE users SET is_active = 0 WHERE user_id = ?
+                UPDATE users SET is_active = 0, unsubscribed_at = CURRENT_TIMESTAMP WHERE user_id = ?
             ''', (user_id,))
 
             conn.commit()
-            logger.info(f"Деактивирован пользователь {user_id}")
+            logger.info(f"✅ Деактивирован пользователь {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка при деактивации пользователя {user_id}: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+            return False
         finally:
             if conn:
                 conn.close()
@@ -377,46 +385,145 @@ class UsersMixin:
                 conn.close()
 
     def get_user_statistics(self):
-        """Получение статистики пользователей"""
+        """
+        Получение расширенной статистики пользователей для дашборда
+        
+        Returns:
+            dict: Статистика с детализацией по периодам
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
-            # Общее количество пользователей
+            now = datetime.now()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            yesterday_start = today_start - timedelta(days=1)
+            week_ago = now - timedelta(days=7)
+            month_ago = now - timedelta(days=30)
+
+            stats = {}
+
+            # ===== БАЗОВЫЕ МЕТРИКИ =====
+            
+            # Общее количество активных пользователей
             cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 1')
-            total_users = cursor.fetchone()[0]
+            stats['total_users'] = cursor.fetchone()[0]
 
             # Пользователи, которые начали разговор с ботом
             cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 1 AND bot_started = 1')
-            bot_started_users = cursor.fetchone()[0]
+            stats['bot_started_users'] = cursor.fetchone()[0]
 
-            # Пользователи за последние 24 часа
-            yesterday = datetime.now() - timedelta(days=1)
-            cursor.execute('''
-                SELECT COUNT(*) FROM users
-                WHERE joined_at >= ? AND is_active = 1
-            ''', (yesterday,))
-            new_users_24h = cursor.fetchone()[0]
+            # Оплатившие пользователи
+            cursor.execute('SELECT COUNT(*) FROM users WHERE has_paid = 1')
+            stats['paid_users'] = cursor.fetchone()[0]
 
             # Количество отправленных сообщений
             cursor.execute('SELECT COUNT(*) FROM scheduled_messages WHERE is_sent = 1')
-            sent_messages = cursor.fetchone()[0]
+            stats['sent_messages'] = cursor.fetchone()[0]
 
-            # Количество отписавшихся
+            # Количество отписавшихся (всего)
             cursor.execute('SELECT COUNT(*) FROM users WHERE is_active = 0')
-            unsubscribed = cursor.fetchone()[0]
+            stats['unsubscribed'] = cursor.fetchone()[0]
 
-            # НОВАЯ СТАТИСТИКА: Оплатившие пользователи
-            cursor.execute('SELECT COUNT(*) FROM users WHERE has_paid = 1')
-            paid_users = cursor.fetchone()[0]
+            # ===== НОВЫЕ МЕТРИКИ ДЛЯ ДАШБОРДА =====
 
+            # Новые пользователи за сегодня
+            cursor.execute('''
+                SELECT COUNT(*) FROM users
+                WHERE joined_at >= ? AND is_active = 1
+            ''', (today_start,))
+            stats['new_users_today'] = cursor.fetchone()[0]
+
+            # Новые пользователи за вчера (для сравнения)
+            cursor.execute('''
+                SELECT COUNT(*) FROM users
+                WHERE joined_at >= ? AND joined_at < ? AND is_active = 1
+            ''', (yesterday_start, today_start))
+            stats['new_users_yesterday'] = cursor.fetchone()[0]
+
+            # Новые пользователи за 7 дней
+            cursor.execute('''
+                SELECT COUNT(*) FROM users
+                WHERE joined_at >= ? AND is_active = 1
+            ''', (week_ago,))
+            stats['new_users_7d'] = cursor.fetchone()[0]
+
+            # Новые пользователи за 30 дней
+            cursor.execute('''
+                SELECT COUNT(*) FROM users
+                WHERE joined_at >= ? AND is_active = 1
+            ''', (month_ago,))
+            stats['new_users_30d'] = cursor.fetchone()[0]
+
+            # Новые за 24 часа (для обратной совместимости)
+            yesterday_24h = now - timedelta(days=1)
+            cursor.execute('''
+                SELECT COUNT(*) FROM users
+                WHERE joined_at >= ? AND is_active = 1
+            ''', (yesterday_24h,))
+            stats['new_users_24h'] = cursor.fetchone()[0]
+
+            # ===== СЕГОДНЯШНЯЯ АКТИВНОСТЬ =====
+
+            # Начали разговор сегодня
+            cursor.execute('''
+                SELECT COUNT(*) FROM users
+                WHERE joined_at >= ? AND is_active = 1 AND bot_started = 1
+            ''', (today_start,))
+            stats['bot_started_today'] = cursor.fetchone()[0]
+
+            # Оплатили сегодня
+            cursor.execute('''
+                SELECT COUNT(*) FROM users
+                WHERE paid_at >= ? AND has_paid = 1
+            ''', (today_start,))
+            stats['paid_today'] = cursor.fetchone()[0]
+
+            # Отписались сегодня
+            cursor.execute('''
+                SELECT COUNT(*) FROM users
+                WHERE unsubscribed_at >= ? AND is_active = 0
+            ''', (today_start,))
+            stats['unsubscribed_today'] = cursor.fetchone()[0]
+
+            # ===== ПРОЦЕНТНЫЕ ИЗМЕНЕНИЯ =====
+
+            # Изменение относительно вчера
+            if stats['new_users_yesterday'] > 0:
+                change = ((stats['new_users_today'] - stats['new_users_yesterday']) / stats['new_users_yesterday']) * 100
+                stats['new_users_change_percent'] = round(change, 1)
+            else:
+                stats['new_users_change_percent'] = 100.0 if stats['new_users_today'] > 0 else 0.0
+
+            # Конверсия (% оплативших от начавших разговор)
+            if stats['bot_started_users'] > 0:
+                stats['conversion_rate'] = round((stats['paid_users'] / stats['bot_started_users']) * 100, 2)
+            else:
+                stats['conversion_rate'] = 0.0
+
+            logger.debug(f"📊 Статистика пользователей обновлена: {stats['total_users']} активных, {stats['new_users_today']} новых сегодня")
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении статистики пользователей: {e}")
+            # Возвращаем базовую статистику с нулями в случае ошибки
             return {
-                'total_users': total_users,
-                'bot_started_users': bot_started_users,
-                'new_users_24h': new_users_24h,
-                'sent_messages': sent_messages,
-                'unsubscribed': unsubscribed,
-                'paid_users': paid_users
+                'total_users': 0,
+                'bot_started_users': 0,
+                'paid_users': 0,
+                'sent_messages': 0,
+                'unsubscribed': 0,
+                'new_users_today': 0,
+                'new_users_yesterday': 0,
+                'new_users_7d': 0,
+                'new_users_30d': 0,
+                'new_users_24h': 0,
+                'bot_started_today': 0,
+                'paid_today': 0,
+                'unsubscribed_today': 0,
+                'new_users_change_percent': 0.0,
+                'conversion_rate': 0.0
             }
         finally:
             if conn:
