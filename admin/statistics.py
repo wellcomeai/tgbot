@@ -143,15 +143,19 @@ class StatisticsMixin:
             
             # Кнопки управления
             keyboard = []
-            
+
             # Очистка воронки
             if deliveries_count > 0 or clicks_count > 0:
                 keyboard.append([InlineKeyboardButton("📊 Очистить воронку", callback_data="admin_cleanup_funnel_menu")])
-            
+
             # Очистка сообщений
             if sent_messages_count > 0:
                 keyboard.append([InlineKeyboardButton("📅 Очистить сообщения", callback_data="admin_cleanup_messages_menu")])
-            
+
+            # Полная очистка воронки
+            if deliveries_count > 0 or clicks_count > 0:
+                keyboard.append([InlineKeyboardButton("🗑️ Очистить ВСЮ статистику", callback_data="admin_cleanup_all")])
+
             keyboard.append([InlineKeyboardButton("« Назад к сводке", callback_data="admin_dashboard")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -357,14 +361,11 @@ class StatisticsMixin:
                         text += "└─ ⏳ Еще не отправлялось\n\n"
                         continue
                     
-                    # ОБНОВЛЕНО: Статистика по ВСЕМ кликам
-                    total_clicks = clicked_callback + clicked_url
-                    click_rate = (total_clicks / delivered * 100) if delivered > 0 else 0
-                    
+                    # ОБНОВЛЕНО: Статистика по кликнувшим + total кликов
                     text += f"├─ 📬 Получили: <b>{delivered}</b> чел.\n"
-                    text += f"├─ ✅ Кликнули кнопки: <b>{total_clicks}</b> ({click_rate:.1f}%)\n"
-                    text += f"│  ├─ 📩 Callback: {clicked_callback}\n"
-                    text += f"│  └─ 🔗 URL: {clicked_url}\n"
+                    text += f"├─ ✅ Кликнули кнопки: <b>{msg_data['clicked_any_button']}</b> чел.\n"
+                    text += f"│  ├─ 📩 Callback: {clicked_callback} чел. ({msg_data.get('total_callback_clicks', 0)} кликов)\n"
+                    text += f"│  └─ 🔗 URL: {clicked_url} чел. ({msg_data.get('total_url_clicks', 0)} кликов)\n"
                     
                     # Предупреждение о большом отвале
                     if drop_rate >= 30:
@@ -569,3 +570,52 @@ class StatisticsMixin:
             if 'Event loop is closed' not in str(e):
                 logger.error(f"Ошибка при отправке CSV: {e}")
             await update.callback_query.answer("Ошибка при создании файла!", show_alert=True)
+
+    async def show_cleanup_all_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать подтверждение полной очистки статистики"""
+        text = (
+            "⚠️ <b>ВНИМАНИЕ: ПОЛНАЯ ОЧИСТКА</b>\n\n"
+            "Вы собираетесь удалить ВСЕ данные статистики воронки:\n"
+            "• Все записи об отправке сообщений\n"
+            "• Все записи о кликах по кнопкам\n\n"
+            "❌ <b>Это действие НЕОБРАТИМО!</b>\n\n"
+            "Вы уверены?"
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("🗑️ Да, удалить ВСЁ", callback_data="admin_cleanup_all_confirm")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="admin_cleanup")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await self.safe_edit_or_send_message(update, context, text, reply_markup)
+
+    async def perform_cleanup_all(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выполнить полную очистку статистики воронки"""
+        try:
+            await update.callback_query.answer("⏳ Выполняется полная очистка...", show_alert=False)
+
+            deliveries_deleted, clicks_deleted = self.db.cleanup_all_funnel_data()
+
+            text = (
+                f"✅ <b>ПОЛНАЯ ОЧИСТКА ЗАВЕРШЕНА</b>\n\n"
+                f"🗑️ Удалено:\n"
+                f"├─ Отправок: <b>{deliveries_deleted}</b>\n"
+                f"└─ Кликов: <b>{clicks_deleted}</b>\n\n"
+                f"💾 База данных очищена."
+            )
+
+            keyboard = [
+                [InlineKeyboardButton("« Назад к очистке", callback_data="admin_cleanup")],
+                [InlineKeyboardButton("« К сводке", callback_data="admin_dashboard")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка при полной очистке: {e}")
+            text = f"❌ <b>Ошибка при очистке</b>\n\n{str(e)}"
+            keyboard = [[InlineKeyboardButton("« Назад", callback_data="admin_cleanup")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await self.safe_edit_or_send_message(update, context, text, reply_markup)

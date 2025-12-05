@@ -160,6 +160,21 @@ class FunnelMixin:
                 ''', (message_number,))
                 clicked_any_button = cursor.fetchone()[0]
 
+                # Общее количество кликов (не уникальных пользователей)
+                cursor.execute('''
+                    SELECT COUNT(*)
+                    FROM button_clicks
+                    WHERE message_number = ? AND button_type = 'url'
+                ''', (message_number,))
+                total_url_clicks = cursor.fetchone()[0]
+
+                cursor.execute('''
+                    SELECT COUNT(*)
+                    FROM button_clicks
+                    WHERE message_number = ? AND button_type = 'callback'
+                ''', (message_number,))
+                total_callback_clicks = cursor.fetchone()[0]
+
                 # Конверсия по callback кнопкам (для совместимости)
                 conversion_rate = (clicked_callback / delivered * 100) if delivered > 0 else 0
 
@@ -174,6 +189,8 @@ class FunnelMixin:
                     'clicked_callback': clicked_callback,
                     'clicked_url': clicked_url,
                     'clicked_any_button': clicked_any_button,
+                    'total_url_clicks': total_url_clicks,
+                    'total_callback_clicks': total_callback_clicks,
                     'conversion_rate': round(conversion_rate, 2),
                     'dropped': dropped,
                     'drop_rate': round(drop_rate, 2)
@@ -416,6 +433,31 @@ class FunnelMixin:
 
         except Exception as e:
             logger.error(f"❌ Ошибка при очистке старых данных воронки: {e}")
+            return 0, 0
+        finally:
+            if conn:
+                conn.close()
+
+    def cleanup_all_funnel_data(self):
+        """Полная очистка всех данных воронки"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('DELETE FROM message_deliveries')
+            deliveries_deleted = cursor.rowcount
+
+            cursor.execute('DELETE FROM button_clicks')
+            clicks_deleted = cursor.rowcount
+
+            conn.commit()
+
+            logger.info(f"🧹 Полная очистка: удалено {deliveries_deleted} отправок и {clicks_deleted} кликов")
+
+            return deliveries_deleted, clicks_deleted
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка при полной очистке данных воронки: {e}")
             return 0, 0
         finally:
             if conn:

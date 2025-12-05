@@ -839,6 +839,48 @@ async def handle_next_message_callback(update: Update, context: ContextTypes.DEF
         if not success:
             pass
 
+async def handle_url_click_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка нажатия на URL кнопку (callback-прокси)"""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    try:
+        # Парсим callback_data: urlc_{button_id}_{message_number}
+        parts = query.data.split("_")
+        button_id = int(parts[1])
+        message_number = int(parts[2])
+
+        # Получаем данные кнопки из БД
+        button_data = db.get_button_by_id(button_id)
+
+        if not button_data:
+            await query.answer("❌ Кнопка не найдена", show_alert=True)
+            return
+
+        button_text, button_url = button_data
+
+        # Добавляем UTM метки к URL
+        import utm_utils
+        processed_url = utm_utils.add_utm_to_url(button_url, user_id)
+
+        # 📊 Логируем клик по URL кнопке
+        db.log_button_click(
+            user_id=user_id,
+            message_number=message_number,
+            button_id=button_id,
+            button_type='url',
+            button_text=button_text
+        )
+
+        logger.info(f"🔗 Залогирован клик по URL кнопке '{button_text}' в сообщении {message_number} от пользователя {user_id}")
+
+        # Открываем ссылку для пользователя
+        await query.answer(url=processed_url)
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обработке клика по URL кнопке: {e}")
+        await query.answer("❌ Произошла ошибка", show_alert=True)
+
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на инлайн-кнопки"""
     query = update.callback_query
@@ -1275,6 +1317,7 @@ async def run_telegram_bot():
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
     application.add_handler(ChatMemberHandler(handle_member_update, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(handle_next_message_callback, pattern=r"^next_msg_"))
+    application.add_handler(CallbackQueryHandler(handle_url_click_callback, pattern=r"^urlc_"))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VIDEO) & ~filters.COMMAND, message_handler))
     

@@ -13,6 +13,24 @@ class ButtonsMixin:
 
     # ===== МЕТОДЫ ДЛЯ КНОПОК СООБЩЕНИЙ РАССЫЛКИ =====
 
+    def get_button_by_id(self, button_id):
+        """Получить данные кнопки по ID"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT button_text, button_url
+                FROM message_buttons
+                WHERE id = ?
+            ''', (button_id,))
+
+            result = cursor.fetchone()
+            return result  # (button_text, button_url) или None
+        finally:
+            if conn:
+                conn.close()
+
     def get_message_buttons(self, message_number):
         """Получение всех кнопок для конкретного сообщения"""
         conn = self._get_connection()

@@ -368,7 +368,11 @@ class MessageScheduler:
 
                         for button_id, button_text, button_url, position, messages_count in processed_buttons:
                             if button_url and button_url.strip():
-                                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                # Callback-прокси для отслеживания кликов по URL
+                                keyboard.append([InlineKeyboardButton(
+                                    button_text,
+                                    callback_data=f"urlc_{button_id}_{message_number}"
+                                )])
                             else:
                                 # Передаем messages_count в callback_data
                                 keyboard.append([InlineKeyboardButton(
@@ -488,8 +492,11 @@ class MessageScheduler:
 
                     for button_id, button_text, button_url, position, messages_count in processed_buttons:
                         if button_url and button_url.strip():
-                            # URL кнопка
-                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                            # Callback-прокси для отслеживания кликов по URL
+                            keyboard.append([InlineKeyboardButton(
+                                button_text,
+                                callback_data=f"urlc_{button_id}_{message_number}"
+                            )])
                         else:
                             # Callback кнопка - передаем messages_count в callback_data
                             keyboard.append([InlineKeyboardButton(
@@ -584,13 +591,17 @@ class MessageScheduler:
                             reply_markup = None
                             if processed_buttons:
                                 keyboard = []
-                                
+
                                 for button_id, button_text, button_url, position in processed_buttons:
                                     if button_url and button_url.strip():
-                                        keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                        # Callback-прокси для отслеживания кликов по URL (отрицательный broadcast_id)
+                                        keyboard.append([InlineKeyboardButton(
+                                            button_text,
+                                            callback_data=f"urlc_{button_id}_{-broadcast_id}"
+                                        )])
                                     else:
                                         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
-                                
+
                                 reply_markup = InlineKeyboardMarkup(keyboard)
                                 logger.debug(f"🔘 Добавлены кнопки к рассылке #{broadcast_id} для пользователя {user_id}")
 
@@ -776,13 +787,17 @@ class MessageScheduler:
                     reply_markup = None
                     if processed_buttons:
                         keyboard = []
-                        
+
                         for button_id, button_text, button_url, position in processed_buttons:
                             if button_url and button_url.strip():
-                                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                # Callback-прокси для отслеживания кликов по URL (платное сообщение)
+                                keyboard.append([InlineKeyboardButton(
+                                    button_text,
+                                    callback_data=f"urlc_{button_id}_{message_number}"
+                                )])
                             else:
                                 keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
-                        
+
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         logger.debug(f"💰 🔘 Добавлены кнопки к платному сообщению {message_number}")
 
@@ -877,13 +892,17 @@ class MessageScheduler:
                             reply_markup = None
                             if processed_buttons:
                                 keyboard = []
-                                
+
                                 for button_id, button_text, button_url, position in processed_buttons:
                                     if button_url and button_url.strip():
-                                        keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
+                                        # Callback-прокси для отслеживания кликов по URL (платная рассылка)
+                                        keyboard.append([InlineKeyboardButton(
+                                            button_text,
+                                            callback_data=f"urlc_{button_id}_{-(broadcast_id + 10000)}"
+                                        )])
                                     else:
                                         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
-                                
+
                                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                             # Отправляем (без медиа-альбома для платных массовых пока)

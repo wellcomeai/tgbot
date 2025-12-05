@@ -55,6 +55,10 @@ class HandlersMixin:
                 await self.perform_cleanup_messages(update, context, 14)
             elif data == "admin_cleanup_messages_30":
                 await self.perform_cleanup_messages(update, context, 30)
+            elif data == "admin_cleanup_all":
+                await self.show_cleanup_all_confirm(update, context)
+            elif data == "admin_cleanup_all_confirm":
+                await self.perform_cleanup_all(update, context)
             # ===== Конец новых обработчиков =====
             
             elif data == "admin_broadcast":
