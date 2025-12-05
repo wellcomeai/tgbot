@@ -12,6 +12,7 @@ from database import Database
 from admin import AdminPanel
 from scheduler import MessageScheduler
 from aiohttp import web, ClientSession
+import utm_utils
 import threading
 import pytz
 
@@ -244,18 +245,74 @@ async def payment_webhook(request):
         logger.error(f"❌ Критическая ошибка в payment webhook: {e}", exc_info=True)
         return web.json_response({'error': 'Internal server error'}, status=500)
 
+async def redirect_handler(request):
+    """
+    Редирект с логированием клика по URL кнопке
+
+    URL формат: /r/{source}/{button_id}/{user_id}
+    source: msg (воронка), mass (массовая), paid (платная), pmass (платная массовая)
+    """
+    try:
+        source = request.match_info['source']
+        button_id = int(request.match_info['button_id'])
+        user_id = int(request.match_info['user_id'])
+
+        logger.info(f"🔗 Redirect request: source={source}, button_id={button_id}, user_id={user_id}")
+
+        # Получаем данные кнопки в зависимости от источника
+        button_data = db.get_button_for_redirect(source, button_id)
+
+        if not button_data:
+            logger.error(f"❌ Кнопка не найдена: source={source}, button_id={button_id}")
+            return web.Response(text="Button not found", status=404)
+
+        button_text, button_url, message_number = button_data
+
+        if not button_url:
+            logger.error(f"❌ URL кнопки пустой: button_id={button_id}")
+            return web.Response(text="Button URL is empty", status=400)
+
+        # 📊 Логируем клик
+        db.log_button_click(
+            user_id=user_id,
+            message_number=message_number,
+            button_id=button_id,
+            button_type='url',
+            button_text=button_text
+        )
+
+        logger.info(f"✅ Залогирован клик по URL кнопке '{button_text}' (msg={message_number}) от пользователя {user_id}")
+
+        # Добавляем UTM метки
+        final_url = utm_utils.add_utm_to_url(button_url, user_id)
+
+        logger.info(f"🔀 Редирект на: {final_url}")
+
+        # Выполняем редирект (HTTP 302)
+        raise web.HTTPFound(location=final_url)
+
+    except ValueError as e:
+        logger.error(f"❌ Неверный формат параметров: {e}")
+        return web.Response(text="Invalid parameters", status=400)
+    except web.HTTPFound:
+        raise  # Пропускаем редирект
+    except Exception as e:
+        logger.error(f"❌ Ошибка в redirect_handler: {e}", exc_info=True)
+        return web.Response(text="Internal server error", status=500)
+
 async def health_check(request):
     """Health check endpoint с подробной диагностикой"""
     try:
         # Получаем информацию о базе данных
         db_info = db.get_database_info()
-        
+
         health_data = {
             'status': 'ok',
             'timestamp': datetime.now().isoformat(),
             'service': 'telegram_bot',
             'telegram_webhook': f'/bot{BOT_TOKEN}',
             'payment_webhook': '/webhook/payment',
+            'redirect_tracking': '/r/{source}/{button_id}/{user_id}',
             'test_expired_subscriptions': '/test/expired-subscriptions',
             'test_setup_user': '/test/setup-user',
             'bot_running': bot_instance is not None,
@@ -265,7 +322,7 @@ async def health_check(request):
             'render_disk_path': RENDER_DISK_PATH,
             'webhook_url': WEBHOOK_URL
         }
-        
+
         return web.json_response(health_data)
         
     except Exception as e:
@@ -443,6 +500,7 @@ async def send_payment_success_notification(user_id: int, amount: str):
 # ===== НАСТРОЙКА МАРШРУТОВ =====
 app.router.add_post(f'/bot{BOT_TOKEN}', telegram_webhook)
 app.router.add_post('/webhook/payment', payment_webhook)
+app.router.add_get('/r/{source}/{button_id}/{user_id}', redirect_handler)
 app.router.add_get('/health', health_check)
 app.router.add_post('/test/expired-subscriptions', test_expired_subscriptions)
 app.router.add_post('/test/setup-user', setup_test_user)
@@ -838,59 +896,6 @@ async def handle_next_message_callback(update: Update, context: ContextTypes.DEF
 
         if not success:
             pass
-
-async def handle_url_click_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатия на URL кнопку (callback-прокси)"""
-    query = update.callback_query
-    user_id = query.from_user.id
-
-    try:
-        # Парсим callback_data: urlc_{button_id}_{message_number}
-        parts = query.data.split("_")
-        button_id = int(parts[1])
-        message_number = int(parts[2])
-
-        # Получаем данные кнопки из БД
-        button_data = db.get_button_by_id(button_id)
-
-        if not button_data:
-            await query.answer("❌ Кнопка не найдена", show_alert=True)
-            return
-
-        button_text, button_url = button_data
-
-        # Добавляем UTM метки к URL
-        import utm_utils
-        processed_url = utm_utils.add_utm_to_url(button_url, user_id)
-
-        # 📊 Логируем клик по URL кнопке
-        db.log_button_click(
-            user_id=user_id,
-            message_number=message_number,
-            button_id=button_id,
-            button_type='url',
-            button_text=button_text
-        )
-
-        logger.info(f"🔗 Залогирован клик по URL кнопке '{button_text}' в сообщении {message_number} от пользователя {user_id}")
-
-        # Открываем ссылку для пользователя
-        try:
-            await query.answer(url=processed_url)
-        except Exception as url_error:
-            # Если Telegram не принимает URL (Url_invalid), отправляем ссылку как сообщение
-            logger.warning(f"⚠️ Не удалось открыть URL через answer: {url_error}, отправляем ссылкой")
-            await query.answer()
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"🔗 <a href=\"{processed_url}\">{button_text}</a>",
-                parse_mode='HTML',
-                disable_web_page_preview=False
-            )
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка при обработке клика по URL кнопке: {e}")
-        await query.answer("❌ Произошла ошибка", show_alert=True)
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на инлайн-кнопки"""
@@ -1328,7 +1333,6 @@ async def run_telegram_bot():
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
     application.add_handler(ChatMemberHandler(handle_member_update, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(handle_next_message_callback, pattern=r"^next_msg_"))
-    application.add_handler(CallbackQueryHandler(handle_url_click_callback, pattern=r"^urlc_"))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VIDEO) & ~filters.COMMAND, message_handler))
     

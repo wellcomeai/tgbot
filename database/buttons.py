@@ -31,6 +31,78 @@ class ButtonsMixin:
             if conn:
                 conn.close()
 
+    def get_button_for_redirect(self, source: str, button_id: int):
+        """
+        Получить данные кнопки для редиректа
+
+        Args:
+            source: Тип источника ('msg', 'mass', 'paid', 'pmass')
+            button_id: ID кнопки
+
+        Returns:
+            tuple: (button_text, button_url, message_number) или None
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            if source == 'msg':
+                # Кнопки сообщений воронки
+                cursor.execute('''
+                    SELECT button_text, button_url, message_number
+                    FROM message_buttons
+                    WHERE id = ?
+                ''', (button_id,))
+
+            elif source == 'mass':
+                # Кнопки массовых рассылок
+                cursor.execute('''
+                    SELECT button_text, button_url, broadcast_id
+                    FROM scheduled_broadcast_buttons
+                    WHERE id = ?
+                ''', (button_id,))
+
+            elif source == 'paid':
+                # Кнопки платных сообщений
+                cursor.execute('''
+                    SELECT button_text, button_url, message_number
+                    FROM paid_message_buttons
+                    WHERE id = ?
+                ''', (button_id,))
+
+            elif source == 'pmass':
+                # Кнопки платных массовых рассылок
+                cursor.execute('''
+                    SELECT button_text, button_url, broadcast_id
+                    FROM paid_scheduled_broadcast_buttons
+                    WHERE id = ?
+                ''', (button_id,))
+
+            else:
+                logger.error(f"❌ Неизвестный тип источника: {source}")
+                return None
+
+            result = cursor.fetchone()
+
+            if result:
+                button_text, button_url, message_number = result
+                # Для массовых рассылок message_number = отрицательный broadcast_id
+                if source == 'mass':
+                    message_number = -message_number
+                elif source == 'pmass':
+                    message_number = -(message_number + 10000)
+
+                return (button_text, button_url, message_number)
+
+            return None
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении кнопки для редиректа: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+
     def get_message_buttons(self, message_number):
         """Получение всех кнопок для конкретного сообщения"""
         conn = self._get_connection()

@@ -4,14 +4,36 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.error import Forbidden, BadRequest
 import logging
 import asyncio
+import os
 import utm_utils
 
 logger = logging.getLogger(__name__)
 
+# Получаем базовый URL для редиректов
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
+
 class MessageScheduler:
     def __init__(self, db):
         self.db = db
-    
+
+    def build_redirect_url(self, source: str, button_id: int, user_id: int) -> str:
+        """
+        Создать URL для редиректа с отслеживанием клика
+
+        Args:
+            source: Тип источника (msg, mass, paid, pmass)
+            button_id: ID кнопки
+            user_id: ID пользователя
+
+        Returns:
+            URL для редиректа или None если WEBHOOK_URL не настроен
+        """
+        if not WEBHOOK_URL:
+            logger.warning("⚠️ WEBHOOK_URL не настроен, редирект-трекинг недоступен")
+            return None
+
+        return f"{WEBHOOK_URL}/r/{source}/{button_id}/{user_id}"
+
     async def schedule_user_messages(self, context: ContextTypes.DEFAULT_TYPE, user_id):
         """Запланировать отправку всех сообщений для пользователя"""
         try:
@@ -368,11 +390,13 @@ class MessageScheduler:
 
                         for button_id, button_text, button_url, position, messages_count in processed_buttons:
                             if button_url and button_url.strip():
-                                # Callback-прокси для отслеживания кликов по URL
-                                keyboard.append([InlineKeyboardButton(
-                                    button_text,
-                                    callback_data=f"urlc_{button_id}_{message_number}"
-                                )])
+                                # Используем редирект для отслеживания кликов
+                                redirect_url = self.build_redirect_url('msg', button_id, user_id)
+                                if redirect_url:
+                                    keyboard.append([InlineKeyboardButton(button_text, url=redirect_url)])
+                                else:
+                                    # Fallback: прямая ссылка без отслеживания
+                                    keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                             else:
                                 # Передаем messages_count в callback_data
                                 keyboard.append([InlineKeyboardButton(
@@ -492,11 +516,13 @@ class MessageScheduler:
 
                     for button_id, button_text, button_url, position, messages_count in processed_buttons:
                         if button_url and button_url.strip():
-                            # Callback-прокси для отслеживания кликов по URL
-                            keyboard.append([InlineKeyboardButton(
-                                button_text,
-                                callback_data=f"urlc_{button_id}_{message_number}"
-                            )])
+                            # Используем редирект для отслеживания кликов
+                            redirect_url = self.build_redirect_url('msg', button_id, user_id)
+                            if redirect_url:
+                                keyboard.append([InlineKeyboardButton(button_text, url=redirect_url)])
+                            else:
+                                # Fallback: прямая ссылка без отслеживания
+                                keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                         else:
                             # Callback кнопка - передаем messages_count в callback_data
                             keyboard.append([InlineKeyboardButton(
@@ -594,11 +620,13 @@ class MessageScheduler:
 
                                 for button_id, button_text, button_url, position in processed_buttons:
                                     if button_url and button_url.strip():
-                                        # Callback-прокси для отслеживания кликов по URL (отрицательный broadcast_id)
-                                        keyboard.append([InlineKeyboardButton(
-                                            button_text,
-                                            callback_data=f"urlc_{button_id}_{-broadcast_id}"
-                                        )])
+                                        # Используем редирект для отслеживания кликов
+                                        redirect_url = self.build_redirect_url('mass', button_id, user_id)
+                                        if redirect_url:
+                                            keyboard.append([InlineKeyboardButton(button_text, url=redirect_url)])
+                                        else:
+                                            # Fallback: прямая ссылка без отслеживания
+                                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                                     else:
                                         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
 
@@ -790,11 +818,13 @@ class MessageScheduler:
 
                         for button_id, button_text, button_url, position in processed_buttons:
                             if button_url and button_url.strip():
-                                # Callback-прокси для отслеживания кликов по URL (платное сообщение)
-                                keyboard.append([InlineKeyboardButton(
-                                    button_text,
-                                    callback_data=f"urlc_{button_id}_{message_number}"
-                                )])
+                                # Используем редирект для отслеживания кликов
+                                redirect_url = self.build_redirect_url('paid', button_id, user_id)
+                                if redirect_url:
+                                    keyboard.append([InlineKeyboardButton(button_text, url=redirect_url)])
+                                else:
+                                    # Fallback: прямая ссылка без отслеживания
+                                    keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                             else:
                                 keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
 
@@ -895,11 +925,13 @@ class MessageScheduler:
 
                                 for button_id, button_text, button_url, position in processed_buttons:
                                     if button_url and button_url.strip():
-                                        # Callback-прокси для отслеживания кликов по URL (платная рассылка)
-                                        keyboard.append([InlineKeyboardButton(
-                                            button_text,
-                                            callback_data=f"urlc_{button_id}_{-(broadcast_id + 10000)}"
-                                        )])
+                                        # Используем редирект для отслеживания кликов
+                                        redirect_url = self.build_redirect_url('pmass', button_id, user_id)
+                                        if redirect_url:
+                                            keyboard.append([InlineKeyboardButton(button_text, url=redirect_url)])
+                                        else:
+                                            # Fallback: прямая ссылка без отслеживания
+                                            keyboard.append([InlineKeyboardButton(button_text, url=button_url)])
                                     else:
                                         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"next_msg_{user_id}")])
 
