@@ -875,7 +875,18 @@ async def handle_url_click_callback(update: Update, context: ContextTypes.DEFAUL
         logger.info(f"🔗 Залогирован клик по URL кнопке '{button_text}' в сообщении {message_number} от пользователя {user_id}")
 
         # Открываем ссылку для пользователя
-        await query.answer(url=processed_url)
+        try:
+            await query.answer(url=processed_url)
+        except Exception as url_error:
+            # Если Telegram не принимает URL (Url_invalid), отправляем ссылку как сообщение
+            logger.warning(f"⚠️ Не удалось открыть URL через answer: {url_error}, отправляем ссылкой")
+            await query.answer()
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"🔗 <a href=\"{processed_url}\">{button_text}</a>",
+                parse_mode='HTML',
+                disable_web_page_preview=False
+            )
 
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке клика по URL кнопке: {e}")
